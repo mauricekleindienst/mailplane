@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mailplane</title>
+  <link rel="icon" type="image/svg+xml" href="assets/icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- ── Account bar ─────────────────────────────────────────────── -->
+  <header class="account-bar">
+    <div class="account-bar-drag"></div>
+    <div class="account-tabs" id="accountTabs"></div>
+    <div class="account-bar-right">
+      <button class="compose-btn" id="composeTrigger" title="New Message (⌘N)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+New      </button>
+      <button class="ab-icon-btn" id="settingsBtn" title="Settings (⌘,)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Three-panel body ────────────────────────────────────────── -->
+  <div class="main-panels">
+
+    <!-- Left sidebar -->
+    <aside class="folder-sidebar">
+      <nav class="folder-nav" id="folderNav">
+        <!-- dynamically populated by renderer.js -->
+      </nav>
+
+      <!-- Apps nav (All Mail mode) -->
+      <nav class="apps-nav hidden" id="appsNav">
+        <div class="apps-nav-label">Apps</div>
+        <div id="appsList"></div>
+        <button class="add-app-btn" id="addAppBtn">
+          <span class="folder-icon-wrap" style="background:#e5e5ea">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </span>
+          <span class="folder-label" style="color:#8e8e93">Add App</span>
+        </button>
+      </nav>
+    </aside>
+
+    <!-- Email list -->
+    <section class="email-list-panel" id="emailListPanel">
+      <div class="list-toolbar">
+        <h1 class="list-title-text" id="listTitle">Inbox</h1>
+        <div class="toolbar-right">
+          <span class="unread-total" id="unreadTotal"></span>
+          <button class="icon-btn-sm thread-toggle-btn" title="Group by thread" id="threadToggleBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          </button>
+          <button class="icon-btn-sm" title="Refresh" id="refreshBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="search-wrap">
+        <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="Search…" />
+        <button class="search-clear hidden" id="searchClear">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="email-list" id="emailList">
+        <div class="list-empty hidden" id="listEmpty">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#d1d1d6" stroke-width="1.5"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+          <p id="listEmptyText">No emails</p>
+        </div>
+        <div class="list-loading" id="listLoading">
+          <div class="skeleton-list">
+            <div class="skeleton-item"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line sk-w70"></div><div class="sk-line sk-w50"></div><div class="sk-line sk-w80"></div></div></div>
+            <div class="skeleton-item"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line sk-w60"></div><div class="sk-line sk-w40"></div><div class="sk-line sk-w70"></div></div></div>
+            <div class="skeleton-item"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line sk-w80"></div><div class="sk-line sk-w55"></div><div class="sk-line sk-w60"></div></div></div>
+            <div class="skeleton-item"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line sk-w75"></div><div class="sk-line sk-w35"></div><div class="sk-line sk-w65"></div></div></div>
+            <div class="skeleton-item"><div class="sk-avatar"></div><div class="sk-lines"><div class="sk-line sk-w65"></div><div class="sk-line sk-w45"></div><div class="sk-line sk-w75"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="load-more-wrap hidden" id="loadMoreWrap">
+        <button class="load-more-btn" id="loadMoreBtn">Load more</button>
+      </div>
+    </section>
+
+    <!-- Email detail -->
+    <section class="email-detail-panel" id="emailDetail">
+      <div class="detail-placeholder">
+        <img src="assets/icon.svg" width="56" height="56" style="border-radius:16px;opacity:0.15" alt="" />
+        <p>Select an email to read</p>
+        <div class="shortcut-hints">
+          <span>↑↓ Navigate</span><span>⌘N Compose</span><span>⌘R Reply</span><span>⌫ Delete</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- App webview overlay -->
+    <div class="app-view hidden" id="appView">
+      <div class="app-view-bar">
+        <span class="app-view-title" id="appViewTitle"></span>
+        <div style="display:flex;gap:6px;">
+          <button class="icon-btn-sm" id="appViewReload" title="Reload">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/></svg>
+          </button>
+          <button class="icon-btn-sm" id="appViewClose" title="Close">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <webview id="appWebview" src="about:blank"></webview>
+    </div>
+
+  </div>
+</div>
+
+<!-- ── Floating Compose ───────────────────────────────────────────── -->
+<div class="compose-float hidden" id="composeFloat">
+  <div class="compose-float-header" id="composeFloatHeader">
+    <span class="compose-float-title" id="composeFloatTitle">New Message</span>
+    <div class="compose-float-btns">
+      <button class="compose-float-btn" id="composeMinimize" title="Minimize">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+      <button class="compose-float-btn" id="composeExpand" title="Expand">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+      <button class="compose-float-btn cfc-close" id="composeClose" title="Close">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="compose-float-body" id="composeFloatBody">
+    <div class="compose-field-row">
+      <span class="compose-lbl">From</span>
+      <select id="composeFrom"></select>
+    </div>
+    <div class="compose-field-row">
+      <span class="compose-lbl">To</span>
+      <input type="text" id="composeTo" placeholder="recipient@example.com" spellcheck="false" autocomplete="off" />
+    </div>
+    <div class="compose-field-row hidden" id="composeCcRow">
+      <span class="compose-lbl">Cc</span>
+      <input type="text" id="composeCc" placeholder="cc@example.com" spellcheck="false" autocomplete="off" />
+    </div>
+    <div class="compose-subject-row">
+      <input type="text" id="composeSubject" placeholder="Subject" class="compose-subject-input" />
+    </div>
+    <div class="compose-toolbar" id="composeToolbar">
+      <button class="tb-btn" data-cmd="bold" title="Bold"><b>B</b></button>
+      <button class="tb-btn" data-cmd="italic" title="Italic"><i>I</i></button>
+      <button class="tb-btn" data-cmd="underline" title="Underline"><u>U</u></button>
+      <button class="tb-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" id="tbLink" title="Link">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="insertUnorderedList" title="Bullet list">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="insertOrderedList" title="Numbered list">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" data-cmd="removeFormat" title="Clear formatting">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="5" x2="19" y2="5"/><line x1="8" y1="5" x2="13" y2="19"/><line x1="4" y1="19" x2="12" y2="19"/><line x1="18" y1="13" x2="23" y2="18"/><line x1="23" y1="13" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="compose-body-rt" id="composeBody" contenteditable="true" spellcheck="true" data-placeholder="Write your message…"></div>
+    <div class="compose-footer">
+      <div class="compose-footer-left">
+        <button class="compose-cc-toggle" id="composeCcToggle">Cc</button>
+      </div>
+      <div class="compose-footer-right">
+        <div class="compose-error hidden" id="composeError"></div>
+        <button class="btn-discard" id="composeCancelBtn">Discard</button>
+        <button class="btn-send" id="composeSendBtn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+          <span id="composeBtnText">Send</span>
+          <div class="btn-spinner hidden" id="composeSpinner"></div>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Account Setup Modal ────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="setupModal">
+  <div class="modal setup-modal">
+    <div class="modal-header">
+      <div class="modal-icon-wrap"><img src="assets/icon.svg" width="24" height="24" alt="" style="border-radius:6px" /></div>
+      <div><h2>Add Email Account</h2><p class="modal-subtitle">Connect your mailbox to get started</p></div>
+    </div>
+    <div class="form-group"><label>Email address</label><input type="email" id="setupEmail" placeholder="you@gmail.com" autocomplete="off" spellcheck="false" /></div>
+    <div class="form-group">
+      <label>Password <span class="label-hint" id="passwordHint"></span></label>
+      <div class="input-wrap">
+        <input type="password" id="setupPassword" placeholder="••••••••••••••••" autocomplete="new-password" />
+        <button class="input-eye" id="togglePassword" tabindex="-1" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      </div>
+    </div>
+    <div class="form-group"><label>Display name <span class="label-optional">(optional)</span></label><input type="text" id="setupName" placeholder="Your Name" /></div>
+    <details class="advanced-settings">
+      <summary>Advanced settings</summary>
+      <div class="advanced-grid">
+        <div class="form-group"><label>IMAP host</label><input type="text" id="imapHost" placeholder="imap.example.com" spellcheck="false" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="imapPort" value="993" /></div>
+        <div class="form-group"><label>SMTP host</label><input type="text" id="smtpHost" placeholder="smtp.example.com" spellcheck="false" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="smtpPort" value="587" /></div>
+      </div>
+    </details>
+    <div class="provider-tip hidden" id="gmailTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Gmail needs an <strong>App Password</strong>. Go to <strong>myaccount.google.com → Security → App passwords</strong>.</span></div>
+    <div class="provider-tip hidden" id="fastmailTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#7c3aed"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Fastmail uses <strong>JMAP</strong>. Create an <strong>App Password</strong> in Settings → Privacy & Security.</span></div>
+    <div class="provider-tip hidden" id="outlookTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#3b82f6"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Enable IMAP at <strong>Settings → Mail → Sync email → IMAP</strong>.</span></div>
+    <div class="modal-error hidden" id="setupError"></div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="setupCancelBtn" style="display:none">Cancel</button>
+      <button class="btn-primary" id="setupSaveBtn"><span id="setupBtnText">Connect Account</span><div class="btn-spinner hidden" id="setupSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Settings Modal ──────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="settingsModal">
+  <div class="modal settings-modal">
+    <div class="settings-sidebar">
+      <div class="settings-app-brand">
+        <img src="assets/icon.svg" width="32" height="32" style="border-radius:8px" alt="" />
+        <div>
+          <div class="settings-app-name">Mailplane</div>
+          <div class="settings-app-version">Version 1.0.0</div>
+        </div>
+      </div>
+      <nav class="settings-nav">
+        <button class="settings-nav-item active" data-panel="accounts">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+          Accounts
+        </button>
+        <button class="settings-nav-item" data-panel="apps">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><rect x="1" y="1" width="7" height="7" rx="1.5"/><rect x="12" y="1" width="7" height="7" rx="1.5"/><rect x="1" y="12" width="7" height="7" rx="1.5"/><rect x="12" y="12" width="7" height="7" rx="1.5"/></svg>
+          Apps
+        </button>
+        <button class="settings-nav-item" data-panel="shortcuts">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="3" height="3" rx="0.5"/><rect x="7" y="4" width="3" height="3" rx="0.5"/><rect x="12" y="4" width="3" height="3" rx="0.5"/><rect x="17" y="4" width="5" height="3" rx="0.5"/><rect x="2" y="9" width="5" height="3" rx="0.5"/><rect x="9" y="9" width="6" height="3" rx="0.5"/><rect x="17" y="9" width="5" height="3" rx="0.5"/><rect x="2" y="14" width="20" height="3" rx="0.5"/></svg>
+          Shortcuts
+        </button>
+      </nav>
+    </div>
+    <div class="settings-content-area">
+      <div class="settings-panel-header">
+        <h2 id="settingsPanelTitle">Accounts</h2>
+        <button class="icon-btn-sm" id="settingsCloseBtn"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+      </div>
+      <div id="settingsPanelContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Add App Modal ──────────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="addAppModal">
+  <div class="modal" style="padding:26px;width:400px">
+    <div class="modal-header" style="margin-bottom:18px">
+      <div><h2>Add App</h2><p class="modal-subtitle">Embed any web app in your sidebar</p></div>
+    </div>
+    <div class="form-group"><label>App name</label><input type="text" id="appName" placeholder="e.g. Google Calendar" /></div>
+    <div class="form-group"><label>URL</label><input type="url" id="appUrl" placeholder="https://calendar.google.com" spellcheck="false" /></div>
+    <div class="modal-error hidden" id="addAppError"></div>
+    <div class="modal-footer">
+      <button class="btn-ghost" id="addAppCancelBtn">Cancel</button>
+      <button class="btn-primary" id="addAppSaveBtn">Add App</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="renderer.js"></script>
+</body>
+</html>

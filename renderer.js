@@ -1,0 +1,1649 @@
+const { ipcRenderer } = require('electron');
+const crypto = require('crypto');
+
+// ── State ──────────────────────────────────────────────────────────────────────
+const S = {
+  accounts: [],
+  apps: [],
+  activeAccountId: null,   // null = All Mail
+  activeFolder: 'inbox',
+  emails: [],
+  totalOnServer: 0,
+  selectedUid: null,
+  selectedEmail: null,
+  bodyCache: new Map(),   // key: `${accountId}:${uid}`
+  loading: false,
+  isSearching: false,
+  ccVisible: false,
+  composeMinimized: false,
+  composeExpanded: false,
+  contacts: [],            // collected email addresses for autocomplete
+  threadGrouping: false,
+  expandedThreads: new Set(),  // thread keys currently expanded
+};
+
+// ── Push notifications from IDLE ──────────────────────────────────────────────
+ipcRenderer.on('new-emails', (_, accountId) => {
+  if (accountId === S.activeAccountId || S.activeAccountId === null) {
+    loadEmails();
+  }
+});
+
+let refreshTimer = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const PALETTE = ['#f5a623','#9b59b6','#e74c3c','#3498db','#1abc9c','#e67e22','#e91e63','#2ecc71','#635bff','#0ea5e9'];
+
+function colorFor(str) {
+  let h = 0;
+  for (const c of String(str || '')) h = c.charCodeAt(0) + ((h << 5) - h);
+  return PALETTE[Math.abs(h) % PALETTE.length];
+}
+
+function initials(name) {
+  return (name || '?').split(/\s+/).filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function gravatarUrl(email, size = 80) {
+  const hash = crypto.createHash('md5').update((email || '').toLowerCase().trim()).digest('hex');
+  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404`;
+}
+
+function avatarEl(name, email, size = 34) {
+  const wrap = document.createElement('div');
+  wrap.className = 'sender-avatar';
+  wrap.style.cssText = `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px;background:${colorFor(name || email)};border-radius:50%;flex-shrink:0;`;
+
+  const span = document.createElement('span');
+  span.className = 'av-initials';
+  span.textContent = initials(name || email);
+  wrap.appendChild(span);
+
+  if (email) {
+    const img = document.createElement('img');
+    img.src = gravatarUrl(email, size * 2);
+    img.alt = '';
+    img.addEventListener('load', () => { img.classList.add('loaded'); span.style.display = 'none'; });
+    wrap.appendChild(img);
+  }
+  return wrap;
+}
+
+function fmtDate(d) {
+  if (!d) return '';
+  const date = new Date(d);
+  const now = new Date();
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  if (now - date < 6 * 86400000) return date.toLocaleDateString([], { weekday: 'short' });
+  return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function fmtFull(d) {
+  if (!d) return '';
+  return new Date(d).toLocaleString([], { weekday: 'long', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function fmtBytes(b) {
+  if (!b) return '';
+  if (b < 1024) return b + ' B';
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+
+function escHtml(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+let toastTimer;
+function toast(msg, error = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (error ? ' error' : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = 'toast', 3200);
+}
+
+const ipc = (ch, data) => ipcRenderer.invoke(ch, data);
+
+// ── Per-account folder cache ──────────────────────────────────────────────────
+const folderMaps = new Map();  // accountId → legacy static map (fallback)
+const accountFolders = new Map(); // accountId → Folder[] from server
+const FOLDER_LABELS = { inbox: 'Inbox', sent: 'Sent', drafts: 'Drafts', trash: 'Trash', spam: 'Spam', archive: 'Archive' };
+
+const ROLE_META = {
+  inbox:   { color: '#007aff', icon: '<path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>' },
+  sent:    { color: '#34c759', icon: '<path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>' },
+  drafts:  { color: '#ff9500', icon: '<path d="M20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25z"/>' },
+  trash:   { color: '#ff3b30', icon: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>' },
+  spam:    { color: '#8e8e93', icon: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>' },
+  archive: { color: '#8e6a3d', icon: '<path d="M20 6h-2.18c.07-.44.18-.88.18-1 0-1.1-.9-2-2-2h-8c-1.1 0-2 .9-2 2 0 .12.11.56.18 1H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10-1h4v1h-4V5zm10 14H4V8h16v11zm-8-8.5l5 5-1.41 1.41L13 13.33V19h-2v-5.67l-2.59 2.58L7 14.5l5-5 5 5z"/>' },
+  custom:  { color: '#5856d6', icon: '<path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>' },
+};
+
+async function getFolderPath(key, accountId) {
+  const aid = accountId || S.activeAccountId;
+  if (!aid) return 'INBOX';
+
+  // Dynamic folder list (preferred)
+  const folders = accountFolders.get(aid);
+  if (folders) {
+    const f = folders.find(f => f.key === key || f.path === key);
+    if (f) return f.path;
+    return key; // raw path pass-through
+  }
+
+  // Legacy static map fallback
+  if (!folderMaps.has(aid)) {
+    const map = await ipc('accounts:folders', aid);
+    folderMaps.set(aid, map);
+  }
+  const map = folderMaps.get(aid);
+  return (map && map[key]) || 'INBOX';
+}
+
+// ── Body cache key ────────────────────────────────────────────────────────────
+function bodyCacheKey(email) { return `${email.accountId}:${email.uid}`; }
+
+// ── Account tabs (top) ────────────────────────────────────────────────────────
+function renderAccountTabs() {
+  const wrap = document.getElementById('accountTabs');
+  wrap.innerHTML = '';
+
+  // "All Mail" tab
+  const allTab = document.createElement('button');
+  allTab.className = 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : '');
+  allTab.textContent = 'All Mail';
+  allTab.addEventListener('click', () => switchToAll());
+  wrap.appendChild(allTab);
+
+  // Per-account tabs
+  S.accounts.forEach(acc => {
+    const tab = document.createElement('button');
+    tab.className = 'acc-tab' + (acc.id === S.activeAccountId ? ' active' : '');
+
+    const dot = document.createElement('span');
+    dot.className = 'acc-tab-dot';
+    dot.style.background = acc.color || colorFor(acc.email);
+    if (acc.emoji) {
+      dot.textContent = acc.emoji;
+      dot.style.cssText += ';font-size:11px;display:flex;align-items:center;justify-content:center;';
+    }
+    tab.appendChild(dot);
+    tab.appendChild(document.createTextNode(acc.name || acc.email.split('@')[0]));
+
+    tab.addEventListener('click', () => switchAccount(acc.id));
+    wrap.appendChild(tab);
+  });
+
+  // Add account button
+  const addBtn = document.createElement('button');
+  addBtn.className = 'acc-add-btn';
+  addBtn.title = 'Add Account';
+  addBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+  addBtn.addEventListener('click', () => showSetupModal(true));
+  wrap.appendChild(addBtn);
+}
+
+function switchToAll() {
+  S.activeAccountId = null;
+  S.activeFolder = 'inbox';
+  S.selectedUid = null;
+  S.selectedEmail = null;
+  S.isSearching = false;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.add('hidden');
+  renderAccountTabs();
+  showFolderSidebar(false);
+  renderDetail(null);
+  loadEmails();
+}
+
+async function switchAccount(id) {
+  S.activeAccountId = id;
+  S.activeFolder = 'inbox';
+  S.selectedUid = null;
+  S.selectedEmail = null;
+  S.isSearching = false;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.add('hidden');
+  renderAccountTabs();
+  showFolderSidebar(true);
+  renderFolderNav(); // render immediately with cached or empty nav
+
+  if (!accountFolders.has(id)) {
+    await loadAndRenderFolders(id);
+  } else {
+    renderFolderNav();
+  }
+
+  renderDetail(null);
+  loadEmails();
+}
+
+// ── Folder sidebar ────────────────────────────────────────────────────────────
+function showFolderSidebar(showFolders) {
+  document.getElementById('folderNav').classList.toggle('hidden', !showFolders);
+  document.getElementById('appsNav').classList.toggle('hidden', showFolders);
+}
+
+function makeFolderBtn(folder) {
+  const meta = ROLE_META[folder.role || 'custom'];
+  const btn = document.createElement('button');
+  btn.className = 'folder-btn' + (folder.key === S.activeFolder ? ' active' : '');
+  btn.dataset.folder = folder.key;
+
+  const wrap = document.createElement('span');
+  wrap.className = 'folder-icon-wrap';
+  wrap.style.background = meta.color;
+  wrap.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="white">${meta.icon}</svg>`;
+  btn.appendChild(wrap);
+
+  const label = document.createElement('span');
+  label.className = 'folder-label';
+  label.textContent = folder.role ? (FOLDER_LABELS[folder.role] || folder.name) : folder.name;
+  btn.appendChild(label);
+
+  if (folder.role === 'inbox' || folder.role === 'drafts') {
+    const badge = document.createElement('span');
+    badge.className = 'folder-badge';
+    badge.id = `badge-${folder.role}`;
+    btn.appendChild(badge);
+  }
+
+  btn.addEventListener('click', () => {
+    if (!S.activeAccountId && S.accounts.length > 0) {
+      S.activeAccountId = S.accounts[0].id;
+      renderAccountTabs();
+    }
+    S.activeFolder = folder.key;
+    S.selectedUid = null; S.selectedEmail = null; S.isSearching = false;
+    document.getElementById('searchInput').value = '';
+    document.getElementById('searchClear').classList.add('hidden');
+    renderFolderNav();
+    showFolderSidebar(true);
+    renderDetail(null);
+    loadEmails();
+  });
+
+  btn.addEventListener('dragover', e => {
+    if (!draggedEmail) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    btn.classList.add('drag-over');
+  });
+  btn.addEventListener('dragleave', () => btn.classList.remove('drag-over'));
+  btn.addEventListener('drop', async e => {
+    e.preventDefault();
+    btn.classList.remove('drag-over');
+    if (!draggedEmail) return;
+    const email = draggedEmail;
+    draggedEmail = null;
+    if (folder.key === (email.folderKey || email.folder)) return;
+    const srcFolder = await getFolderPath(email.folderKey || email.folder, email.accountId);
+    const res = await ipc('email:move', { accountId: email.accountId, folder: srcFolder, uid: email.uid, dest: folder.path });
+    if (res.success) {
+      S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+      S.bodyCache.delete(bodyCacheKey(email));
+      if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+        S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
+      }
+      renderEmailList();
+      toast(`Moved to ${folder.name}`);
+    } else toast('Move failed: ' + res.error, true);
+  });
+
+  return btn;
+}
+
+function renderFolderNav() {
+  const nav = document.getElementById('folderNav');
+  const folders = accountFolders.get(S.activeAccountId);
+
+  if (folders) {
+    // Rebuild if needed (folder set changed)
+    const existing = nav.querySelectorAll('.folder-btn');
+    if (existing.length !== folders.length) {
+      nav.innerHTML = '';
+      const hasCustom = folders.some(f => !f.role);
+      let addedSep = false;
+      folders.forEach(f => {
+        if (!f.role && !addedSep && hasCustom) {
+          const sep = document.createElement('div');
+          sep.style.cssText = 'height:1px;background:var(--border);margin:4px 8px;';
+          nav.appendChild(sep);
+          addedSep = true;
+        }
+        nav.appendChild(makeFolderBtn(f));
+      });
+    } else {
+      nav.querySelectorAll('.folder-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.folder === S.activeFolder);
+      });
+    }
+  } else {
+    // No server folders yet — show placeholder skeletons
+    nav.querySelectorAll('.folder-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.folder === S.activeFolder);
+    });
+  }
+
+  const active = S.activeFolder;
+  const labelFolder = folders?.find(f => f.key === active);
+  document.getElementById('listTitle').textContent =
+    labelFolder ? (labelFolder.role ? (FOLDER_LABELS[labelFolder.role] || labelFolder.name) : labelFolder.name)
+                : (FOLDER_LABELS[active] || active || 'Inbox');
+}
+
+async function loadAndRenderFolders(accountId) {
+  if (!accountId) return;
+  const folders = await ipc('accounts:folders:all', accountId);
+  if (folders && folders.length > 0) {
+    accountFolders.set(accountId, folders);
+    // Set active folder to inbox if current is unknown
+    const keys = new Set(folders.map(f => f.key));
+    if (!keys.has(S.activeFolder)) {
+      const inbox = folders.find(f => f.role === 'inbox');
+      if (inbox) S.activeFolder = inbox.key;
+    }
+    if (S.activeAccountId === accountId) renderFolderNav();
+  }
+}
+
+// ── Apps sidebar ──────────────────────────────────────────────────────────────
+let activeAppId = null;
+
+function renderAppsNav() {
+  const list = document.getElementById('appsList');
+  list.innerHTML = '';
+  S.apps.forEach(app => {
+    const btn = document.createElement('button');
+    btn.className = 'app-item-btn' + (app.id === activeAppId ? ' active' : '');
+
+    const iconBox = document.createElement('div');
+    iconBox.className = 'app-icon-box';
+    iconBox.style.background = colorFor(app.name);
+
+    const letter = document.createElement('span');
+    letter.className = 'app-icon-letter';
+    letter.textContent = (app.name || '?')[0].toUpperCase();
+    iconBox.appendChild(letter);
+
+    try {
+      const domain = new URL(app.url).hostname;
+      const img = document.createElement('img');
+      img.className = 'app-favicon';
+      img.src = `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+      img.addEventListener('load', () => { img.classList.add('loaded'); letter.style.display = 'none'; });
+      iconBox.appendChild(img);
+    } catch {}
+
+    btn.appendChild(iconBox);
+    btn.appendChild(document.createTextNode(app.name));
+    btn.addEventListener('click', () => openApp(app));
+    list.appendChild(btn);
+  });
+}
+
+function openApp(app) {
+  activeAppId = app.id;
+  renderAppsNav();
+  const view = document.getElementById('appView');
+  view.classList.remove('hidden');
+  document.getElementById('appViewTitle').textContent = app.name;
+  const wv = document.getElementById('appWebview');
+  wv.src = app.url;
+}
+
+document.getElementById('appViewClose').addEventListener('click', () => {
+  activeAppId = null;
+  renderAppsNav();
+  document.getElementById('appView').classList.add('hidden');
+});
+
+document.getElementById('appViewReload').addEventListener('click', () => {
+  document.getElementById('appWebview').reload();
+});
+
+document.getElementById('addAppBtn').addEventListener('click', () => showAddAppModal());
+
+function showAddAppModal() {
+  document.getElementById('appName').value = '';
+  document.getElementById('appUrl').value = '';
+  document.getElementById('addAppError').classList.add('hidden');
+  document.getElementById('addAppModal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('appName').focus(), 50);
+}
+
+document.getElementById('addAppCancelBtn').addEventListener('click', () => {
+  document.getElementById('addAppModal').classList.add('hidden');
+});
+
+document.getElementById('addAppSaveBtn').addEventListener('click', async () => {
+  const name = document.getElementById('appName').value.trim();
+  let url = document.getElementById('appUrl').value.trim();
+  if (!name) { document.getElementById('addAppError').textContent = 'Enter an app name'; document.getElementById('addAppError').classList.remove('hidden'); return; }
+  if (!url) { document.getElementById('addAppError').textContent = 'Enter a URL'; document.getElementById('addAppError').classList.remove('hidden'); return; }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  const res = await ipc('apps:add', { name, url });
+  if (res.success) {
+    S.apps.push(res.app);
+    renderAppsNav();
+    document.getElementById('addAppModal').classList.add('hidden');
+    toast('App added — ' + name);
+  }
+});
+
+// ── Load emails ───────────────────────────────────────────────────────────────
+async function loadEmails(append = false) {
+  if (!append) {
+    S.loading = true;
+    S.emails = [];
+    showLoading(true);
+    renderEmailList();
+  }
+
+  if (S.activeAccountId === null) {
+    await loadUnified();
+    return;
+  }
+
+  const folder = await getFolderPath(S.activeFolder);
+  const offset = append ? S.emails.length : 0;
+  const res = await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+
+  showLoading(false);
+  S.loading = false;
+
+  if (!res.success) { toast('Failed: ' + res.error, true); showEmpty(true, 'Error loading emails'); return; }
+
+  if (append) S.emails.push(...res.messages);
+  else { S.emails = res.messages; S.totalOnServer = res.total || 0; }
+
+  setUnreadBadge(res.unseen || 0);
+  collectContacts(res.messages);
+  renderEmailList();
+  updateLoadMore();
+  scheduleRefresh();
+}
+
+async function loadUnified() {
+  const promises = S.accounts.map(acc =>
+    ipc('emails:fetch', { accountId: acc.id, folder: 'INBOX', limit: 30, offset: 0 })
+      .then(r => { if (r.success) { collectContacts(r.messages); return r.messages; } return []; })
+      .catch(() => [])
+  );
+  const results = await Promise.all(promises);
+  const merged = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
+  showLoading(false);
+  S.loading = false;
+  S.emails = merged;
+  S.totalOnServer = merged.length;
+  document.getElementById('loadMoreWrap').classList.add('hidden');
+  renderEmailList();
+  scheduleRefresh();
+}
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  if (!S.isSearching) refreshTimer = setTimeout(() => loadEmails(), 120000);
+}
+
+function showLoading(on) {
+  document.getElementById('listLoading').classList.toggle('hidden', !on);
+  if (on) showEmpty(false);
+}
+function showEmpty(on, text = 'No emails') {
+  const el = document.getElementById('listEmpty');
+  el.classList.toggle('hidden', !on);
+  if (on) document.getElementById('listEmptyText').textContent = text;
+}
+
+function setUnreadBadge(count) {
+  const folders = accountFolders.get(S.activeAccountId);
+  const activeRole = folders?.find(f => f.key === S.activeFolder)?.role || S.activeFolder;
+  const badge = document.getElementById(`badge-${activeRole}`);
+  const total = document.getElementById('unreadTotal');
+  if (count > 0) {
+    if (badge) { badge.style.display = 'flex'; badge.textContent = count > 99 ? '99+' : String(count); }
+    total.textContent = count + ' unread';
+  } else {
+    if (badge) badge.style.display = 'none';
+    total.textContent = '';
+  }
+}
+
+function updateLoadMore() {
+  const wrap = document.getElementById('loadMoreWrap');
+  if (S.emails.length < S.totalOnServer && S.activeAccountId !== null) {
+    wrap.classList.remove('hidden');
+    const rem = S.totalOnServer - S.emails.length;
+    document.getElementById('loadMoreBtn').textContent = `Load ${Math.min(rem, 60)} more`;
+  } else {
+    wrap.classList.add('hidden');
+  }
+}
+
+// ── Contact collection ────────────────────────────────────────────────────────
+function collectContacts(messages) {
+  const existing = new Set(S.contacts.map(c => c.email));
+  messages.forEach(m => {
+    if (m.fromEmail && !existing.has(m.fromEmail)) {
+      S.contacts.push({ name: m.fromName || '', email: m.fromEmail });
+      existing.add(m.fromEmail);
+    }
+  });
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+let searchDebounce;
+document.getElementById('searchInput').addEventListener('input', e => {
+  const q = e.target.value.trim();
+  document.getElementById('searchClear').classList.toggle('hidden', !q);
+  clearTimeout(searchDebounce);
+  if (!q) { S.isSearching = false; loadEmails(); return; }
+  searchDebounce = setTimeout(() => runSearch(q), 380);
+});
+
+document.getElementById('searchClear').addEventListener('click', () => {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.add('hidden');
+  S.isSearching = false;
+  loadEmails();
+});
+
+async function runSearch(query) {
+  if (!S.activeAccountId) { toast('Select an account to search', true); return; }
+  S.isSearching = true;
+  showLoading(true);
+  const folder = await getFolderPath(S.activeFolder);
+  const res = await ipc('emails:search', { accountId: S.activeAccountId, folder, query });
+  showLoading(false);
+  if (!res.success) { toast('Search error: ' + res.error, true); return; }
+  S.emails = res.messages;
+  document.getElementById('loadMoreWrap').classList.add('hidden');
+  document.getElementById('unreadTotal').textContent = `${res.messages.length} result${res.messages.length !== 1 ? 's' : ''}`;
+  renderEmailList(true);
+}
+
+// ── Thread grouping helpers ───────────────────────────────────────────────────
+function normalizeSubject(s) {
+  return (s || '').replace(/^((re|fwd?|aw|sv|tr|vb)\s*:\s*)+/gi, '').trim().toLowerCase();
+}
+
+function groupEmails(emails) {
+  const groups = new Map();
+  emails.forEach(email => {
+    const key = `${email.accountId}:${normalizeSubject(email.subject) || email.uid}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(email);
+  });
+  return Array.from(groups.entries())
+    .map(([key, msgs]) => ({ key, messages: msgs, latest: msgs[0] }))
+    .sort((a, b) => new Date(b.latest.date) - new Date(a.latest.date));
+}
+
+// ── Swipe gesture (trackpad horizontal swipe) ─────────────────────────────────
+function setupSwipeGesture(itemEl, email) {
+  let accumulated = 0;
+  let timeout = null;
+
+  itemEl.addEventListener('wheel', e => {
+    if (Math.abs(e.deltaX) < Math.abs(e.deltaY) * 1.5) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    accumulated += e.deltaX;
+    itemEl.classList.toggle('swipe-left', accumulated > 30);
+    itemEl.classList.toggle('swipe-right', accumulated < -30);
+
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      const fired = accumulated;
+      accumulated = 0;
+      itemEl.classList.remove('swipe-left', 'swipe-right');
+
+      if (fired > 65) {
+        doDelete(email);
+      } else if (fired < -65) {
+        setReadState(email, !email.read);
+        toast(email.read ? 'Marked unread' : 'Marked read');
+      }
+    }, 200);
+  }, { passive: false });
+}
+
+// ── Drag state ────────────────────────────────────────────────────────────────
+let draggedEmail = null;
+
+// ── Render email list ─────────────────────────────────────────────────────────
+function makeEmailItem(email, showAccountBadge) {
+  const selected = email.uid === S.selectedUid && email.accountId === S.selectedEmail?.accountId;
+  const item = document.createElement('div');
+  item.className = 'email-item' + (selected ? ' selected' : '');
+  item.setAttribute('draggable', 'true');
+
+  // Drag-and-drop
+  item.addEventListener('dragstart', e => {
+    draggedEmail = email;
+    e.dataTransfer.effectAllowed = 'move';
+    setTimeout(() => item.classList.add('dragging'), 0);
+  });
+  item.addEventListener('dragend', () => {
+    draggedEmail = null;
+    item.classList.remove('dragging');
+    document.querySelectorAll('.folder-btn.drag-over').forEach(b => b.classList.remove('drag-over'));
+  });
+
+  const top = document.createElement('div');
+  top.className = 'email-item-top';
+  top.appendChild(avatarEl(email.fromName, email.fromEmail, 34));
+
+  const name = document.createElement('div');
+  name.className = 'sender-name';
+  name.textContent = email.fromName || email.fromEmail;
+  top.appendChild(name);
+
+  const time = document.createElement('div');
+  time.className = 'email-time';
+  time.textContent = fmtDate(email.date);
+  top.appendChild(time);
+
+  const body = document.createElement('div');
+  body.className = 'email-item-body';
+
+  const subj = document.createElement('div');
+  subj.className = 'email-subject' + (email.read ? '' : ' unread');
+  if (!email.read) { const dot = document.createElement('span'); dot.className = 'unread-dot'; subj.appendChild(dot); }
+  subj.appendChild(document.createTextNode(email.subject || '(no subject)'));
+
+  const footer = document.createElement('div');
+  footer.className = 'email-item-footer';
+
+  if (showAccountBadge) {
+    const acc = S.accounts.find(a => a.id === email.accountId);
+    if (acc) {
+      const pill = document.createElement('span');
+      pill.className = 'account-pill';
+      pill.style.background = colorFor(acc.email);
+      pill.textContent = acc.email.split('@')[1] || acc.email;
+      footer.appendChild(pill);
+    }
+  }
+
+  if (email.hasAttachment) {
+    const att = document.createElement('span');
+    att.className = 'tag-attach';
+    att.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="#aeaeb2"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
+    footer.appendChild(att);
+  }
+
+  body.appendChild(subj);
+  body.appendChild(footer);
+
+  const flagBtn = document.createElement('button');
+  flagBtn.className = 'item-flag-btn' + (email.flagged ? ' flagged' : '');
+  flagBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  flagBtn.addEventListener('click', e => { e.stopPropagation(); toggleFlag(email); });
+
+  item.appendChild(top);
+  item.appendChild(body);
+  item.appendChild(flagBtn);
+  item.addEventListener('click', () => selectEmail(email));
+  item.addEventListener('contextmenu', e => { e.preventDefault(); showContextMenu(e, email); });
+
+  setupSwipeGesture(item, email);
+  return item;
+}
+
+function renderEmailList(isSearch = false) {
+  const list = document.getElementById('emailList');
+  Array.from(list.children).forEach(c => {
+    if (!c.classList.contains('list-empty') && !c.classList.contains('list-loading')) c.remove();
+  });
+
+  if (S.emails.length === 0 && !S.loading) { showEmpty(true, isSearch ? 'No results' : 'No emails'); return; }
+  showEmpty(false);
+
+  const showAccountBadge = S.activeAccountId === null;
+  const frag = document.createDocumentFragment();
+
+  if (S.threadGrouping && !isSearch) {
+    const groups = groupEmails(S.emails);
+    groups.forEach(({ key, messages, latest }) => {
+      frag.appendChild(makeEmailItem(latest, showAccountBadge));
+
+      if (messages.length > 1) {
+        const countBadge = document.createElement('button');
+        countBadge.className = 'thread-count-badge' + (S.expandedThreads.has(key) ? ' expanded' : '');
+        countBadge.style.cssText = 'display:block;margin:-2px 14px 4px 57px;';
+        countBadge.innerHTML = `
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="${S.expandedThreads.has(key) ? '18 15 12 9 6 15' : '6 9 12 15 18 9'}"/>
+          </svg>
+          ${messages.length} messages`;
+        countBadge.addEventListener('click', e => {
+          e.stopPropagation();
+          if (S.expandedThreads.has(key)) S.expandedThreads.delete(key);
+          else S.expandedThreads.add(key);
+          renderEmailList();
+        });
+        frag.appendChild(countBadge);
+
+        if (S.expandedThreads.has(key)) {
+          messages.slice(1).forEach(email => {
+            const mem = document.createElement('div');
+            const sel = email.uid === S.selectedUid && email.accountId === S.selectedEmail?.accountId;
+            mem.className = 'thread-member' + (sel ? ' selected' : '');
+            mem.innerHTML = `
+              <div class="thread-member-row">
+                <div class="thread-member-name">${escHtml(email.fromName || email.fromEmail)}</div>
+                <div class="thread-member-time">${fmtDate(email.date)}</div>
+              </div>
+              <div class="thread-member-subject">${escHtml(email.subject || '(no subject)')}</div>`;
+            mem.addEventListener('click', () => selectEmail(email));
+            frag.appendChild(mem);
+          });
+        }
+      }
+    });
+  } else {
+    S.emails.forEach(email => frag.appendChild(makeEmailItem(email, showAccountBadge)));
+  }
+
+  list.appendChild(frag);
+}
+
+// ── Flag / Read ───────────────────────────────────────────────────────────────
+async function toggleFlag(email) {
+  email.flagged = !email.flagged;
+  renderEmailList();
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  await ipc('email:flag', { accountId: email.accountId, folder, uid: email.uid, flagged: email.flagged });
+  if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+    renderDetail(email, S.bodyCache.get(bodyCacheKey(email)));
+  }
+}
+
+async function setReadState(email, read) {
+  email.read = read;
+  renderEmailList();
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  await ipc('email:markread', { accountId: email.accountId, folder, uid: email.uid, read });
+}
+
+// ── Context menu ──────────────────────────────────────────────────────────────
+let activeMenu = null;
+function showContextMenu(e, email) {
+  removeContextMenu();
+  const menu = document.createElement('div');
+  menu.style.cssText = `position:fixed;left:${Math.min(e.clientX, window.innerWidth - 195)}px;top:${Math.min(e.clientY, window.innerHeight - 200)}px;
+    background:white;border:1px solid #e0e0e5;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.14);z-index:300;padding:4px;min-width:180px;`;
+  const items = [
+    { label: email.read ? 'Mark as Unread' : 'Mark as Read', action: () => setReadState(email, !email.read) },
+    { label: email.flagged ? 'Remove Star' : 'Star', action: () => toggleFlag(email) },
+    { sep: true },
+    { label: 'Reply', action: () => openReply(email, S.bodyCache.get(bodyCacheKey(email))) },
+    { label: 'Reply All', action: () => openReplyAll(email, S.bodyCache.get(bodyCacheKey(email))) },
+    { label: 'Forward', action: () => openForward(email, S.bodyCache.get(bodyCacheKey(email))) },
+    { sep: true },
+    { label: 'Delete', action: () => doDelete(email), danger: true },
+  ];
+  items.forEach(item => {
+    if (item.sep) { const s = document.createElement('div'); s.style.cssText = 'height:1px;background:#e8e8ea;margin:3px 0;'; menu.appendChild(s); return; }
+    const el = document.createElement('button');
+    el.textContent = item.label;
+    el.style.cssText = `display:block;width:100%;text-align:left;padding:6px 12px;border:none;background:transparent;font-size:13px;font-family:inherit;cursor:pointer;border-radius:6px;color:${item.danger ? '#dc2626' : '#1a1a1a'};`;
+    el.addEventListener('mouseenter', () => el.style.background = item.danger ? '#fef2f2' : '#f0f0f5');
+    el.addEventListener('mouseleave', () => el.style.background = 'transparent');
+    el.addEventListener('click', () => { item.action(); removeContextMenu(); });
+    menu.appendChild(el);
+  });
+  document.body.appendChild(menu);
+  activeMenu = menu;
+  setTimeout(() => document.addEventListener('click', removeContextMenu, { once: true }), 0);
+}
+function removeContextMenu() { activeMenu?.remove(); activeMenu = null; }
+
+// ── Select email ──────────────────────────────────────────────────────────────
+async function selectEmail(email) {
+  S.selectedUid = email.uid;
+  S.selectedEmail = email;
+  renderEmailList();
+
+  const cacheKey = bodyCacheKey(email);
+  if (S.bodyCache.has(cacheKey)) { renderDetail(email, S.bodyCache.get(cacheKey)); return; }
+
+  renderDetailShell(email);
+
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  const res = await ipc('email:body', { accountId: email.accountId, folder, uid: email.uid });
+  if (!res.success) { toast('Load failed: ' + res.error, true); return; }
+
+  email.read = true;
+  if (res.body && res.body.from) {
+    const addr = res.body.from.address || res.body.from.email;
+    const nm = res.body.from.name;
+    if (addr && !S.contacts.find(c => c.email === addr)) S.contacts.push({ name: nm || '', email: addr });
+  }
+
+  S.bodyCache.set(cacheKey, res.body);
+  renderDetail(email, res.body);
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+async function doDelete(email) {
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  const res = await ipc('email:delete', { accountId: email.accountId, folder, uid: email.uid });
+  if (res.success) {
+    S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+    S.bodyCache.delete(bodyCacheKey(email));
+    if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+      S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
+    }
+    renderEmailList();
+    toast('Deleted');
+  } else toast('Delete failed: ' + res.error, true);
+}
+
+// ── Detail shell ──────────────────────────────────────────────────────────────
+function renderDetailShell(email) {
+  const panel = document.getElementById('emailDetail');
+  panel.innerHTML = '';
+  const view = document.createElement('div');
+  view.className = 'detail-view';
+  view.innerHTML = `
+    <div class="detail-topbar">
+      <div class="detail-topbar-left">
+        <button class="detail-nav-btn" disabled><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg></button>
+        <button class="detail-nav-btn" disabled><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></button>
+      </div>
+      <div class="detail-topbar-right"></div>
+    </div>
+    <div class="detail-header">
+      <div class="detail-sender-row">
+        <div class="detail-avatar sender-avatar" style="width:46px;height:46px;background:${colorFor(email.fromName)};font-size:17px;">
+          <span class="av-initials">${escHtml(initials(email.fromName))}</span>
+        </div>
+        <div class="detail-sender-meta">
+          <h2>${escHtml(email.fromName || email.fromEmail)}</h2>
+          <div class="detail-sender-email">${escHtml(email.fromEmail)}</div>
+        </div>
+      </div>
+      <div class="detail-subject-row">
+        <div class="detail-subject">${escHtml(email.subject || '(no subject)')}</div>
+        <div class="detail-date">${fmtFull(email.date)}</div>
+      </div>
+    </div>
+    <div class="detail-body"><div class="detail-body-loading"><div class="spinner"></div></div></div>`;
+  panel.appendChild(view);
+}
+
+// ── Full detail view ──────────────────────────────────────────────────────────
+function renderDetail(email, body) {
+  const panel = document.getElementById('emailDetail');
+  panel.innerHTML = '';
+
+  if (!email) {
+    panel.innerHTML = `<div class="detail-placeholder">
+      <img src="assets/icon.svg" width="52" height="52" style="border-radius:14px;opacity:0.18" alt="" />
+      <p>Select an email to read</p>
+      <div class="shortcut-hints">
+        <span>↑↓ Navigate</span><span>⌘N Compose</span><span>⌘R Reply</span><span>⌫ Delete</span>
+      </div>
+    </div>`;
+    return;
+  }
+
+  const idx = S.emails.findIndex(e => e.uid === email.uid && e.accountId === email.accountId);
+  const hasPrev = idx > 0, hasNext = idx < S.emails.length - 1;
+  const view = document.createElement('div');
+  view.className = 'detail-view';
+
+  // Topbar
+  const topbar = document.createElement('div');
+  topbar.className = 'detail-topbar';
+  const navLeft = document.createElement('div');
+  navLeft.className = 'detail-topbar-left';
+  const mkNav = (prev) => {
+    const btn = document.createElement('button');
+    btn.className = 'detail-nav-btn';
+    btn.disabled = prev ? !hasPrev : !hasNext;
+    btn.title = prev ? 'Previous (↑)' : 'Next (↓)';
+    btn.innerHTML = prev
+      ? `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>`
+      : `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>`;
+    if (!btn.disabled) btn.addEventListener('click', () => selectEmail(S.emails[prev ? idx - 1 : idx + 1]));
+    return btn;
+  };
+  navLeft.append(mkNav(true), mkNav(false));
+
+  const navRight = document.createElement('div');
+  navRight.className = 'detail-topbar-right';
+  const mkBtn = (label, icon, cls, cb) => {
+    const btn = document.createElement('button');
+    btn.className = 'detail-action-btn' + (cls ? ' ' + cls : '');
+    btn.innerHTML = `${icon}<span>${label}</span>`;
+    btn.addEventListener('click', cb);
+    return btn;
+  };
+  navRight.append(
+    mkBtn('Reply', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, 'primary', () => openReply(email, body)),
+    mkBtn('Reply All', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 8V5l-7 7 7 7v-3l-4-4 4-4zm6 1V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, '', () => openReplyAll(email, body)),
+    mkBtn('Forward', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>`, '', () => openForward(email, body)),
+    mkBtn(email.flagged ? 'Unflag' : 'Flag',
+      `<svg width="12" height="12" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+      email.flagged ? 'flagged-active' : '', () => toggleFlag(email)),
+    mkBtn(email.read ? 'Mark Unread' : 'Mark Read',
+      `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>`,
+      '', () => setReadState(email, !email.read)),
+    mkBtn('Delete', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`, '', () => doDelete(email)),
+  );
+  topbar.append(navLeft, navRight);
+
+  // Header
+  const toStr = body?.to?.map(a => a.name || a.address).filter(Boolean).join(', ') || email.toEmail || '';
+  const header = document.createElement('div');
+  header.className = 'detail-header';
+
+  const senderRow = document.createElement('div');
+  senderRow.className = 'detail-sender-row';
+  const av = avatarEl(email.fromName, email.fromEmail, 46);
+  av.classList.add('detail-avatar');
+  senderRow.appendChild(av);
+
+  const meta = document.createElement('div');
+  meta.className = 'detail-sender-meta';
+  meta.innerHTML = `<h2>${escHtml(email.fromName || email.fromEmail)}</h2>
+    <div class="detail-sender-email">${escHtml(email.fromEmail)}</div>
+    ${toStr ? `<div class="detail-to-line">to ${escHtml(toStr)}</div>` : ''}`;
+  senderRow.appendChild(meta);
+  header.appendChild(senderRow);
+
+  const subjRow = document.createElement('div');
+  subjRow.className = 'detail-subject-row';
+  subjRow.innerHTML = `<div class="detail-subject">${escHtml(email.subject || '(no subject)')}</div>
+    <div class="detail-date">${fmtFull(email.date)}</div>`;
+  header.appendChild(subjRow);
+
+  // Body
+  const bodyWrap = document.createElement('div');
+  bodyWrap.className = 'detail-body';
+
+  if (body?.html) {
+    const iframe = document.createElement('iframe');
+    iframe.className = 'email-iframe';
+    const htmlContent = `<!DOCTYPE html><html><head>
+      <base target="_blank">
+      <meta name="color-scheme" content="light">
+      <style>
+        html,body{margin:0;padding:0;}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:14px;color:#1a1a1a;padding:18px 22px;line-height:1.65;word-break:break-word;}
+        a{color:#007aff;}img{max-width:100%!important;}
+        table{max-width:100%!important;border-collapse:collapse;}
+        blockquote{border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;}
+        pre{background:#f5f5f7;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px;}
+      </style>
+    </head><body>${body.html}</body></html>`;
+    iframe.srcdoc = htmlContent;
+    bodyWrap.appendChild(iframe);
+    iframe.addEventListener('load', () => {
+      const resize = () => { try { iframe.style.height = (iframe.contentDocument.body.scrollHeight + 40) + 'px'; } catch {} };
+      resize(); setTimeout(resize, 600);
+      try {
+        iframe.contentDocument.addEventListener('click', ev => {
+          const link = ev.target.closest('a');
+          if (link?.href) { ev.preventDefault(); ipcRenderer.invoke('shell:open', link.href); }
+        });
+      } catch {}
+    });
+  } else {
+    const pre = document.createElement('div');
+    pre.className = 'detail-text-body';
+    pre.textContent = body?.text || '(empty message)';
+    bodyWrap.appendChild(pre);
+  }
+
+  view.append(topbar, header, bodyWrap);
+
+  // Attachments
+  if (body?.attachments?.length > 0) {
+    const attBar = document.createElement('div');
+    attBar.className = 'detail-attachments';
+    body.attachments.forEach(att => {
+      const chip = document.createElement('div');
+      chip.className = 'attachment-chip';
+      chip.title = 'Download ' + att.filename;
+      chip.innerHTML = `
+        <svg class="dl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>${escHtml(att.filename)}${att.size ? ' <span style="color:#aeaeb2">(' + fmtBytes(att.size) + ')</span>' : ''}</span>`;
+      chip.addEventListener('click', () => downloadAttachment(email, att));
+      attBar.appendChild(chip);
+    });
+    view.appendChild(attBar);
+  }
+
+  panel.appendChild(view);
+}
+
+async function downloadAttachment(email, att) {
+  toast('Downloading ' + att.filename + '…');
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  const res = await ipc('email:attachment', {
+    accountId: email.accountId, folder, uid: email.uid,
+    filename: att.filename, contentType: att.contentType, blobId: att.blobId,
+  });
+  if (res.success) toast('Saved to Downloads');
+  else toast('Download failed: ' + res.error, true);
+}
+
+// ── Compose: floating panel ───────────────────────────────────────────────────
+function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message' } = {}) {
+  const fromSel = document.getElementById('composeFrom');
+  fromSel.innerHTML = S.accounts.map(a =>
+    `<option value="${a.id}">${escHtml(a.name || a.email)} &lt;${escHtml(a.email)}&gt;</option>`
+  ).join('');
+  const activeAcc = S.activeAccountId || S.accounts[0]?.id;
+  if (activeAcc) fromSel.value = activeAcc;
+
+  document.getElementById('composeTo').value = to;
+  document.getElementById('composeCc').value = '';
+  document.getElementById('composeSubject').value = subject;
+
+  const bodyEl = document.getElementById('composeBody');
+  bodyEl.innerHTML = bodyHtml || '';
+  if (!bodyHtml && bodyText) bodyEl.innerText = bodyText;
+
+  document.getElementById('composeFloatTitle').textContent = subject || title;
+  document.getElementById('composeError').classList.add('hidden');
+
+  const panel = document.getElementById('composeFloat');
+  panel.classList.remove('hidden', 'minimized', 'expanded');
+  S.composeMinimized = false;
+  S.composeExpanded = false;
+
+  document.getElementById('composeCcRow').classList.toggle('hidden', !S.ccVisible);
+
+  setTimeout(() => (to ? document.getElementById('composeSubject') : document.getElementById('composeTo')).focus(), 60);
+}
+
+function closeCompose() {
+  document.getElementById('composeFloat').classList.add('hidden');
+  document.getElementById('composeBody').innerHTML = '';
+}
+
+// Toolbar buttons
+document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
+  btn.addEventListener('mousedown', e => {
+    e.preventDefault(); // don't lose focus from body
+    document.execCommand(btn.dataset.cmd, false, null);
+    updateToolbarState();
+  });
+});
+
+document.getElementById('tbLink').addEventListener('mousedown', e => {
+  e.preventDefault();
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return;
+  const url = prompt('Enter URL:', 'https://');
+  if (url) { document.execCommand('createLink', false, url); updateToolbarState(); }
+});
+
+function updateToolbarState() {
+  document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
+    try { btn.classList.toggle('active', document.queryCommandState(btn.dataset.cmd)); } catch {}
+  });
+}
+document.getElementById('composeBody').addEventListener('keyup', updateToolbarState);
+document.getElementById('composeBody').addEventListener('mouseup', updateToolbarState);
+
+// Compose controls
+document.getElementById('composeMinimize').addEventListener('click', e => {
+  e.stopPropagation();
+  S.composeMinimized = !S.composeMinimized;
+  S.composeExpanded = false;
+  const panel = document.getElementById('composeFloat');
+  panel.classList.toggle('minimized', S.composeMinimized);
+  panel.classList.remove('expanded');
+  document.getElementById('composeFloatBody').classList.toggle('hidden', S.composeMinimized);
+});
+
+document.getElementById('composeExpand').addEventListener('click', e => {
+  e.stopPropagation();
+  S.composeExpanded = !S.composeExpanded;
+  S.composeMinimized = false;
+  const panel = document.getElementById('composeFloat');
+  panel.classList.toggle('expanded', S.composeExpanded);
+  panel.classList.remove('minimized');
+  document.getElementById('composeFloatBody').classList.remove('hidden');
+});
+
+document.getElementById('composeFloatHeader').addEventListener('click', () => {
+  if (S.composeMinimized) {
+    S.composeMinimized = false;
+    document.getElementById('composeFloat').classList.remove('minimized');
+    document.getElementById('composeFloatBody').classList.remove('hidden');
+  }
+});
+
+document.getElementById('composeClose').addEventListener('click', e => { e.stopPropagation(); closeCompose(); });
+document.getElementById('composeCancelBtn').addEventListener('click', closeCompose);
+
+document.getElementById('composeCcToggle').addEventListener('click', () => {
+  S.ccVisible = !S.ccVisible;
+  document.getElementById('composeCcRow').classList.toggle('hidden', !S.ccVisible);
+  document.getElementById('composeCcToggle').textContent = S.ccVisible ? '− Cc' : 'Cc';
+  if (S.ccVisible) document.getElementById('composeCc').focus();
+});
+
+document.getElementById('composeSubject').addEventListener('input', () => {
+  const s = document.getElementById('composeSubject').value || 'New Message';
+  document.getElementById('composeFloatTitle').textContent = s;
+});
+
+// Contact autocomplete
+let autocompleteDropdown = null;
+function setupAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  input.addEventListener('input', () => {
+    const q = input.value.split(',').pop().trim().toLowerCase();
+    removeAutocomplete();
+    if (q.length < 2) return;
+    const matches = S.contacts.filter(c =>
+      c.email.toLowerCase().includes(q) || (c.name && c.name.toLowerCase().includes(q))
+    ).slice(0, 6);
+    if (!matches.length) return;
+    const rect = input.getBoundingClientRect();
+    autocompleteDropdown = document.createElement('div');
+    autocompleteDropdown.className = 'autocomplete-dropdown';
+    autocompleteDropdown.style.cssText = `top:${rect.bottom + 4}px;left:${rect.left}px;width:${rect.width}px;`;
+    matches.forEach(c => {
+      const item = document.createElement('div');
+      item.className = 'autocomplete-item';
+      item.innerHTML = `<div class="autocomplete-name">${escHtml(c.name || c.email)}</div>${c.name ? `<div class="autocomplete-email">${escHtml(c.email)}</div>` : ''}`;
+      item.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const parts = input.value.split(',');
+        parts[parts.length - 1] = ' ' + (c.name ? `${c.name} <${c.email}>` : c.email);
+        input.value = parts.join(',').replace(/^,\s*/, '');
+        removeAutocomplete();
+      });
+      autocompleteDropdown.appendChild(item);
+    });
+    document.body.appendChild(autocompleteDropdown);
+  });
+  input.addEventListener('blur', () => setTimeout(removeAutocomplete, 150));
+}
+function removeAutocomplete() { autocompleteDropdown?.remove(); autocompleteDropdown = null; }
+setupAutocomplete('composeTo');
+setupAutocomplete('composeCc');
+
+document.getElementById('composeSendBtn').addEventListener('click', async () => {
+  const accountId = document.getElementById('composeFrom').value;
+  const to = document.getElementById('composeTo').value.trim();
+  const cc = document.getElementById('composeCc').value.trim();
+  const subject = document.getElementById('composeSubject').value.trim();
+  const bodyEl = document.getElementById('composeBody');
+  const text = bodyEl.innerText || '';
+  const html = bodyEl.innerHTML || '';
+
+  if (!to) { showComposeError('Enter a recipient'); return; }
+  if (!subject) { showComposeError('Enter a subject'); return; }
+
+  document.getElementById('composeError').classList.add('hidden');
+  document.getElementById('composeSendBtn').disabled = true;
+  document.getElementById('composeBtnText').textContent = 'Sending…';
+  document.getElementById('composeSpinner').classList.remove('hidden');
+
+  const res = await ipc('email:send', { accountId, to, cc, subject, text, html });
+
+  document.getElementById('composeSendBtn').disabled = false;
+  document.getElementById('composeBtnText').textContent = 'Send';
+  document.getElementById('composeSpinner').classList.add('hidden');
+
+  if (res.success) { closeCompose(); toast('Email sent'); }
+  else showComposeError(res.error || 'Send failed');
+});
+
+function showComposeError(msg) {
+  const el = document.getElementById('composeError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// ── Reply / Forward ───────────────────────────────────────────────────────────
+function openReply(email, body) {
+  const replyTo = body?.from?.address || body?.from?.email || email.fromEmail;
+  openCompose({
+    to: replyTo,
+    subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
+    bodyHtml: '<br><br>' + buildQuoteHtml(email, body),
+    title: 'Reply',
+  });
+}
+
+function openReplyAll(email, body) {
+  const myEmail = S.accounts.find(a => a.id === (S.activeAccountId || email.accountId))?.email;
+  const toList = [body?.from?.address || body?.from?.email || email.fromEmail,
+    ...(body?.to || []).map(a => a.address)].filter(a => a && a !== myEmail).join(', ');
+  const ccVal = (body?.cc || []).map(a => a.address).join(', ');
+  openCompose({
+    to: toList,
+    subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
+    bodyHtml: '<br><br>' + buildQuoteHtml(email, body),
+    title: 'Reply All',
+  });
+  document.getElementById('composeCc').value = ccVal;
+  if (ccVal) { S.ccVisible = true; document.getElementById('composeCcRow').classList.remove('hidden'); }
+}
+
+function openForward(email, body) {
+  openCompose({
+    subject: email.subject?.startsWith('Fwd:') ? email.subject : 'Fwd: ' + email.subject,
+    bodyHtml: '<br><br>' + buildQuoteHtml(email, body, true),
+    title: 'Forward',
+  });
+}
+
+function buildQuoteHtml(email, body, isForward = false) {
+  const from = `${email.fromName || email.fromEmail} &lt;${email.fromEmail}&gt;`;
+  const header = isForward
+    ? `<b>---------- Forwarded message ----------</b><br>From: ${from}<br>Date: ${fmtFull(email.date)}<br>Subject: ${escHtml(email.subject)}`
+    : `On ${fmtFull(email.date)}, ${from} wrote:`;
+  const quotedBody = body?.html
+    ? `<blockquote style="border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;">${body.html}</blockquote>`
+    : `<blockquote style="border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;white-space:pre-wrap;">${escHtml(body?.text || '')}</blockquote>`;
+  return `<div style="color:#6e6e73;font-size:13px;">${header}</div>${quotedBody}`;
+}
+
+// ── Settings modal ────────────────────────────────────────────────────────────
+function showSettingsModal() {
+  document.getElementById('settingsModal').classList.remove('hidden');
+  switchSettingsPanel('accounts');
+}
+function hideSettingsModal() { document.getElementById('settingsModal').classList.add('hidden'); }
+
+function switchSettingsPanel(panel) {
+  document.querySelectorAll('.settings-nav-item').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.panel === panel);
+  });
+  const titles = { accounts: 'Accounts', apps: 'Apps', shortcuts: 'Keyboard Shortcuts' };
+  document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
+  if (panel === 'accounts') renderSettingsAccounts();
+  else if (panel === 'apps') renderSettingsApps();
+  else renderSettingsShortcuts();
+}
+
+const ACCOUNT_EMOJIS = ['✉️','📬','📮','🚀','⭐','🔥','💼','🎯','🌍','🎨','🏠','💡','🔔','🌟','🎪'];
+
+function renderSettingsAccounts() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = '';
+
+  if (S.accounts.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:13px;color:#aeaeb2;padding:8px 0 12px;';
+    empty.textContent = 'No accounts added yet.';
+    content.appendChild(empty);
+  } else {
+    S.accounts.forEach(acc => {
+      const card = document.createElement('div');
+      card.className = 'settings-acc-card';
+      card.innerHTML = `
+        <div class="settings-acc-card-header">
+          <div class="settings-acc-preview-dot" style="background:${acc.color || colorFor(acc.email)}">${acc.emoji || ''}</div>
+          <div class="settings-acc-email-label">${escHtml(acc.email)}</div>
+          <div class="settings-account-protocol ${acc.protocol === 'jmap' ? 'jmap' : ''}">${(acc.protocol || 'IMAP').toUpperCase()}</div>
+        </div>
+        <div class="settings-acc-fields">
+          <label class="settings-field-label">Display Name</label>
+          <input class="settings-field-input" type="text" value="${escHtml(acc.name || acc.email.split('@')[0])}" placeholder="Display name" data-field="name">
+          <label class="settings-field-label" style="margin-top:10px">Color</label>
+          <div class="settings-color-swatches">
+            ${PALETTE.map(c => `<button class="swatch${(acc.color || colorFor(acc.email)) === c ? ' active' : ''}" style="background:${c}" data-color="${c}" title="${c}"></button>`).join('')}
+          </div>
+          <label class="settings-field-label" style="margin-top:10px">Icon</label>
+          <div class="settings-emoji-row">
+            <button class="settings-emoji-clear${!acc.emoji ? ' active' : ''}" data-emoji="">None</button>
+            ${ACCOUNT_EMOJIS.map(em => `<button class="settings-emoji-btn${acc.emoji === em ? ' active' : ''}" data-emoji="${em}">${em}</button>`).join('')}
+          </div>
+        </div>
+        <div class="settings-acc-actions">
+          <button class="settings-action-btn settings-save-btn">Save</button>
+          <button class="settings-remove-btn-text">Remove Account</button>
+        </div>`;
+
+      // Preview dot updates live as user picks color/emoji
+      const previewDot = card.querySelector('.settings-acc-preview-dot');
+      let pendingColor = acc.color || colorFor(acc.email);
+      let pendingEmoji = acc.emoji || '';
+
+      card.querySelectorAll('.swatch').forEach(sw => {
+        sw.addEventListener('click', () => {
+          card.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+          sw.classList.add('active');
+          pendingColor = sw.dataset.color;
+          previewDot.style.background = pendingColor;
+        });
+      });
+
+      card.querySelectorAll('.settings-emoji-btn, .settings-emoji-clear').forEach(btn => {
+        btn.addEventListener('click', () => {
+          card.querySelectorAll('.settings-emoji-btn, .settings-emoji-clear').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          pendingEmoji = btn.dataset.emoji;
+          previewDot.textContent = pendingEmoji;
+        });
+      });
+
+      card.querySelector('.settings-save-btn').addEventListener('click', async () => {
+        const nameVal = card.querySelector('[data-field="name"]').value.trim();
+        const changes = { name: nameVal || acc.email.split('@')[0], color: pendingColor, emoji: pendingEmoji };
+        const res = await ipc('accounts:update', { id: acc.id, changes });
+        if (res?.success) {
+          Object.assign(acc, changes);
+          const idx = S.accounts.findIndex(a => a.id === acc.id);
+          if (idx !== -1) S.accounts[idx] = { ...S.accounts[idx], ...changes };
+          renderAccountTabs();
+          renderSettingsAccounts();
+          toast('Account saved');
+        }
+      });
+
+      card.querySelector('.settings-remove-btn-text').addEventListener('click', async () => {
+        if (!confirm(`Remove ${acc.email}?`)) return;
+        await ipc('accounts:remove', acc.id);
+        S.accounts = S.accounts.filter(a => a.id !== acc.id);
+        folderMaps.delete(acc.id);
+        accountFolders.delete(acc.id);
+        if (S.activeAccountId === acc.id) S.activeAccountId = S.accounts[0]?.id || null;
+        renderAccountTabs();
+        renderSettingsAccounts();
+        loadEmails();
+      });
+
+      content.appendChild(card);
+    });
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'settings-action-btn';
+  addBtn.style.marginTop = '8px';
+  addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Account`;
+  addBtn.addEventListener('click', () => { hideSettingsModal(); showSetupModal(true); });
+  content.appendChild(addBtn);
+}
+
+function renderSettingsApps() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = '';
+
+  if (S.apps.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:13px;color:#aeaeb2;padding:8px 0 12px;';
+    empty.textContent = 'No apps added yet.';
+    content.appendChild(empty);
+  } else {
+    S.apps.forEach(app => {
+      const row = document.createElement('div');
+      row.className = 'settings-account-row';
+      row.innerHTML = `
+        <div class="settings-account-dot" style="background:${colorFor(app.name)}"></div>
+        <div class="settings-account-info">
+          <div class="settings-account-name">${escHtml(app.name)}</div>
+          <div class="settings-account-email">${escHtml(app.url)}</div>
+        </div>`;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'settings-remove-btn';
+      removeBtn.title = 'Remove app';
+      removeBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+      removeBtn.addEventListener('click', async () => {
+        await ipc('apps:remove', app.id);
+        S.apps = S.apps.filter(a => a.id !== app.id);
+        renderAppsNav();
+        renderSettingsApps();
+        toast('App removed');
+      });
+      row.appendChild(removeBtn);
+      content.appendChild(row);
+    });
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'settings-action-btn';
+  addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add App`;
+  addBtn.addEventListener('click', () => { hideSettingsModal(); showAddAppModal(); });
+  content.appendChild(addBtn);
+}
+
+function renderSettingsShortcuts() {
+  const content = document.getElementById('settingsPanelContent');
+  const shortcuts = [
+    ['⌘N', 'New Message'],
+    ['⌘R', 'Reply'],
+    ['⇧⌘R', 'Reply All'],
+    ['⌘F', 'Forward'],
+    ['↑ / k', 'Previous email'],
+    ['↓ / j', 'Next email'],
+    ['⌫', 'Delete email'],
+    ['U', 'Mark read / unread'],
+    ['S', 'Star / unstar'],
+    ['/', 'Focus search'],
+    ['⌘,', 'Open Settings'],
+    ['Esc', 'Close / dismiss'],
+  ];
+  content.innerHTML = shortcuts.map(([key, desc]) =>
+    `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);">
+      <span style="font-size:13px;color:var(--text-secondary)">${desc}</span>
+      <kbd style="font-size:11.5px;background:var(--sidebar-bg);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-family:inherit;color:var(--text-primary);white-space:nowrap">${key}</kbd>
+    </div>`
+  ).join('');
+}
+
+document.getElementById('settingsBtn').addEventListener('click', showSettingsModal);
+document.getElementById('settingsCloseBtn').addEventListener('click', hideSettingsModal);
+document.getElementById('settingsModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) { hideSettingsModal(); return; }
+  const navItem = e.target.closest('.settings-nav-item');
+  if (navItem?.dataset.panel) switchSettingsPanel(navItem.dataset.panel);
+});
+
+// ── Account setup modal ───────────────────────────────────────────────────────
+function showSetupModal(cancellable = false) {
+  document.getElementById('setupError').classList.add('hidden');
+  document.getElementById('setupCancelBtn').style.display = cancellable ? '' : 'none';
+  document.getElementById('setupModal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('setupEmail').focus(), 50);
+}
+function hideSetupModal() { document.getElementById('setupModal').classList.add('hidden'); }
+
+document.getElementById('togglePassword').addEventListener('click', () => {
+  const inp = document.getElementById('setupPassword');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+
+document.getElementById('setupEmail').addEventListener('input', async () => {
+  const email = document.getElementById('setupEmail').value.trim();
+  const domain = (email.split('@')[1] || '').toLowerCase();
+  const isGmail = ['gmail.com', 'googlemail.com'].includes(domain);
+  const isOutlook = ['outlook.com', 'hotmail.com', 'live.com'].includes(domain);
+  const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
+  document.getElementById('gmailTip').classList.toggle('hidden', !isGmail);
+  document.getElementById('outlookTip').classList.toggle('hidden', !isOutlook);
+  document.getElementById('fastmailTip').classList.toggle('hidden', !isFastmail);
+  document.getElementById('passwordHint').textContent = isGmail ? '(App Password required)' : isFastmail ? '(App Password — JMAP)' : '';
+  if (email.includes('@')) {
+    const preset = await ipc('accounts:preset', email);
+    if (preset) {
+      document.getElementById('imapHost').value = preset.imap?.host || '';
+      document.getElementById('imapPort').value = preset.imap?.port || '993';
+      document.getElementById('smtpHost').value = preset.smtp?.host || '';
+      document.getElementById('smtpPort').value = preset.smtp?.port || '587';
+    }
+  }
+});
+
+document.getElementById('setupSaveBtn').addEventListener('click', async () => {
+  const email = document.getElementById('setupEmail').value.trim();
+  const password = document.getElementById('setupPassword').value;
+  const name = document.getElementById('setupName').value.trim() || email.split('@')[0];
+  const imapHost = document.getElementById('imapHost').value.trim();
+  const imapPort = parseInt(document.getElementById('imapPort').value) || 993;
+  const smtpHost = document.getElementById('smtpHost').value.trim();
+  const smtpPort = parseInt(document.getElementById('smtpPort').value) || 587;
+
+  if (!email) { showSetupError('Enter your email address'); return; }
+  if (!password) { showSetupError('Enter your password'); return; }
+
+  const domain = (email.split('@')[1] || '').toLowerCase();
+  const isJmap = ['fastmail.com', 'fastmail.fm'].includes(domain);
+  if (!imapHost && !isJmap) { showSetupError('Enter server settings (open Advanced settings)'); return; }
+
+  document.getElementById('setupError').classList.add('hidden');
+  setSetupLoading(true);
+
+  const preset = await ipc('accounts:preset', email);
+  const protocol = preset?.protocol || 'imap';
+  const accountData = {
+    name, email, password, protocol,
+    jmapUrl: preset?.jmapUrl || null,
+    imap: imapHost ? { host: imapHost, port: imapPort, secure: imapPort === 993 } : preset?.imap || null,
+    smtp: smtpHost ? { host: smtpHost, port: smtpPort, secure: smtpPort === 465 } : preset?.smtp || null,
+  };
+
+  const res = await ipc('accounts:add', accountData);
+  setSetupLoading(false);
+
+  if (res.success) {
+    S.accounts.push(res.account);
+    if (!S.activeAccountId) S.activeAccountId = res.account.id;
+    renderAccountTabs();
+    hideSetupModal();
+    showFolderSidebar(true);
+    renderFolderNav();
+    loadEmails();
+    toast('Account added — ' + email);
+  } else {
+    showSetupError(res.error || 'Connection failed. Check your credentials.');
+  }
+});
+
+function showSetupError(msg) {
+  const el = document.getElementById('setupError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+function setSetupLoading(on) {
+  document.getElementById('setupSaveBtn').disabled = on;
+  document.getElementById('setupBtnText').textContent = on ? 'Connecting…' : 'Connect Account';
+  document.getElementById('setupSpinner').classList.toggle('hidden', !on);
+}
+document.getElementById('setupCancelBtn').addEventListener('click', hideSetupModal);
+document.getElementById('setupModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget && document.getElementById('setupCancelBtn').style.display !== 'none') hideSetupModal();
+});
+['setupEmail', 'setupPassword', 'setupName'].forEach(id => {
+  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('setupSaveBtn').click(); });
+});
+
+// ── Toolbar buttons ───────────────────────────────────────────────────────────
+document.getElementById('threadToggleBtn').addEventListener('click', () => {
+  S.threadGrouping = !S.threadGrouping;
+  S.expandedThreads.clear();
+  document.getElementById('threadToggleBtn').classList.toggle('active', S.threadGrouping);
+  renderEmailList();
+});
+
+document.getElementById('composeTrigger').addEventListener('click', () => openCompose());
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  S.bodyCache.clear();
+  S.isSearching = false;
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.add('hidden');
+  loadEmails();
+});
+document.getElementById('loadMoreBtn').addEventListener('click', () => loadEmails(true));
+
+// ── Keyboard shortcuts ────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) ||
+    document.activeElement.contentEditable === 'true';
+  const composeOpen = !document.getElementById('composeFloat').classList.contains('hidden');
+  const setupOpen = !document.getElementById('setupModal').classList.contains('hidden');
+
+  if (e.key === 'Escape') {
+    if (composeOpen && !S.composeMinimized) { closeCompose(); return; }
+    if (setupOpen && document.getElementById('setupCancelBtn').style.display !== 'none') { hideSetupModal(); return; }
+    if (!document.getElementById('settingsModal').classList.contains('hidden')) { hideSettingsModal(); return; }
+    removeContextMenu();
+    return;
+  }
+
+  if (inInput) return;
+
+  const idx = S.emails.findIndex(e => e.uid === S.selectedUid && e.accountId === S.selectedEmail?.accountId);
+
+  if (e.key === 'ArrowDown' || e.key === 'j') {
+    e.preventDefault();
+    if (S.emails.length > 0) selectEmail(S.emails[Math.min(idx + 1, S.emails.length - 1)]);
+  } else if (e.key === 'ArrowUp' || e.key === 'k') {
+    e.preventDefault();
+    if (S.emails.length > 0) selectEmail(S.emails[Math.max(idx - 1, 0)]);
+  } else if ((e.key === 'Delete' || e.key === 'Backspace') && S.selectedEmail) {
+    doDelete(S.selectedEmail);
+  } else if (e.key === 'n' && e.metaKey) {
+    e.preventDefault(); openCompose();
+  } else if (e.key === 'r' && e.metaKey && !e.shiftKey && S.selectedEmail) {
+    e.preventDefault(); openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
+  } else if (e.key === 'r' && e.metaKey && e.shiftKey && S.selectedEmail) {
+    e.preventDefault(); openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
+  } else if (e.key === 'f' && e.metaKey && S.selectedEmail) {
+    e.preventDefault(); openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
+  } else if (e.key === 'u' && S.selectedEmail) {
+    setReadState(S.selectedEmail, !S.selectedEmail.read);
+  } else if (e.key === 's' && S.selectedEmail) {
+    toggleFlag(S.selectedEmail);
+  } else if (e.key === '/' && !inInput) {
+    e.preventDefault(); document.getElementById('searchInput').focus();
+  } else if (e.metaKey && e.key === ',') {
+    e.preventDefault(); showSettingsModal();
+  }
+});
+
+// ── App menu IPC ──────────────────────────────────────────────────────────────
+ipcRenderer.on('open-settings', () => showSettingsModal());
+ipcRenderer.on('new-message', () => openCompose());
+ipcRenderer.on('reply', () => { if (S.selectedEmail) openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+ipcRenderer.on('reply-all', () => { if (S.selectedEmail) openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+ipcRenderer.on('forward', () => { if (S.selectedEmail) openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+ipcRenderer.on('refresh', () => loadEmails());
+ipcRenderer.on('delete-email', () => { if (S.selectedEmail) doDelete(S.selectedEmail); });
+ipcRenderer.on('mark-read', () => { if (S.selectedEmail) setReadState(S.selectedEmail, !S.selectedEmail.read); });
+ipcRenderer.on('toggle-star', () => { if (S.selectedEmail) toggleFlag(S.selectedEmail); });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  S.accounts = await ipc('accounts:list');
+  S.apps = await ipc('apps:list').catch(() => []);
+
+  if (S.accounts.length === 0) {
+    showLoading(false);
+    showFolderSidebar(true);
+    renderAccountTabs();
+    showSetupModal(false);
+  } else {
+    S.activeAccountId = S.accounts[0].id;
+    showLoading(true);
+    showFolderSidebar(true);
+    renderAccountTabs();
+    renderAppsNav();
+
+    // Load all folder lists in parallel, then render + fetch emails
+    await Promise.all(S.accounts.map(a => loadAndRenderFolders(a.id)));
+    renderFolderNav();
+    await loadEmails();
+  }
+}
+
+init();
