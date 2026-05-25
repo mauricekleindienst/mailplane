@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Notification, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Notification, Menu, nativeTheme, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -6,16 +6,74 @@ const os = require('os');
 // Set app name before any store initializes (affects userData path)
 app.setName('Mailplane');
 
+// ── Crash reporting (Sentry) ─────────────────────────────────────────────────
+// Replace SENTRY_DSN with your actual DSN from sentry.io
+const SENTRY_DSN = process.env.SENTRY_DSN || '';
+if (SENTRY_DSN) {
+  try {
+    const Sentry = require('@sentry/electron/main');
+    Sentry.init({ dsn: SENTRY_DSN, environment: app.isPackaged ? 'production' : 'development' });
+  } catch {}
+}
+
+// ── Mailto protocol handler ───────────────────────────────────────────────────
+if (process.defaultApp) {
+  if (process.argv.length >= 2) app.setAsDefaultProtocolClient('mailto', process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient('mailto');
+}
+
+// ── Suppress known ImapFlow internal promise rejections ───────────────────────
+process.on('unhandledRejection', (reason) => {
+  const msg = (reason?.message || '').toLowerCase();
+  if (msg.includes('connection not available') || msg.includes('socket closed') ||
+      msg.includes('connection closed') || msg.includes('econnreset')) return;
+  console.error('[Mailplane] Unhandled rejection:', reason);
+});
+
 const accountStore = require('./src/account-store');
 const imapManager = require('./src/imap-manager');
 const jmapManager = require('./src/jmap-manager');
 const smtpManager = require('./src/smtp-manager');
+
+// Expose safeStorage helpers to the store (called only from main process)
+accountStore.setSafeStorage(safeStorage);
 
 function mgr(account) {
   return account.protocol === 'jmap' ? jmapManager : imapManager;
 }
 
 let mainWindow;
+
+// Handle mailto: URLs received while app is already running
+function handleMailto(url) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('mailto', url);
+  }
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleMailto(url);
+});
+
+// ── Auto-updater ──────────────────────────────────────────────────────────────
+// Only active in packaged builds. Set publish.url in package.json to enable.
+if (app.isPackaged) {
+  try {
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update-ready');
+      }
+    });
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  } catch {}
+}
 
 function buildAppMenu() {
   const send = (ch) => mainWindow?.webContents.send(ch);
@@ -28,9 +86,8 @@ function buildAppMenu() {
           click() {
             app.setAboutPanelOptions({
               applicationName: 'Mailplane',
-              applicationVersion: '1.0.0',
+              applicationVersion: app.getVersion(),
               copyright: '© 2026 Mailplane',
-              iconPath: path.join(__dirname, 'assets', 'icon.svg'),
             });
             app.showAboutPanel();
           },
@@ -57,6 +114,7 @@ function buildAppMenu() {
         { type: 'separator' },
         { label: 'Refresh', accelerator: 'CmdOrCtrl+Shift+R', click: () => send('refresh') },
         { type: 'separator' },
+        { label: 'Archive', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('archive-email') },
         { label: 'Delete Message', accelerator: 'Backspace', click: () => send('delete-email') },
         { label: 'Mark as Read', accelerator: 'U', click: () => send('mark-read') },
         { label: 'Star', accelerator: 'S', click: () => send('toggle-star') },
@@ -105,22 +163,28 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
-    vibrancy: 'sidebar',
-    backgroundColor: '#ffffff',
+    vibrancy: nativeTheme.shouldUseDarkColors ? 'under-window' : 'sidebar',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff',
     title: 'Mailplane',
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
       webviewTag: true,
+      spellcheck: true,
     },
   });
   mainWindow.loadFile('index.html');
 }
 
+// ── Dock badge ────────────────────────────────────────────────────────────────
+ipcMain.on('badge:set', (_, count) => {
+  if (process.platform === 'darwin') app.setBadgeCount(count || 0);
+});
+
 // ── Accounts ──────────────────────────────────────────────────────────────────
 
 ipcMain.handle('accounts:list', () =>
-  accountStore.getAccounts().map(a => ({ ...a, password: undefined }))
+  accountStore.getAccounts().map(a => ({ ...a, password: undefined, passwordEncrypted: undefined }))
 );
 ipcMain.handle('accounts:preset', (_, email) => accountStore.getPreset(email));
 ipcMain.handle('accounts:add', async (_, data) => {
@@ -130,7 +194,7 @@ ipcMain.handle('accounts:add', async (_, data) => {
     if (!res.success) return res;
     const account = accountStore.addAccount(data);
     startIdleForAccount(account);
-    return { success: true, account: { ...account, password: undefined } };
+    return { success: true, account: { ...account, password: undefined, passwordEncrypted: undefined } };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -142,7 +206,7 @@ ipcMain.handle('accounts:remove', (_, id) => {
 });
 ipcMain.handle('accounts:update', (_, { id, changes }) => {
   const account = accountStore.updateAccount(id, changes);
-  return account ? { success: true, account: { ...account, password: undefined } } : { success: false };
+  return account ? { success: true, account: { ...account, password: undefined, passwordEncrypted: undefined } } : { success: false };
 });
 ipcMain.handle('accounts:folders', (_, id) => {
   const account = accountStore.getAccounts().find(a => a.id === id);
@@ -162,8 +226,8 @@ ipcMain.handle('accounts:folders:all', async (_, id) => {
 
 ipcMain.handle('apps:list', () => accountStore.getApps());
 ipcMain.handle('apps:add', (_, data) => {
-  const app = accountStore.addApp(data);
-  return { success: true, app };
+  const appData = accountStore.addApp(data);
+  return { success: true, app: appData };
 });
 ipcMain.handle('apps:remove', (_, id) => {
   accountStore.removeApp(id);
@@ -227,6 +291,36 @@ ipcMain.handle('email:delete', async (_, { accountId, folder, uid }) => {
   }
 });
 
+ipcMain.handle('email:archive', async (_, { accountId, folder, uid }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    await mgr(account).archiveEmail(account, folder, uid);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('email:bulk', async (_, { accountId, folder, uids, action, dest }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    const m = mgr(account);
+    await Promise.all(uids.map(uid => {
+      if (action === 'delete') return m.deleteEmail(account, folder, uid);
+      if (action === 'archive') return m.archiveEmail(account, folder, uid);
+      if (action === 'read') return m.setRead(account, folder, uid, true);
+      if (action === 'unread') return m.setRead(account, folder, uid, false);
+      if (action === 'move' && dest) return m.moveEmail(account, folder, uid, dest);
+      return Promise.resolve();
+    }));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('email:move', async (_, { accountId, folder, uid, dest }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
@@ -279,12 +373,29 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
 
 ipcMain.handle('shell:open', (_, url) => shell.openExternal(url));
 
+// ── Context menu ──────────────────────────────────────────────────────────────
+ipcMain.on('context-menu:show', (event, { hasSelection }) => {
+  const items = [
+    { label: 'Reply',       click: () => event.sender.send('context-menu:action', 'reply') },
+    { label: 'Reply All',   click: () => event.sender.send('context-menu:action', 'reply-all') },
+    { label: 'Forward',     click: () => event.sender.send('context-menu:action', 'forward') },
+    { type: 'separator' },
+    { label: 'Archive',     click: () => event.sender.send('context-menu:action', 'archive') },
+    { label: 'Delete',      click: () => event.sender.send('context-menu:action', 'delete') },
+    { type: 'separator' },
+    { label: 'Mark as Read',   click: () => event.sender.send('context-menu:action', 'mark-read') },
+    { label: 'Mark as Unread', click: () => event.sender.send('context-menu:action', 'mark-unread') },
+    { label: 'Star / Unstar',  click: () => event.sender.send('context-menu:action', 'toggle-star') },
+  ];
+  const menu = Menu.buildFromTemplate(items);
+  menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
   buildAppMenu();
   createWindow();
-  // Start IDLE for all saved accounts
   accountStore.getAccounts().forEach(startIdleForAccount);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

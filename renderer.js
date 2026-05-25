@@ -17,9 +17,11 @@ const S = {
   ccVisible: false,
   composeMinimized: false,
   composeExpanded: false,
-  contacts: [],            // collected email addresses for autocomplete
+  contacts: [],
   threadGrouping: false,
-  expandedThreads: new Set(),  // thread keys currently expanded
+  expandedThreads: new Set(),
+  selectedUids: new Set(),   // multi-select
+  imagesBlocked: true,       // remote image blocking default
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
@@ -28,6 +30,66 @@ ipcRenderer.on('new-emails', (_, accountId) => {
     loadEmails();
   }
 });
+
+// ── Mailto protocol handler ───────────────────────────────────────────────────
+ipcRenderer.on('mailto', (_, url) => {
+  try {
+    const u = new URL(url);
+    const to = u.pathname || '';
+    const params = u.searchParams;
+    openCompose({
+      to: to + (params.get('to') ? (to ? ',' : '') + params.get('to') : ''),
+      subject: params.get('subject') || '',
+      body: params.get('body') || '',
+    });
+  } catch { openCompose(); }
+});
+
+// ── Update available notification ─────────────────────────────────────────────
+ipcRenderer.on('update-ready', () => {
+  toast('Update downloaded — restart to install', false, 8000);
+});
+
+// ── Context menu actions ──────────────────────────────────────────────────────
+ipcRenderer.on('context-menu:action', (_, action) => {
+  if (action === 'reply' && S.selectedEmail) ipcRenderer.send('reply');
+  else if (action === 'reply-all' && S.selectedEmail) ipcRenderer.send('reply-all');
+  else if (action === 'forward' && S.selectedEmail) ipcRenderer.send('forward');
+  else if (action === 'archive' && S.selectedEmail) doArchive(S.selectedEmail);
+  else if (action === 'delete' && S.selectedEmail) doDelete(S.selectedEmail);
+  else if (action === 'mark-read' && S.selectedEmail) setReadState(S.selectedEmail, true);
+  else if (action === 'mark-unread' && S.selectedEmail) setReadState(S.selectedEmail, false);
+  else if (action === 'toggle-star' && S.selectedEmail) toggleFlag(S.selectedEmail);
+});
+
+// ── Dark mode + theme preference ──────────────────────────────────────────────
+const _darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+
+function applyTheme(theme) {
+  const html = document.documentElement;
+  if (theme === 'dark') {
+    html.classList.add('dark');
+    html.classList.remove('light');
+  } else if (theme === 'light') {
+    html.classList.remove('dark');
+    html.classList.add('light');
+  } else {
+    html.classList.remove('dark', 'light');
+    html.classList.toggle('dark', _darkMQ.matches);
+  }
+}
+
+applyTheme(localStorage.getItem('mailplane-theme') || 'system');
+_darkMQ.addEventListener('change', () => {
+  if ((localStorage.getItem('mailplane-theme') || 'system') === 'system') applyTheme('system');
+});
+
+// ── Dock badge ────────────────────────────────────────────────────────────────
+const _inboxUnread = new Map(); // accountId → inbox unread count
+function updateDockBadge() {
+  const total = [..._inboxUnread.values()].reduce((a, b) => a + b, 0);
+  ipcRenderer.send('badge:set', total);
+}
 
 let refreshTimer = null;
 
@@ -97,12 +159,12 @@ function escHtml(s) {
 }
 
 let toastTimer;
-function toast(msg, error = false) {
+function toast(msg, error = false, duration = 3200) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = 'toast show' + (error ? ' error' : '');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.className = 'toast', 3200);
+  toastTimer = setTimeout(() => el.className = 'toast', duration);
 }
 
 const ipc = (ch, data) => ipcRenderer.invoke(ch, data);
@@ -111,6 +173,16 @@ const ipc = (ch, data) => ipcRenderer.invoke(ch, data);
 const folderMaps = new Map();  // accountId → legacy static map (fallback)
 const accountFolders = new Map(); // accountId → Folder[] from server
 const FOLDER_LABELS = { inbox: 'Inbox', sent: 'Sent', drafts: 'Drafts', trash: 'Trash', spam: 'Spam', archive: 'Archive' };
+
+function buildStaticFolders(staticMap) {
+  return [
+    { role: 'inbox',  name: 'Inbox',  path: staticMap?.inbox  || 'INBOX',  key: 'inbox'  },
+    { role: 'sent',   name: 'Sent',   path: staticMap?.sent   || 'Sent',   key: 'sent'   },
+    { role: 'drafts', name: 'Drafts', path: staticMap?.drafts || 'Drafts', key: 'drafts' },
+    { role: 'trash',  name: 'Trash',  path: staticMap?.trash  || 'Trash',  key: 'trash'  },
+    { role: 'spam',   name: 'Spam',   path: staticMap?.spam   || 'Spam',   key: 'spam'   },
+  ];
+}
 
 const ROLE_META = {
   inbox:   { color: '#007aff', icon: '<path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>' },
@@ -166,10 +238,7 @@ function renderAccountTabs() {
     const dot = document.createElement('span');
     dot.className = 'acc-tab-dot';
     dot.style.background = acc.color || colorFor(acc.email);
-    if (acc.emoji) {
-      dot.textContent = acc.emoji;
-      dot.style.cssText += ';font-size:11px;display:flex;align-items:center;justify-content:center;';
-    }
+    dot.innerHTML = accountIconSvg(acc.icon || 'mail', 13, 'rgba(255,255,255,0.92)');
     tab.appendChild(dot);
     tab.appendChild(document.createTextNode(acc.name || acc.email.split('@')[0]));
 
@@ -177,13 +246,6 @@ function renderAccountTabs() {
     wrap.appendChild(tab);
   });
 
-  // Add account button
-  const addBtn = document.createElement('button');
-  addBtn.className = 'acc-add-btn';
-  addBtn.title = 'Add Account';
-  addBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
-  addBtn.addEventListener('click', () => showSetupModal(true));
-  wrap.appendChild(addBtn);
 }
 
 function switchToAll() {
@@ -194,6 +256,7 @@ function switchToAll() {
   S.isSearching = false;
   document.getElementById('searchInput').value = '';
   document.getElementById('searchClear').classList.add('hidden');
+  _renderedFolderAccount = null; // force nav rebuild when returning to an account
   renderAccountTabs();
   showFolderSidebar(false);
   renderDetail(null);
@@ -297,14 +360,18 @@ function makeFolderBtn(folder) {
   return btn;
 }
 
+let _renderedFolderAccount = null; // track which account's folders are in the nav
+
 function renderFolderNav() {
   const nav = document.getElementById('folderNav');
   const folders = accountFolders.get(S.activeAccountId);
 
-  if (folders) {
-    // Rebuild if needed (folder set changed)
+  if (folders && folders.length > 0) {
+    const accountChanged = _renderedFolderAccount !== S.activeAccountId;
     const existing = nav.querySelectorAll('.folder-btn');
-    if (existing.length !== folders.length) {
+
+    if (accountChanged || existing.length !== folders.length) {
+      _renderedFolderAccount = S.activeAccountId;
       nav.innerHTML = '';
       const hasCustom = folders.some(f => !f.role);
       let addedSep = false;
@@ -323,10 +390,9 @@ function renderFolderNav() {
       });
     }
   } else {
-    // No server folders yet — show placeholder skeletons
-    nav.querySelectorAll('.folder-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.folder === S.activeFolder);
-    });
+    // Folders not loaded yet — clear and wait
+    nav.innerHTML = '';
+    _renderedFolderAccount = null;
   }
 
   const active = S.activeFolder;
@@ -338,17 +404,33 @@ function renderFolderNav() {
 
 async function loadAndRenderFolders(accountId) {
   if (!accountId) return;
-  const folders = await ipc('accounts:folders:all', accountId);
-  if (folders && folders.length > 0) {
-    accountFolders.set(accountId, folders);
-    // Set active folder to inbox if current is unknown
-    const keys = new Set(folders.map(f => f.key));
-    if (!keys.has(S.activeFolder)) {
-      const inbox = folders.find(f => f.role === 'inbox');
-      if (inbox) S.activeFolder = inbox.key;
+
+  let folders = null;
+  try {
+    const result = await ipc('accounts:folders:all', accountId);
+    if (result && result.length > 0) folders = result;
+  } catch {}
+
+  if (!folders || folders.length === 0) {
+    // Fallback: use static maps from the provider preset
+    try {
+      const staticMap = await ipc('accounts:folders', accountId);
+      folders = buildStaticFolders(staticMap);
+    } catch {
+      folders = buildStaticFolders(null);
     }
-    if (S.activeAccountId === accountId) renderFolderNav();
   }
+
+  accountFolders.set(accountId, folders);
+
+  // Ensure active folder key exists in this account's folder list
+  const keys = new Set(folders.map(f => f.key));
+  if (!keys.has(S.activeFolder)) {
+    const inbox = folders.find(f => f.role === 'inbox');
+    if (inbox) S.activeFolder = inbox.key;
+  }
+
+  if (S.activeAccountId === accountId) renderFolderNav();
 }
 
 // ── Apps sidebar ──────────────────────────────────────────────────────────────
@@ -494,10 +576,19 @@ function showLoading(on) {
   document.getElementById('listLoading').classList.toggle('hidden', !on);
   if (on) showEmpty(false);
 }
+const EMPTY_STATES = {
+  'No emails':  { icon: '📭', title: 'All caught up', sub: 'No emails in this folder' },
+  'No results': { icon: '🔍', title: 'No results', sub: 'Try a different search term' },
+  'Error loading emails': { icon: '⚠️', title: 'Something went wrong', sub: 'Check your connection and try again' },
+};
+
 function showEmpty(on, text = 'No emails') {
   const el = document.getElementById('listEmpty');
   el.classList.toggle('hidden', !on);
-  if (on) document.getElementById('listEmptyText').textContent = text;
+  if (on) {
+    const state = EMPTY_STATES[text] || { icon: '📬', title: text, sub: '' };
+    el.innerHTML = `<div class="empty-state-icon">${state.icon}</div><div class="empty-state-title">${state.title}</div>${state.sub ? `<div class="empty-state-sub">${state.sub}</div>` : ''}`;
+  }
 }
 
 function setUnreadBadge(count) {
@@ -511,6 +602,11 @@ function setUnreadBadge(count) {
   } else {
     if (badge) badge.style.display = 'none';
     total.textContent = '';
+  }
+  // Update dock badge with total inbox unread across all accounts
+  if (S.activeAccountId && activeRole === 'inbox') {
+    _inboxUnread.set(S.activeAccountId, count);
+    updateDockBadge();
   }
 }
 
@@ -687,10 +783,28 @@ function makeEmailItem(email, showAccountBadge) {
   flagBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
   flagBtn.addEventListener('click', e => { e.stopPropagation(); toggleFlag(email); });
 
+  // Multi-select checkbox
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.className = 'email-checkbox';
+  checkbox.checked = S.selectedUids.has(email.uid);
+  checkbox.addEventListener('change', e => {
+    e.stopPropagation();
+    if (checkbox.checked) S.selectedUids.add(email.uid);
+    else S.selectedUids.delete(email.uid);
+    renderBulkBar();
+    item.classList.toggle('multi-selected', checkbox.checked);
+  });
+
+  item.appendChild(checkbox);
   item.appendChild(top);
   item.appendChild(body);
   item.appendChild(flagBtn);
-  item.addEventListener('click', () => selectEmail(email));
+  item.classList.toggle('multi-selected', S.selectedUids.has(email.uid));
+  item.addEventListener('click', e => {
+    if (e.target === checkbox) return;
+    selectEmail(email);
+  });
   item.addEventListener('contextmenu', e => { e.preventDefault(); showContextMenu(e, email); });
 
   setupSwipeGesture(item, email);
@@ -776,33 +890,8 @@ async function setReadState(email, read) {
 // ── Context menu ──────────────────────────────────────────────────────────────
 let activeMenu = null;
 function showContextMenu(e, email) {
-  removeContextMenu();
-  const menu = document.createElement('div');
-  menu.style.cssText = `position:fixed;left:${Math.min(e.clientX, window.innerWidth - 195)}px;top:${Math.min(e.clientY, window.innerHeight - 200)}px;
-    background:white;border:1px solid #e0e0e5;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.14);z-index:300;padding:4px;min-width:180px;`;
-  const items = [
-    { label: email.read ? 'Mark as Unread' : 'Mark as Read', action: () => setReadState(email, !email.read) },
-    { label: email.flagged ? 'Remove Star' : 'Star', action: () => toggleFlag(email) },
-    { sep: true },
-    { label: 'Reply', action: () => openReply(email, S.bodyCache.get(bodyCacheKey(email))) },
-    { label: 'Reply All', action: () => openReplyAll(email, S.bodyCache.get(bodyCacheKey(email))) },
-    { label: 'Forward', action: () => openForward(email, S.bodyCache.get(bodyCacheKey(email))) },
-    { sep: true },
-    { label: 'Delete', action: () => doDelete(email), danger: true },
-  ];
-  items.forEach(item => {
-    if (item.sep) { const s = document.createElement('div'); s.style.cssText = 'height:1px;background:#e8e8ea;margin:3px 0;'; menu.appendChild(s); return; }
-    const el = document.createElement('button');
-    el.textContent = item.label;
-    el.style.cssText = `display:block;width:100%;text-align:left;padding:6px 12px;border:none;background:transparent;font-size:13px;font-family:inherit;cursor:pointer;border-radius:6px;color:${item.danger ? '#dc2626' : '#1a1a1a'};`;
-    el.addEventListener('mouseenter', () => el.style.background = item.danger ? '#fef2f2' : '#f0f0f5');
-    el.addEventListener('mouseleave', () => el.style.background = 'transparent');
-    el.addEventListener('click', () => { item.action(); removeContextMenu(); });
-    menu.appendChild(el);
-  });
-  document.body.appendChild(menu);
-  activeMenu = menu;
-  setTimeout(() => document.addEventListener('click', removeContextMenu, { once: true }), 0);
+  // Use native Electron context menu via IPC
+  ipcRenderer.send('context-menu:show', { hasSelection: !!email });
 }
 function removeContextMenu() { activeMenu?.remove(); activeMenu = null; }
 
@@ -845,6 +934,95 @@ async function doDelete(email) {
     renderEmailList();
     toast('Deleted');
   } else toast('Delete failed: ' + res.error, true);
+}
+
+async function doArchive(email) {
+  const folder = await getFolderPath(S.activeFolder, email.accountId);
+  const res = await ipc('email:archive', { accountId: email.accountId, folder, uid: email.uid });
+  if (res.success) {
+    S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+    S.bodyCache.delete(bodyCacheKey(email));
+    if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+      S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
+    }
+    renderEmailList();
+    toast('Archived');
+  } else toast('Archive failed: ' + res.error, true);
+}
+
+// ── Undo send queue ───────────────────────────────────────────────────────────
+const UNDO_SEND_DELAY = 8000;
+let _undoSendTimer = null;
+let _undoSendCancel = null;
+
+function sendWithUndo(accountId, emailData, onSent) {
+  clearTimeout(_undoSendTimer);
+  if (_undoSendCancel) _undoSendCancel();
+
+  let cancelled = false;
+  _undoSendCancel = () => { cancelled = true; };
+
+  let remaining = Math.ceil(UNDO_SEND_DELAY / 1000);
+  const toastEl = document.getElementById('toast');
+  const renderUndo = () => {
+    toastEl.innerHTML = `Sending in ${remaining}s… <button class="undo-send-btn" id="undoSendBtn">Undo</button>`;
+    toastEl.className = 'toast show undo';
+    document.getElementById('undoSendBtn')?.addEventListener('click', () => {
+      cancelled = true;
+      clearTimeout(_undoSendTimer);
+      clearInterval(_undoCountdown);
+      toastEl.className = 'toast';
+      toast('Send cancelled');
+    });
+  };
+  renderUndo();
+
+  const _undoCountdown = setInterval(() => {
+    remaining--;
+    if (remaining > 0 && !cancelled) renderUndo();
+    else clearInterval(_undoCountdown);
+  }, 1000);
+
+  _undoSendTimer = setTimeout(async () => {
+    clearInterval(_undoCountdown);
+    if (cancelled) return;
+    toastEl.className = 'toast';
+    const res = await ipc('email:send', { accountId, ...emailData });
+    if (res.success) { toast('Sent'); onSent?.(); }
+    else toast('Send failed: ' + (res.error || 'Unknown error'), true);
+  }, UNDO_SEND_DELAY);
+}
+
+// ── Bulk actions ──────────────────────────────────────────────────────────────
+async function doBulkAction(action) {
+  if (!S.selectedUids.size) return;
+  const accountId = S.activeAccountId || S.accounts[0]?.id;
+  if (!accountId) return;
+  const folder = await getFolderPath(S.activeFolder, accountId);
+  const uids = [...S.selectedUids];
+  const res = await ipc('email:bulk', { accountId, folder, uids, action });
+  if (res.success) {
+    if (action === 'delete' || action === 'archive') {
+      S.emails = S.emails.filter(e => !S.selectedUids.has(e.uid));
+      if (S.selectedEmail && S.selectedUids.has(S.selectedEmail.uid)) {
+        S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
+      }
+    } else if (action === 'read' || action === 'unread') {
+      S.emails.forEach(e => { if (S.selectedUids.has(e.uid)) e.read = action === 'read'; });
+    }
+    S.selectedUids.clear();
+    renderEmailList();
+    renderBulkBar();
+    toast(action === 'delete' ? 'Deleted' : action === 'archive' ? 'Archived' : 'Done');
+  } else toast('Action failed', true);
+}
+
+function renderBulkBar() {
+  const bar = document.getElementById('bulkBar');
+  if (!bar) return;
+  if (S.selectedUids.size === 0) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  document.getElementById('bulkCount').textContent = `${S.selectedUids.size} selected`;
 }
 
 // ── Detail shell ──────────────────────────────────────────────────────────────
@@ -932,6 +1110,7 @@ function renderDetail(email, body) {
     mkBtn('Reply', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, 'primary', () => openReply(email, body)),
     mkBtn('Reply All', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 8V5l-7 7 7 7v-3l-4-4 4-4zm6 1V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, '', () => openReplyAll(email, body)),
     mkBtn('Forward', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>`, '', () => openForward(email, body)),
+    mkBtn('Archive', `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`, '', () => doArchive(email)),
     mkBtn(email.flagged ? 'Unflag' : 'Flag',
       `<svg width="12" height="12" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
       email.flagged ? 'flagged-active' : '', () => toggleFlag(email)),
@@ -972,8 +1151,36 @@ function renderDetail(email, body) {
   bodyWrap.className = 'detail-body';
 
   if (body?.html) {
+    // Remote image blocking
+    let processedHtml = body.html;
+    let hasRemoteImages = false;
+    if (S.imagesBlocked) {
+      processedHtml = body.html.replace(/<img([^>]*?)src=(["'])(https?:\/\/[^"']*)\2/gi, (_, pre, q, src) => {
+        hasRemoteImages = true;
+        return `<img${pre}data-src=${q}${src}${q} src="" style="display:none"`;
+      });
+    }
+
+    if (hasRemoteImages) {
+      const loadBar = document.createElement('div');
+      loadBar.className = 'load-images-bar';
+      loadBar.innerHTML = `<span>Remote images blocked to protect your privacy</span><button class="load-images-btn">Load Images</button>`;
+      loadBar.querySelector('.load-images-btn').addEventListener('click', () => {
+        S.imagesBlocked = false;
+        loadBar.remove();
+        try {
+          iframe.contentDocument.querySelectorAll('img[data-src]').forEach(img => {
+            img.src = img.dataset.src;
+            img.style.display = '';
+          });
+        } catch {}
+      });
+      bodyWrap.appendChild(loadBar);
+    }
+
     const iframe = document.createElement('iframe');
     iframe.className = 'email-iframe';
+    const imgBlockCss = S.imagesBlocked ? 'img[data-src]{display:none!important;}' : '';
     const htmlContent = `<!DOCTYPE html><html><head>
       <base target="_blank">
       <meta name="color-scheme" content="light">
@@ -984,8 +1191,9 @@ function renderDetail(email, body) {
         table{max-width:100%!important;border-collapse:collapse;}
         blockquote{border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;}
         pre{background:#f5f5f7;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px;}
+        ${imgBlockCss}
       </style>
-    </head><body>${body.html}</body></html>`;
+    </head><body>${processedHtml}</body></html>`;
     iframe.srcdoc = htmlContent;
     bodyWrap.appendChild(iframe);
     iframe.addEventListener('load', () => {
@@ -1039,6 +1247,11 @@ async function downloadAttachment(email, att) {
 }
 
 // ── Compose: floating panel ───────────────────────────────────────────────────
+function getAccountSignature(accountId) {
+  const acc = S.accounts.find(a => a.id === accountId);
+  return acc?.signature || '';
+}
+
 function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message' } = {}) {
   const fromSel = document.getElementById('composeFrom');
   fromSel.innerHTML = S.accounts.map(a =>
@@ -1052,8 +1265,16 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
   document.getElementById('composeSubject').value = subject;
 
   const bodyEl = document.getElementById('composeBody');
-  bodyEl.innerHTML = bodyHtml || '';
-  if (!bodyHtml && bodyText) bodyEl.innerText = bodyText;
+  const sig = getAccountSignature(activeAcc);
+  const sigHtml = sig ? `<p><br></p><div class="compose-signature">${sig}</div>` : '';
+  if (bodyHtml) {
+    bodyEl.innerHTML = bodyHtml + sigHtml;
+  } else if (bodyText) {
+    bodyEl.innerText = bodyText;
+    if (sig) bodyEl.innerHTML += sigHtml;
+  } else {
+    bodyEl.innerHTML = `<p><br></p>${sigHtml}`;
+  }
 
   document.getElementById('composeFloatTitle').textContent = subject || title;
   document.getElementById('composeError').classList.add('hidden');
@@ -1064,6 +1285,14 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
   S.composeExpanded = false;
 
   document.getElementById('composeCcRow').classList.toggle('hidden', !S.ccVisible);
+
+  // Update signature when account changes
+  fromSel.onchange = () => {
+    const newSig = getAccountSignature(fromSel.value);
+    const sigEl = bodyEl.querySelector('.compose-signature');
+    if (sigEl) sigEl.innerHTML = newSig || '';
+    else if (newSig) bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${newSig}</div>`;
+  };
 
   setTimeout(() => (to ? document.getElementById('composeSubject') : document.getElementById('composeTo')).focus(), 60);
 }
@@ -1192,18 +1421,42 @@ document.getElementById('composeSendBtn').addEventListener('click', async () => 
   if (!subject) { showComposeError('Enter a subject'); return; }
 
   document.getElementById('composeError').classList.add('hidden');
-  document.getElementById('composeSendBtn').disabled = true;
-  document.getElementById('composeBtnText').textContent = 'Sending…';
-  document.getElementById('composeSpinner').classList.remove('hidden');
+  closeCompose();
+  sendWithUndo(accountId, { to, cc, subject, text, html });
+});
 
-  const res = await ipc('email:send', { accountId, to, cc, subject, text, html });
+// ── Inline images in compose ──────────────────────────────────────────────────
+document.getElementById('composeBody').addEventListener('paste', e => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      const reader = new FileReader();
+      reader.onload = ev => {
+        document.execCommand('insertImage', false, ev.target.result);
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+  }
+});
 
-  document.getElementById('composeSendBtn').disabled = false;
-  document.getElementById('composeBtnText').textContent = 'Send';
-  document.getElementById('composeSpinner').classList.add('hidden');
+document.getElementById('composeBody').addEventListener('dragover', e => {
+  const hasFile = [...(e.dataTransfer?.items || [])].some(i => i.kind === 'file' && i.type.startsWith('image/'));
+  if (hasFile) e.preventDefault();
+});
 
-  if (res.success) { closeCompose(); toast('Email sent'); }
-  else showComposeError(res.error || 'Send failed');
+document.getElementById('composeBody').addEventListener('drop', e => {
+  const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith('image/'));
+  if (!files.length) return;
+  e.preventDefault();
+  files.forEach(file => {
+    const reader = new FileReader();
+    reader.onload = ev => document.execCommand('insertImage', false, ev.target.result);
+    reader.readAsDataURL(file);
+  });
 });
 
 function showComposeError(msg) {
@@ -1268,14 +1521,75 @@ function switchSettingsPanel(panel) {
   document.querySelectorAll('.settings-nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.panel === panel);
   });
-  const titles = { accounts: 'Accounts', apps: 'Apps', shortcuts: 'Keyboard Shortcuts' };
+  const titles = { accounts: 'Accounts', apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard Shortcuts' };
   document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
   if (panel === 'accounts') renderSettingsAccounts();
   else if (panel === 'apps') renderSettingsApps();
+  else if (panel === 'appearance') renderSettingsAppearance();
   else renderSettingsShortcuts();
 }
 
-const ACCOUNT_EMOJIS = ['✉️','📬','📮','🚀','⭐','🔥','💼','🎯','🌍','🎨','🏠','💡','🔔','🌟','🎪'];
+function renderSettingsAppearance() {
+  const content = document.getElementById('settingsPanelContent');
+  const current = localStorage.getItem('mailplane-theme') || 'system';
+
+  const themes = [
+    { id: 'system', label: 'System', desc: 'Follows macOS appearance setting', previewClass: 'theme-option-preview-system' },
+    { id: 'light',  label: 'Light',  desc: 'Always use light mode',            previewClass: 'theme-option-preview-light' },
+    { id: 'dark',   label: 'Dark',   desc: 'Always use dark mode',             previewClass: 'theme-option-preview-dark' },
+  ];
+
+  content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">Theme</div>
+      <div class="theme-options">
+        ${themes.map(t => `
+          <button class="theme-option-btn${current === t.id ? ' active' : ''}" data-theme="${t.id}">
+            <div class="theme-option-preview ${t.previewClass}"></div>
+            <span class="theme-option-label">${t.label}</span>
+            <span class="theme-option-desc">${t.desc}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  content.querySelectorAll('.theme-option-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const theme = btn.dataset.theme;
+      localStorage.setItem('mailplane-theme', theme);
+      applyTheme(theme);
+      content.querySelectorAll('.theme-option-btn').forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
+    });
+  });
+}
+
+// Inline icon set (Lucide-style, 24×24 stroke)
+const ACCOUNT_ICONS = [
+  { id: 'mail',      label: 'Mail',      svg: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>' },
+  { id: 'inbox',     label: 'Inbox',     svg: '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>' },
+  { id: 'send',      label: 'Sent',      svg: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>' },
+  { id: 'user',      label: 'Personal',  svg: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
+  { id: 'briefcase', label: 'Work',      svg: '<rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>' },
+  { id: 'home',      label: 'Home',      svg: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>' },
+  { id: 'star',      label: 'Starred',   svg: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>' },
+  { id: 'globe',     label: 'Global',    svg: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>' },
+  { id: 'zap',       label: 'Fast',      svg: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>' },
+  { id: 'shield',    label: 'Secure',    svg: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>' },
+  { id: 'layers',    label: 'Multi',     svg: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>' },
+  { id: 'book',      label: 'Study',     svg: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>' },
+  { id: 'camera',    label: 'Creative',  svg: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>' },
+  { id: 'music',     label: 'Personal',  svg: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>' },
+  { id: 'code',      label: 'Dev',       svg: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>' },
+];
+const ACCOUNT_ICON_MAP = Object.fromEntries(ACCOUNT_ICONS.map(i => [i.id, i]));
+
+function accountIconSvg(iconId, size = 14, color = 'white') {
+  const icon = ACCOUNT_ICON_MAP[iconId] || ACCOUNT_ICON_MAP['mail'];
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon.svg}</svg>`;
+}
+
+const CHEVRON_SVG = `<svg class="settings-acc-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
 
 function renderSettingsAccounts() {
   const content = document.getElementById('settingsPanelContent');
@@ -1283,7 +1597,7 @@ function renderSettingsAccounts() {
 
   if (S.accounts.length === 0) {
     const empty = document.createElement('div');
-    empty.style.cssText = 'font-size:13px;color:#aeaeb2;padding:8px 0 12px;';
+    empty.style.cssText = 'font-size:13px;color:var(--text-tertiary);padding:8px 0 12px;';
     empty.textContent = 'No accounts added yet.';
     content.appendChild(empty);
   } else {
@@ -1292,35 +1606,47 @@ function renderSettingsAccounts() {
       card.className = 'settings-acc-card';
       card.innerHTML = `
         <div class="settings-acc-card-header">
-          <div class="settings-acc-preview-dot" style="background:${acc.color || colorFor(acc.email)}">${acc.emoji || ''}</div>
-          <div class="settings-acc-email-label">${escHtml(acc.email)}</div>
+          <div class="settings-acc-preview-dot" style="background:${acc.color || colorFor(acc.email)}">${accountIconSvg(acc.icon || 'mail', 14, 'rgba(255,255,255,0.92)')}</div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(acc.name || acc.email.split('@')[0])}</div>
+            <div class="settings-acc-email-label">${escHtml(acc.email)}</div>
+          </div>
           <div class="settings-account-protocol ${acc.protocol === 'jmap' ? 'jmap' : ''}">${(acc.protocol || 'IMAP').toUpperCase()}</div>
+          ${CHEVRON_SVG}
         </div>
-        <div class="settings-acc-fields">
-          <label class="settings-field-label">Display Name</label>
-          <input class="settings-field-input" type="text" value="${escHtml(acc.name || acc.email.split('@')[0])}" placeholder="Display name" data-field="name">
-          <label class="settings-field-label" style="margin-top:10px">Color</label>
-          <div class="settings-color-swatches">
-            ${PALETTE.map(c => `<button class="swatch${(acc.color || colorFor(acc.email)) === c ? ' active' : ''}" style="background:${c}" data-color="${c}" title="${c}"></button>`).join('')}
+        <div class="settings-acc-body">
+          <div class="settings-acc-fields">
+            <label class="settings-field-label">Display Name</label>
+            <input class="settings-field-input" type="text" value="${escHtml(acc.name || acc.email.split('@')[0])}" placeholder="Display name" data-field="name">
+            <label class="settings-field-label" style="margin-top:12px">Color</label>
+            <div class="settings-color-swatches">
+              ${PALETTE.map(c => `<button class="swatch${(acc.color || colorFor(acc.email)) === c ? ' active' : ''}" style="background:${c}" data-color="${c}" title="${c}"></button>`).join('')}
+            </div>
+            <label class="settings-field-label" style="margin-top:12px">Icon</label>
+            <div class="settings-icon-grid">
+              ${ACCOUNT_ICONS.map(ic => `<button class="settings-icon-btn${(acc.icon || 'mail') === ic.id ? ' active' : ''}" data-icon="${ic.id}" title="${ic.label}">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ic.svg}</svg>
+              </button>`).join('')}
+            </div>
+            <label class="settings-field-label" style="margin-top:12px">Signature</label>
+            <div class="signature-editor" contenteditable="true" data-field="signature" data-placeholder="Add a signature…">${acc.signature || ''}</div>
           </div>
-          <label class="settings-field-label" style="margin-top:10px">Icon</label>
-          <div class="settings-emoji-row">
-            <button class="settings-emoji-clear${!acc.emoji ? ' active' : ''}" data-emoji="">None</button>
-            ${ACCOUNT_EMOJIS.map(em => `<button class="settings-emoji-btn${acc.emoji === em ? ' active' : ''}" data-emoji="${em}">${em}</button>`).join('')}
+          <div class="settings-acc-actions">
+            <button class="settings-save-btn">Save Changes</button>
+            <button class="settings-remove-btn-text">Remove Account</button>
           </div>
-        </div>
-        <div class="settings-acc-actions">
-          <button class="settings-action-btn settings-save-btn">Save</button>
-          <button class="settings-remove-btn-text">Remove Account</button>
         </div>`;
 
-      // Preview dot updates live as user picks color/emoji
+      const header = card.querySelector('.settings-acc-card-header');
+      header.addEventListener('click', () => card.classList.toggle('open'));
+
       const previewDot = card.querySelector('.settings-acc-preview-dot');
       let pendingColor = acc.color || colorFor(acc.email);
-      let pendingEmoji = acc.emoji || '';
+      let pendingIcon = acc.icon || 'mail';
 
       card.querySelectorAll('.swatch').forEach(sw => {
-        sw.addEventListener('click', () => {
+        sw.addEventListener('click', e => {
+          e.stopPropagation();
           card.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
           sw.classList.add('active');
           pendingColor = sw.dataset.color;
@@ -1328,30 +1654,41 @@ function renderSettingsAccounts() {
         });
       });
 
-      card.querySelectorAll('.settings-emoji-btn, .settings-emoji-clear').forEach(btn => {
-        btn.addEventListener('click', () => {
-          card.querySelectorAll('.settings-emoji-btn, .settings-emoji-clear').forEach(b => b.classList.remove('active'));
+      card.querySelectorAll('.settings-icon-btn').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          card.querySelectorAll('.settings-icon-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
-          pendingEmoji = btn.dataset.emoji;
-          previewDot.textContent = pendingEmoji;
+          pendingIcon = btn.dataset.icon;
+          previewDot.innerHTML = accountIconSvg(pendingIcon, 14, 'rgba(255,255,255,0.92)');
         });
       });
 
-      card.querySelector('.settings-save-btn').addEventListener('click', async () => {
+      card.querySelector('.settings-save-btn').addEventListener('click', async e => {
+        e.stopPropagation();
         const nameVal = card.querySelector('[data-field="name"]').value.trim();
-        const changes = { name: nameVal || acc.email.split('@')[0], color: pendingColor, emoji: pendingEmoji };
+        const sigEl = card.querySelector('[data-field="signature"]');
+        const signature = sigEl ? sigEl.innerHTML : (acc.signature || '');
+        const changes = { name: nameVal || acc.email.split('@')[0], color: pendingColor, icon: pendingIcon, signature };
+        const saveBtn = card.querySelector('.settings-save-btn');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
         const res = await ipc('accounts:update', { id: acc.id, changes });
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save Changes';
         if (res?.success) {
-          Object.assign(acc, changes);
           const idx = S.accounts.findIndex(a => a.id === acc.id);
           if (idx !== -1) S.accounts[idx] = { ...S.accounts[idx], ...changes };
           renderAccountTabs();
           renderSettingsAccounts();
           toast('Account saved');
+        } else {
+          toast('Failed to save account', true);
         }
       });
 
-      card.querySelector('.settings-remove-btn-text').addEventListener('click', async () => {
+      card.querySelector('.settings-remove-btn-text').addEventListener('click', async e => {
+        e.stopPropagation();
         if (!confirm(`Remove ${acc.email}?`)) return;
         await ipc('accounts:remove', acc.id);
         S.accounts = S.accounts.filter(a => a.id !== acc.id);
@@ -1619,6 +1956,7 @@ ipcRenderer.on('reply-all', () => { if (S.selectedEmail) openReplyAll(S.selected
 ipcRenderer.on('forward', () => { if (S.selectedEmail) openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
 ipcRenderer.on('refresh', () => loadEmails());
 ipcRenderer.on('delete-email', () => { if (S.selectedEmail) doDelete(S.selectedEmail); });
+ipcRenderer.on('archive-email', () => { if (S.selectedEmail) doArchive(S.selectedEmail); });
 ipcRenderer.on('mark-read', () => { if (S.selectedEmail) setReadState(S.selectedEmail, !S.selectedEmail.read); });
 ipcRenderer.on('toggle-star', () => { if (S.selectedEmail) toggleFlag(S.selectedEmail); });
 

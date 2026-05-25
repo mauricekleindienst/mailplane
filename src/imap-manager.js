@@ -221,52 +221,82 @@ async function moveEmail(account, folder, uid, destFolder) {
   }
 }
 
-async function listFolders(account) {
-  const client = await getClient(account);
-  const folders = [];
-  const roleOrder = { inbox: 0, sent: 1, drafts: 2, trash: 3, spam: 4, archive: 5 };
-
-  for await (const mb of client.list()) {
-    if (mb.flags.has('\\Noselect')) continue;
-
-    const name = mb.name || mb.path.split(mb.delimiter || '/').pop() || mb.path;
-    const lname = name.toLowerCase();
-    const su = (mb.specialUse || '').toLowerCase();
-
-    let role = null;
-    if (su === '\\inbox' || mb.path === 'INBOX') role = 'inbox';
-    else if (su === '\\sent') role = 'sent';
-    else if (su === '\\drafts') role = 'drafts';
-    else if (su === '\\trash') role = 'trash';
-    else if (su === '\\junk') role = 'spam';
-    else if (su === '\\archive' || su === '\\all') role = 'archive';
-
-    if (!role) {
-      if (lname === 'inbox') role = 'inbox';
-      else if (['sent', 'sent mail', 'sent items', 'sent messages'].includes(lname)) role = 'sent';
-      else if (['drafts', 'draft'].includes(lname)) role = 'drafts';
-      else if (['trash', 'deleted items', 'deleted messages'].includes(lname)) role = 'trash';
-      else if (['spam', 'junk', 'junk email', 'junk mail', 'bulk mail'].includes(lname)) role = 'spam';
-      else if (['archive', 'all mail', 'archived'].includes(lname)) role = 'archive';
-    }
-
-    // Use a clean display name (strip [Gmail]/ prefix, etc.)
-    let displayName = name;
-    if (mb.path.startsWith('[Gmail]/') || mb.path.startsWith('[Google Mail]/')) {
-      displayName = mb.path.split('/').pop();
-    }
-
-    folders.push({ path: mb.path, name: displayName, role, key: role || mb.path });
+async function archiveEmail(account, folder, uid) {
+  // Find the archive folder path from the folder list
+  const folders = await listFolders(account).catch(() => []);
+  const archiveFolder = folders.find(f => f.role === 'archive');
+  if (archiveFolder) {
+    return moveEmail(account, folder, uid, archiveFolder.path);
   }
+  // Fallback: just delete if no archive folder exists
+  return deleteEmail(account, folder, uid);
+}
 
-  folders.sort((a, b) => {
-    const ra = a.role != null ? (roleOrder[a.role] ?? 10) : 100;
-    const rb = b.role != null ? (roleOrder[b.role] ?? 10) : 100;
-    if (ra !== rb) return ra - rb;
-    return a.name.localeCompare(b.name);
+async function listFolders(account) {
+  // Use a dedicated fresh connection — avoids any pool client state issues
+  const client = new ImapFlow({
+    host: account.imap.host,
+    port: account.imap.port,
+    secure: account.imap.secure,
+    auth: { user: account.email, pass: account.password },
+    logger: false,
+    connectionTimeout: 15000,
+    greetingTimeout: 10000,
+    socketTimeout: 30000,
   });
 
-  return folders;
+  client.on('error', () => {}); // prevent uncaught error events
+  try {
+    await client.connect();
+    const folders = [];
+    const roleOrder = { inbox: 0, sent: 1, drafts: 2, trash: 3, spam: 4, archive: 5 };
+
+    const list = await client.list();
+    for (const mb of list) {
+      // Flags may be returned in any case by the server
+      const flagsLower = new Set([...(mb.flags || [])].map(f => f.toLowerCase()));
+      if (flagsLower.has('\\noselect')) continue;
+
+      const name = mb.name || mb.path.split(mb.delimiter || '/').pop() || mb.path;
+      const lname = name.toLowerCase();
+      const su = (mb.specialUse || '').toLowerCase();
+
+      let role = null;
+      if (mb.path === 'INBOX' || su === '\\inbox') role = 'inbox';
+      else if (su === '\\sent') role = 'sent';
+      else if (su === '\\drafts') role = 'drafts';
+      else if (su === '\\trash') role = 'trash';
+      else if (su === '\\junk') role = 'spam';
+      else if (su === '\\archive' || su === '\\all') role = 'archive';
+
+      if (!role) {
+        if (lname === 'inbox') role = 'inbox';
+        else if (['sent', 'sent mail', 'sent items', 'sent messages'].includes(lname)) role = 'sent';
+        else if (['drafts', 'draft'].includes(lname)) role = 'drafts';
+        else if (['trash', 'deleted items', 'deleted messages'].includes(lname)) role = 'trash';
+        else if (['spam', 'junk', 'junk email', 'junk mail', 'bulk mail'].includes(lname)) role = 'spam';
+        else if (['archive', 'all mail', 'archived'].includes(lname)) role = 'archive';
+      }
+
+      let displayName = name;
+      if (mb.path.startsWith('[Gmail]/') || mb.path.startsWith('[Google Mail]/')) {
+        displayName = mb.path.split('/').pop();
+      }
+
+      folders.push({ path: mb.path, name: displayName, role, key: role || mb.path });
+    }
+
+    folders.sort((a, b) => {
+      const ra = a.role != null ? (roleOrder[a.role] ?? 10) : 100;
+      const rb = b.role != null ? (roleOrder[b.role] ?? 10) : 100;
+      if (ra !== rb) return ra - rb;
+      return a.name.localeCompare(b.name);
+    });
+
+    return folders;
+  } finally {
+    try { await client.logout(); } catch {}
+  }
 }
 
 async function disconnectAll() {
@@ -287,47 +317,50 @@ async function startIdle(account, onNewMail) {
 
   async function connect() {
     if (state.stopped) return;
-    let client;
+    const client = new ImapFlow({
+      host: account.imap.host,
+      port: account.imap.port,
+      secure: account.imap.secure,
+      auth: { user: account.email, pass: account.password },
+      logger: false,
+      connectionTimeout: 15000,
+      greetingTimeout: 10000,
+    });
+    state.client = client;
+
+    // Attach error/close BEFORE connect to prevent unhandled promise rejections
+    const reconnect = () => {
+      state.client = null;
+      if (!state.stopped) setTimeout(connect, 30000);
+    };
+    client.on('error', reconnect);
+    client.on('close', reconnect);
+
     try {
-      client = new ImapFlow({
-        host: account.imap.host,
-        port: account.imap.port,
-        secure: account.imap.secure,
-        auth: { user: account.email, pass: account.password },
-        logger: false,
-        connectionTimeout: 15000,
-        greetingTimeout: 10000,
-      });
-      state.client = client;
-
-      client.on('error', () => {
-        if (!state.stopped) setTimeout(connect, 30000);
-      });
-      client.on('close', () => {
-        if (!state.stopped) setTimeout(connect, 30000);
-      });
-
       await client.connect();
+      if (state.stopped) { client.logout().catch(() => {}); return; }
       await client.mailboxOpen('INBOX');
-
       client.on('exists', ({ count, prevCount }) => {
-        if (count > prevCount) onNewMail(account.id);
+        if (count > (prevCount ?? 0)) onNewMail(account.id);
       });
     } catch {
-      if (client) try { client.close(); } catch {}
       state.client = null;
+      client.logout().catch(() => {});
       if (!state.stopped) setTimeout(connect, 30000);
     }
   }
 
-  connect();
+  // Swallow top-level rejection if the first connect attempt throws synchronously
+  connect().catch(() => {});
 }
 
 function stopIdle(accountId) {
   const state = idleStates.get(accountId);
   if (state) {
     state.stopped = true;
-    if (state.client) try { state.client.close(); } catch {}
+    const c = state.client;
+    state.client = null;
+    if (c) c.logout().catch(() => {});
   }
   idleStates.delete(accountId);
 }
@@ -335,13 +368,15 @@ function stopIdle(accountId) {
 function stopAllIdle() {
   for (const [, state] of idleStates) {
     state.stopped = true;
-    if (state.client) try { state.client.close(); } catch {}
+    const c = state.client;
+    state.client = null;
+    if (c) c.logout().catch(() => {});
   }
   idleStates.clear();
 }
 
 module.exports = {
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
-  setFlag, setRead, deleteEmail, moveEmail, listFolders, disconnectAll,
+  setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders, disconnectAll,
   startIdle, stopIdle, stopAllIdle,
 };
