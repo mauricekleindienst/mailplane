@@ -2,6 +2,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 const nodeCrypto = require('crypto');
+const { version: APP_VERSION } = require('./package.json');
 
 // Explicit channel allowlists — nothing outside these lists can cross the boundary
 const INVOKE_CHANNELS = new Set([
@@ -14,13 +15,14 @@ const INVOKE_CHANNELS = new Set([
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
   'update:install',
-  'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:calendars', 'caldav:events',
+  'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:list', 'caldav:calendars', 'caldav:events',
 ]);
 
 const SEND_CHANNELS = new Set([
   'badge:set',
   'context-menu:show',
   'context-menu:folder',
+  'prefs:notify',
 ]);
 
 const RECEIVE_CHANNELS = new Set([
@@ -66,4 +68,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   md5(str) {
     return nodeCrypto.createHash('md5').update(str).digest('hex');
   },
+
+  /** App version from package.json — exposed so renderer can display it. */
+  appVersion: APP_VERSION,
 });

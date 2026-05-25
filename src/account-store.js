@@ -125,4 +125,34 @@ function removeApp(id) {
   store.set('apps', getApps().filter(a => a.id !== id));
 }
 
-module.exports = { setSafeStorage, getAccounts, addAccount, removeAccount, updateAccount, getPreset, getFolders, getApps, addApp, removeApp };
+// ── CalDAV accounts ───────────────────────────────────────────────────────────
+
+function getCalendarAccounts() {
+  const accounts = store.get('calendarAccounts', []);
+  return accounts.map(a => ({ ...a, password: decryptPassword({ passwordEncrypted: a.passwordEncrypted }) }));
+}
+
+function addCalendarAccount(data) {
+  const accounts = store.get('calendarAccounts', []);
+  const entry = {
+    id: data.id || Date.now().toString(),
+    email: data.email,
+    serverUrl: data.serverUrl,
+    passwordEncrypted: encryptPassword(data.password),
+  };
+  const existing = accounts.findIndex(a => a.id === entry.id);
+  if (existing >= 0) accounts[existing] = entry;
+  else accounts.push(entry);
+  store.set('calendarAccounts', accounts);
+  return { ...entry, password: data.password };
+}
+
+function removeCalendarAccount(id) {
+  store.set('calendarAccounts', store.get('calendarAccounts', []).filter(a => a.id !== id));
+}
+
+module.exports = {
+  setSafeStorage, getAccounts, addAccount, removeAccount, updateAccount,
+  getPreset, getFolders, getApps, addApp, removeApp,
+  getCalendarAccounts, addCalendarAccount, removeCalendarAccount,
+};

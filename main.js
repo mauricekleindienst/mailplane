@@ -147,12 +147,22 @@ function buildAppMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-function notifyNewMail(accountId) {
+// Notification preferences set by the renderer (via prefs:notify IPC)
+let _notifyPrefs = { enabled: true, sound: true, sender: true, subject: true };
+
+ipcMain.on('prefs:notify', (_, prefs) => { Object.assign(_notifyPrefs, prefs); });
+
+function notifyNewMail(accountId, subject, fromName) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('new-emails', accountId);
   }
+  if (!_notifyPrefs.enabled) return;
   if (Notification.isSupported()) {
-    const n = new Notification({ title: 'Mailplane', body: 'New email received', silent: false });
+    const bodyParts = [];
+    if (_notifyPrefs.sender && fromName) bodyParts.push(fromName);
+    if (_notifyPrefs.subject && subject) bodyParts.push(subject);
+    const body = bodyParts.join(' — ') || 'New email received';
+    const n = new Notification({ title: 'Mailplane', body, silent: !_notifyPrefs.sound });
     n.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
     n.show();
   }
@@ -273,7 +283,8 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
           }
         }
       }).catch(() => {});
-      return { success: true, messages: cached, total: emailCache.countCachedMessages(accountId, folder), unseen: 0, fromCache: true };
+      const unseen = cached.filter(m => !m.read).length;
+      return { success: true, messages: cached, total: emailCache.countCachedMessages(accountId, folder), unseen, fromCache: true };
     }
 
     const result = await mgr(account).fetchEmails(account, folder, lim, off);
@@ -410,7 +421,7 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
     const downloadsDir = path.join(os.homedir(), 'Downloads');
     const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
     const dest = path.join(downloadsDir, safeName);
-    fs.writeFileSync(dest, data);
+    await fs.promises.writeFile(dest, data);
     shell.showItemInFolder(dest);
     return { success: true, path: dest };
   } catch (err) {
@@ -464,12 +475,18 @@ ipcMain.handle('caldav:test', async (_, { serverUrl, email, password }) => {
 
 ipcMain.handle('caldav:add', (_, { id, serverUrl, email, password }) => {
   caldavManager.addCalendarAccount(id, { serverUrl, email, password });
+  accountStore.addCalendarAccount({ id, serverUrl, email, password });
   return { success: true };
 });
 
 ipcMain.handle('caldav:remove', (_, { id }) => {
   caldavManager.removeCalendarAccount(id);
+  accountStore.removeCalendarAccount(id);
   return { success: true };
+});
+
+ipcMain.handle('caldav:list', () => {
+  return { success: true, accounts: caldavManager.listCalendarAccounts() };
 });
 
 ipcMain.handle('caldav:calendars', async (_, { id }) => {
@@ -528,6 +545,7 @@ app.whenReady().then(() => {
   buildAppMenu();
   createWindow();
   accountStore.getAccounts().forEach(startIdleForAccount);
+  caldavManager.loadStoredAccounts(accountStore);
   emailCache.pruneOldEntries(30);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

@@ -40,10 +40,10 @@
         <div class="apps-nav-label">Apps</div>
         <div id="appsList"></div>
         <button class="add-app-btn" id="addAppBtn">
-          <span class="folder-icon-wrap" style="background:#e5e5ea">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="folder-icon-wrap add-icon-wrap">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </span>
-          <span class="folder-label" style="color:#8e8e93">Add App</span>
+          <span class="folder-label add-label">Add App</span>
         </button>
       </nav>
 
@@ -52,13 +52,16 @@
         <div class="apps-nav-label">Calendars</div>
         <div id="calendarList"></div>
         <button class="add-app-btn" id="addCalendarBtn">
-          <span class="folder-icon-wrap" style="background:#e5e5ea">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <span class="folder-icon-wrap add-icon-wrap">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           </span>
-          <span class="folder-label" style="color:#8e8e93">Add Calendar Account</span>
+          <span class="folder-label add-label">Add Calendar Account</span>
         </button>
       </nav>
     </aside>
+
+    <!-- Resizable divider: sidebar ↔ list -->
+    <div class="panel-resizer" id="sidebarResizer"></div>
 
     <!-- Email list -->
     <section class="email-list-panel" id="emailListPanel">
@@ -107,6 +110,9 @@
       </div>
     </section>
 
+    <!-- Resizable divider: list ↔ detail -->
+    <div class="panel-resizer" id="listResizer"></div>
+
     <!-- Email detail -->
     <section class="email-detail-panel" id="emailDetail">
       <div class="detail-placeholder">
@@ -151,11 +157,13 @@
           </button>
         </div>
       </div>
-      <div class="calendar-container">
-        <div class="calendar-grid-header" id="calendarGridHeader"></div>
-        <div class="calendar-grid" id="calendarGrid"></div>
+      <div class="calendar-panels">
+        <div class="calendar-container">
+          <div class="calendar-grid-header" id="calendarGridHeader"></div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+        </div>
+        <div class="calendar-event-detail hidden" id="calendarEventDetail"></div>
       </div>
-      <div class="calendar-event-detail hidden" id="calendarEventDetail"></div>
     </div>
 
   </div>
@@ -190,6 +198,10 @@
       <span class="compose-lbl">Cc</span>
       <input type="text" id="composeCc" placeholder="cc@example.com" spellcheck="false" autocomplete="off" />
     </div>
+    <div class="compose-field-row hidden" id="composeBccRow">
+      <span class="compose-lbl">Bcc</span>
+      <input type="text" id="composeBcc" placeholder="bcc@example.com" spellcheck="false" autocomplete="off" />
+    </div>
     <div class="compose-subject-row">
       <input type="text" id="composeSubject" placeholder="Subject" class="compose-subject-input" />
     </div>
@@ -217,6 +229,10 @@
     <div class="compose-footer">
       <div class="compose-footer-left">
         <button class="compose-cc-toggle" id="composeCcToggle">Cc</button>
+        <button class="compose-cc-toggle" id="composeBccToggle">Bcc</button>
+        <button class="compose-attach-btn" id="composeAttachBtn" title="Attach file">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
       </div>
       <div class="compose-footer-right">
         <div class="compose-error hidden" id="composeError"></div>
@@ -302,13 +318,33 @@
         <img src="assets/icon.svg" width="32" height="32" style="border-radius:8px" alt="" />
         <div>
           <div class="settings-app-name">Mailplane</div>
-          <div class="settings-app-version">Version 1.0.0</div>
+          <div class="settings-app-version" id="settingsVersion">Version 1.0.0</div>
         </div>
       </div>
       <nav class="settings-nav">
         <button class="settings-nav-item active" data-panel="accounts">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
           Accounts
+        </button>
+        <button class="settings-nav-item" data-panel="general">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          General
+        </button>
+        <button class="settings-nav-item" data-panel="notifications">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          Notifications
+        </button>
+        <button class="settings-nav-item" data-panel="reading">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          Reading
+        </button>
+        <button class="settings-nav-item" data-panel="composing">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          Composing
+        </button>
+        <button class="settings-nav-item" data-panel="calendar">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Calendar
         </button>
         <button class="settings-nav-item" data-panel="apps">
           <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><rect x="1" y="1" width="7" height="7" rx="1.5"/><rect x="12" y="1" width="7" height="7" rx="1.5"/><rect x="1" y="12" width="7" height="7" rx="1.5"/><rect x="12" y="12" width="7" height="7" rx="1.5"/></svg>
@@ -354,32 +390,58 @@
 
 <!-- ── CalDAV Setup Modal ───────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="caldavModal">
-  <div class="modal" style="max-width:420px">
+  <div class="modal setup-modal">
     <div class="modal-header">
+      <div class="modal-icon-wrap" style="background:#ff9500">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      </div>
       <div>
-        <h2>Add Calendar Account</h2>
-        <p class="modal-subtitle">Connect any CalDAV server (iCloud, Fastmail, Nextcloud…)</p>
+        <h2>Add Calendar</h2>
+        <p class="modal-subtitle">Connect a CalDAV calendar account</p>
       </div>
       <button class="modal-close" id="caldavModalClose">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
 
+    <div class="caldav-providers">
+      <button class="caldav-provider-btn" data-url="https://caldav.icloud.com" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+        iCloud
+      </button>
+      <button class="caldav-provider-btn" data-url="https://caldav.fastmail.com" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        Fastmail
+      </button>
+      <button class="caldav-provider-btn" data-url="" data-placeholder="https://cloud.example.com" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        Nextcloud
+      </button>
+      <button class="caldav-provider-btn caldav-provider-other" data-url="" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+        Other
+      </button>
+    </div>
+
     <div class="form-group">
       <label>Server URL</label>
       <input type="url" id="caldavServerUrl" placeholder="https://caldav.icloud.com" spellcheck="false" autocomplete="off" />
-      <div class="field-hint">iCloud: caldav.icloud.com · Fastmail: caldav.fastmail.com · Nextcloud: /remote.php/dav</div>
     </div>
     <div class="form-group">
       <label>Email / Username</label>
       <input type="email" id="caldavEmail" placeholder="you@example.com" autocomplete="off" spellcheck="false" />
     </div>
     <div class="form-group">
-      <label>Password <span class="label-hint">App password recommended</span></label>
-      <input type="password" id="caldavPassword" placeholder="••••••••••••••••" autocomplete="off" />
+      <label>Password <span class="label-hint" id="caldavPasswordHint">App password recommended</span></label>
+      <div class="input-wrap">
+        <input type="password" id="caldavPassword" placeholder="••••••••••••••••" autocomplete="off" />
+        <button class="input-eye" id="caldavTogglePassword" tabindex="-1" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
     </div>
-    <div class="modal-error hidden" id="caldavError"></div>
 
+    <div class="modal-error hidden" id="caldavError"></div>
     <div class="modal-footer">
       <button class="btn-ghost" id="caldavCancelBtn">Cancel</button>
       <button class="btn-primary" id="caldavSaveBtn">

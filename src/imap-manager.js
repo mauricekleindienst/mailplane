@@ -139,7 +139,6 @@ async function fetchEmailBody(account, folder, uid) {
     const msg = await client.fetchOne(String(uid), { source: true }, { uid: true });
     if (!msg) return null;
     const parsed = await simpleParser(msg.source);
-    try { await client.messageFlagsAdd({ uid }, ['\\Seen'], { uid: true }); } catch {}
     return {
       text: parsed.text || '',
       html: parsed.html || '',
@@ -222,14 +221,20 @@ async function moveEmail(account, folder, uid, destFolder) {
 }
 
 async function archiveEmail(account, folder, uid) {
-  // Find the archive folder path from the folder list
-  const folders = await listFolders(account).catch(() => []);
-  const archiveFolder = folders.find(f => f.role === 'archive');
-  if (archiveFolder) {
-    return moveEmail(account, folder, uid, archiveFolder.path);
+  const client = await getClient(account);
+  const lock = await client.getMailboxLock(folder);
+  try {
+    const list = await client.list();
+    const archivePath = list.find(mb => {
+      const su = (mb.specialUse || '').toLowerCase();
+      const n = (mb.name || mb.path).toLowerCase();
+      return su === '\\archive' || su === '\\all' || n === 'archive' || n === 'all mail' || n === 'archived';
+    })?.path;
+    if (!archivePath) throw new Error('No archive folder found on this server');
+    await client.messageMove({ uid }, archivePath, { uid: true });
+  } finally {
+    lock.release();
   }
-  // Fallback: just delete if no archive folder exists
-  return deleteEmail(account, folder, uid);
 }
 
 async function listFolders(account) {

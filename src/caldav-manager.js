@@ -193,14 +193,35 @@ async function fetchEvents(calendarUrl, auth, { from, to } = {}) {
 
 // ── Account management ────────────────────────────────────────────────────────
 
-const calendarAccounts = new Map(); // id -> { serverUrl, auth, calendars }
+const calendarAccounts = new Map(); // id -> { serverUrl, auth, calendars, email }
+
+function loadStoredAccounts(accountStore) {
+  const saved = accountStore.getCalendarAccounts();
+  for (const acc of saved) {
+    calendarAccounts.set(acc.id, {
+      email: acc.email,
+      serverUrl: acc.serverUrl,
+      auth: { user: acc.email, pass: acc.password },
+      calendars: [],
+    });
+  }
+}
 
 function addCalendarAccount(id, { serverUrl, email, password }) {
-  calendarAccounts.set(id, { serverUrl, auth: { user: email, pass: password }, calendars: [] });
+  calendarAccounts.set(id, { email, serverUrl, auth: { user: email, pass: password }, calendars: [] });
 }
 
 function removeCalendarAccount(id) {
   calendarAccounts.delete(id);
+}
+
+function listCalendarAccounts() {
+  return [...calendarAccounts.entries()].map(([id, acc]) => ({
+    id,
+    email: acc.email,
+    serverUrl: acc.serverUrl,
+    calendars: acc.calendars,
+  }));
 }
 
 async function syncCalendars(id) {
@@ -226,8 +247,10 @@ async function testCalDavConnection(serverUrl, email, password) {
 }
 
 module.exports = {
+  loadStoredAccounts,
   addCalendarAccount,
   removeCalendarAccount,
+  listCalendarAccounts,
   syncCalendars,
   getEvents,
   testCalDavConnection,

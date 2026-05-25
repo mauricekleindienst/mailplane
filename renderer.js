@@ -3,6 +3,15 @@
 // This file runs in an isolated browser context with no Node.js access.
 const { invoke: _invoke, send: _send, on: _on, md5 } = window.electronAPI;
 
+// ── Persistent preferences ────────────────────────────────────────────────────
+function getSetting(key, fallback = '') {
+  const v = localStorage.getItem('mailplane-pref-' + key);
+  return v !== null ? v : fallback;
+}
+function setSetting(key, value) {
+  localStorage.setItem('mailplane-pref-' + key, String(value));
+}
+
 // ── State ──────────────────────────────────────────────────────────────────────
 const S = {
   accounts: [],
@@ -17,13 +26,14 @@ const S = {
   loading: false,
   isSearching: false,
   ccVisible: false,
+  bccVisible: false,
   composeMinimized: false,
   composeExpanded: false,
   contacts: [],
   threadGrouping: false,
   expandedThreads: new Set(),
   selectedUids: new Set(),   // multi-select
-  imagesBlocked: true,       // remote image blocking default
+  imagesBlocked: getSetting('images-blocked', 'true') === 'true',
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
@@ -199,11 +209,54 @@ _darkMQ.addEventListener('change', () => {
 // ── Dock badge ────────────────────────────────────────────────────────────────
 const _inboxUnread = new Map(); // accountId → inbox unread count
 function updateDockBadge() {
-  const total = [..._inboxUnread.values()].reduce((a, b) => a + b, 0);
+  const enabled = getSetting('dock-badge', 'true') === 'true';
+  const total = enabled ? [..._inboxUnread.values()].reduce((a, b) => a + b, 0) : 0;
   _send('badge:set', total);
 }
 
 let refreshTimer = null;
+
+// ── Resizable panel dividers ──────────────────────────────────────────────────
+(function initResizers() {
+  const listPanel = document.getElementById('emailListPanel');
+  const sidebar = document.querySelector('.folder-sidebar');
+
+  // Restore saved widths
+  const savedListW = localStorage.getItem('mailplane-panel-list-width');
+  if (savedListW) { listPanel.style.width = savedListW + 'px'; listPanel.style.minWidth = Math.max(220, +savedListW) + 'px'; }
+  const savedSideW = localStorage.getItem('mailplane-panel-sidebar-width');
+  if (savedSideW) { sidebar.style.width = savedSideW + 'px'; sidebar.style.minWidth = Math.max(140, +savedSideW) + 'px'; }
+
+  function makeResizer(resizerId, panel, minW, maxW, storageKey) {
+    const resizer = document.getElementById(resizerId);
+    if (!resizer) return;
+    let drag = null;
+    resizer.addEventListener('mousedown', e => {
+      e.preventDefault();
+      drag = { startX: e.clientX, startW: panel.offsetWidth };
+      resizer.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+    document.addEventListener('mousemove', e => {
+      if (!drag) return;
+      const w = Math.max(minW, Math.min(maxW, drag.startW + (e.clientX - drag.startX)));
+      panel.style.width = w + 'px';
+      panel.style.minWidth = w + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!drag) return;
+      drag = null;
+      resizer.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      localStorage.setItem(storageKey, panel.offsetWidth);
+    });
+  }
+
+  makeResizer('listResizer', listPanel, 220, 600, 'mailplane-panel-list-width');
+  makeResizer('sidebarResizer', sidebar, 140, 260, 'mailplane-panel-sidebar-width');
+})();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const PALETTE = ['#f5a623','#9b59b6','#e74c3c','#3498db','#1abc9c','#e67e22','#e91e63','#2ecc71','#635bff','#0ea5e9'];
@@ -286,15 +339,6 @@ function toast(msg, error = false, duration = 3200) {
  */
 const ipc = (ch, data) => _invoke(ch, data);
 
-/**
- * Like ipc() but throws if the response is {success: false}.
- * Use for fire-and-forget actions where failure should always surface as a toast.
- */
-async function ipcSafe(ch, data) {
-  const res = await _invoke(ch, data);
-  if (res && res.success === false) throw new Error(res.error || `${ch} failed`);
-  return res;
-}
 
 // ── Per-account folder cache ──────────────────────────────────────────────────
 const folderMaps = new Map();  // accountId → legacy static map (fallback)
@@ -343,7 +387,7 @@ async function getFolderPath(key, accountId) {
 }
 
 // ── Body cache key ────────────────────────────────────────────────────────────
-function bodyCacheKey(email) { return `${email.accountId}:${email.uid}`; }
+function bodyCacheKey(email) { return `${email.accountId}:${email.folder || ''}:${email.uid}`; }
 
 // ── Account tabs (top) ────────────────────────────────────────────────────────
 function renderAccountTabs() {
@@ -456,6 +500,7 @@ function makeFolderBtn(folder) {
       renderAccountTabs();
     }
     S.activeFolder = folder.key;
+    setSetting('last-folder', folder.key);
     S.selectedUid = null; S.selectedEmail = null; S.isSearching = false;
     document.getElementById('searchInput').value = '';
     document.getElementById('searchClear').classList.add('hidden');
@@ -674,9 +719,14 @@ async function loadEmails(append = false) {
     return;
   }
 
+  const snapshotAccountId = S.activeAccountId;
+  const snapshotFolder = S.activeFolder;
   const folder = await getFolderPath(S.activeFolder);
   const offset = append ? S.emails.length : 0;
   const res = await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+
+  // Discard stale results if the user switched accounts or folders while fetching
+  if (S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
 
   showLoading(false);
   S.loading = false;
@@ -712,7 +762,8 @@ async function loadUnified() {
 
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
-  if (!S.isSearching) refreshTimer = setTimeout(() => loadEmails(), 120000);
+  const ms = parseInt(getSetting('refresh-interval', '120000'));
+  if (ms > 0 && !S.isSearching) refreshTimer = setTimeout(() => loadEmails(), ms);
 }
 
 function showLoading(on) {
@@ -793,16 +844,29 @@ document.getElementById('searchClear').addEventListener('click', () => {
 });
 
 async function runSearch(query) {
-  if (!S.activeAccountId) { toast('Select an account to search', true); return; }
   S.isSearching = true;
   showLoading(true);
-  const folder = await getFolderPath(S.activeFolder);
-  const res = await ipc('emails:search', { accountId: S.activeAccountId, folder, query });
+
+  let messages = [];
+  if (S.activeAccountId) {
+    const folder = await getFolderPath(S.activeFolder);
+    const res = await ipc('emails:search', { accountId: S.activeAccountId, folder, query });
+    if (!res.success) { showLoading(false); toast('Search error: ' + res.error, true); return; }
+    messages = res.messages;
+  } else {
+    // All Mail mode — search inbox of every account in parallel
+    const results = await Promise.all(S.accounts.map(acc =>
+      ipc('emails:search', { accountId: acc.id, folder: 'INBOX', query })
+        .then(r => r.success ? r.messages : [])
+        .catch(() => [])
+    ));
+    messages = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
+  }
+
   showLoading(false);
-  if (!res.success) { toast('Search error: ' + res.error, true); return; }
-  S.emails = res.messages;
+  S.emails = messages;
   document.getElementById('loadMoreWrap').classList.add('hidden');
-  document.getElementById('unreadTotal').textContent = `${res.messages.length} result${res.messages.length !== 1 ? 's' : ''}`;
+  document.getElementById('unreadTotal').textContent = `${messages.length} result${messages.length !== 1 ? 's' : ''}`;
   renderEmailList(true);
 }
 
@@ -846,8 +910,9 @@ function setupSwipeGesture(itemEl, email) {
       if (fired > 65) {
         doDelete(email);
       } else if (fired < -65) {
-        setReadState(email, !email.read);
-        toast(email.read ? 'Marked unread' : 'Marked read');
+        const nowRead = !email.read;
+        setReadState(email, nowRead);
+        toast(nowRead ? 'Marked read' : 'Marked unread');
       }
     }, 200);
   }, { passive: false });
@@ -914,7 +979,7 @@ function makeEmailItem(email, showAccountBadge) {
   if (email.hasAttachment) {
     const att = document.createElement('span');
     att.className = 'tag-attach';
-    att.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="#aeaeb2"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
+    att.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="color:var(--text-tertiary)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
     footer.appendChild(att);
   }
 
@@ -1014,47 +1079,73 @@ function renderEmailList(isSearch = false) {
 
 // ── Flag / Read ───────────────────────────────────────────────────────────────
 async function toggleFlag(email) {
-  email.flagged = !email.flagged;
+  const prev = email.flagged;
+  email.flagged = !prev;
   renderEmailList();
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
-  await ipc('email:flag', { accountId: email.accountId, folder, uid: email.uid, flagged: email.flagged });
+  const res = await ipc('email:flag', { accountId: email.accountId, folder: email.folder, uid: email.uid, flagged: email.flagged });
+  if (!res?.success) {
+    email.flagged = prev; // revert optimistic update
+    renderEmailList();
+    toast('Could not update flag', true);
+    return;
+  }
   if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
     renderDetail(email, S.bodyCache.get(bodyCacheKey(email)));
   }
 }
 
 async function setReadState(email, read) {
+  const prev = email.read;
   email.read = read;
   renderEmailList();
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
-  await ipc('email:markread', { accountId: email.accountId, folder, uid: email.uid, read });
+  const res = await ipc('email:markread', { accountId: email.accountId, folder: email.folder, uid: email.uid, read });
+  if (!res?.success) {
+    email.read = prev; // revert optimistic update
+    renderEmailList();
+    toast('Could not update read state', true);
+  }
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────────
-let activeMenu = null;
 function showContextMenu(e, email) {
-  // Use native Electron context menu via IPC
   _send('context-menu:show', { hasSelection: !!email });
 }
-function removeContextMenu() { activeMenu?.remove(); activeMenu = null; }
 
 // ── Select email ──────────────────────────────────────────────────────────────
+let _markReadTimer = null;
+
+function scheduleMarkRead(email) {
+  clearTimeout(_markReadTimer);
+  if (email.read) return;
+  const mode = getSetting('mark-read-delay', 'open');
+  if (mode === 'never') return;
+  const ms = mode === 'instant' || mode === 'open' ? 0 : parseInt(mode) || 0;
+  _markReadTimer = setTimeout(() => {
+    if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+      setReadState(email, true);
+    }
+  }, ms);
+}
+
 async function selectEmail(email) {
+  clearTimeout(_markReadTimer);
   S.selectedUid = email.uid;
   S.selectedEmail = email;
   renderEmailList();
 
   const cacheKey = bodyCacheKey(email);
-  if (S.bodyCache.has(cacheKey)) { renderDetail(email, S.bodyCache.get(cacheKey)); return; }
+  if (S.bodyCache.has(cacheKey)) {
+    renderDetail(email, S.bodyCache.get(cacheKey));
+    scheduleMarkRead(email);
+    return;
+  }
 
   renderDetailShell(email);
 
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
-  const res = await ipc('email:body', { accountId: email.accountId, folder, uid: email.uid });
+  const res = await ipc('email:body', { accountId: email.accountId, folder: email.folder, uid: email.uid });
   if (!res.success) { toast('Load failed: ' + res.error, true); return; }
 
-  email.read = true;
-  if (res.body && res.body.from) {
+  if (res.body?.from) {
     const addr = res.body.from.address || res.body.from.email;
     const nm = res.body.from.name;
     if (addr && !S.contacts.find(c => c.email === addr)) S.contacts.push({ name: nm || '', email: addr });
@@ -1062,12 +1153,12 @@ async function selectEmail(email) {
 
   S.bodyCache.set(cacheKey, res.body);
   renderDetail(email, res.body);
+  scheduleMarkRead(email);
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
 async function doDelete(email) {
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
-  const res = await ipc('email:delete', { accountId: email.accountId, folder, uid: email.uid });
+  const res = await ipc('email:delete', { accountId: email.accountId, folder: email.folder, uid: email.uid });
   if (res.success) {
     S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
     S.bodyCache.delete(bodyCacheKey(email));
@@ -1080,8 +1171,7 @@ async function doDelete(email) {
 }
 
 async function doArchive(email) {
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
-  const res = await ipc('email:archive', { accountId: email.accountId, folder, uid: email.uid });
+  const res = await ipc('email:archive', { accountId: email.accountId, folder: email.folder, uid: email.uid });
   if (res.success) {
     S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
     S.bodyCache.delete(bodyCacheKey(email));
@@ -1094,18 +1184,27 @@ async function doArchive(email) {
 }
 
 // ── Undo send queue ───────────────────────────────────────────────────────────
-const UNDO_SEND_DELAY = 8000;
 let _undoSendTimer = null;
 let _undoSendCancel = null;
 
-function sendWithUndo(accountId, emailData, onSent) {
+function sendWithUndo(accountId, emailData, onSent, delay) {
+  const DELAY = delay !== undefined ? delay : parseInt(getSetting('undo-delay', '8000'));
   clearTimeout(_undoSendTimer);
   if (_undoSendCancel) _undoSendCancel();
+
+  if (DELAY === 0) {
+    // Send immediately
+    ipc('email:send', { accountId, ...emailData }).then(res => {
+      if (res.success) { toast('Sent'); onSent?.(); }
+      else toast('Send failed: ' + (res.error || 'Unknown error'), true);
+    });
+    return;
+  }
 
   let cancelled = false;
   _undoSendCancel = () => { cancelled = true; };
 
-  let remaining = Math.ceil(UNDO_SEND_DELAY / 1000);
+  let remaining = Math.ceil(DELAY / 1000);
   const toastEl = document.getElementById('toast');
   const renderUndo = () => {
     toastEl.innerHTML = `Sending in ${remaining}s… <button class="undo-send-btn" id="undoSendBtn">Undo</button>`;
@@ -1133,7 +1232,7 @@ function sendWithUndo(accountId, emailData, onSent) {
     const res = await ipc('email:send', { accountId, ...emailData });
     if (res.success) { toast('Sent'); onSent?.(); }
     else toast('Send failed: ' + (res.error || 'Unknown error'), true);
-  }, UNDO_SEND_DELAY);
+  }, DELAY);
 }
 
 // ── Bulk actions ──────────────────────────────────────────────────────────────
@@ -1257,49 +1356,80 @@ function renderDetail(email, body) {
   const mkBtn = (label, icon, cls, cb) => {
     const btn = document.createElement('button');
     btn.className = 'detail-action-btn' + (cls ? ' ' + cls : '');
+    btn.title = label;
     btn.innerHTML = `${icon}<span>${label}</span>`;
     btn.addEventListener('click', cb);
     return btn;
   };
-  navRight.append(
+  const mkIconBtn = (label, icon, cls, cb) => {
+    const btn = document.createElement('button');
+    btn.className = 'detail-action-btn detail-action-icon' + (cls ? ' ' + cls : '');
+    btn.title = label;
+    btn.innerHTML = icon;
+    btn.addEventListener('click', cb);
+    return btn;
+  };
+
+  // Primary: Reply, Reply All, Forward
+  const grpReply = document.createElement('div');
+  grpReply.className = 'detail-action-group';
+  grpReply.append(
     mkBtn('Reply', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, 'primary', () => openReply(email, body)),
     mkBtn('Reply All', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M7 8V5l-7 7 7 7v-3l-4-4 4-4zm6 1V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>`, '', () => openReplyAll(email, body)),
     mkBtn('Forward', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>`, '', () => openForward(email, body)),
-    mkBtn('Archive', `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`, '', () => doArchive(email)),
-    mkBtn(email.flagged ? 'Unflag' : 'Flag',
-      `<svg width="12" height="12" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
-      email.flagged ? 'flagged-active' : '', () => toggleFlag(email)),
-    mkBtn(email.read ? 'Mark Unread' : 'Mark Read',
-      `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>`,
-      '', () => setReadState(email, !email.read)),
-    mkBtn('Delete', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`, '', () => doDelete(email)),
   );
+
+  const divider = document.createElement('div');
+  divider.className = 'detail-action-divider';
+
+  // Secondary: Archive, Flag, Mark Read, Delete
+  const grpActions = document.createElement('div');
+  grpActions.className = 'detail-action-group';
+  grpActions.append(
+    mkIconBtn('Archive', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`, '', () => doArchive(email)),
+    mkIconBtn(email.flagged ? 'Unflag' : 'Flag',
+      `<svg width="13" height="13" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
+      email.flagged ? 'flagged-active' : '', () => toggleFlag(email)),
+    mkIconBtn(email.read ? 'Mark Unread' : 'Mark Read',
+      `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>`,
+      '', () => setReadState(email, !email.read)),
+    mkIconBtn('Delete', `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`, 'delete-btn', () => doDelete(email)),
+  );
+
+  navRight.append(grpReply, divider, grpActions);
   topbar.append(navLeft, navRight);
 
-  // Header
+  // Header — subject first, then sender row
   const toStr = body?.to?.map(a => a.name || a.address).filter(Boolean).join(', ') || email.toEmail || '';
   const header = document.createElement('div');
   header.className = 'detail-header';
 
-  const senderRow = document.createElement('div');
-  senderRow.className = 'detail-sender-row';
-  const av = avatarEl(email.fromName, email.fromEmail, 46);
-  av.classList.add('detail-avatar');
-  senderRow.appendChild(av);
-
-  const meta = document.createElement('div');
-  meta.className = 'detail-sender-meta';
-  meta.innerHTML = `<h2>${escHtml(email.fromName || email.fromEmail)}</h2>
-    <div class="detail-sender-email">${escHtml(email.fromEmail)}</div>
-    ${toStr ? `<div class="detail-to-line">to ${escHtml(toStr)}</div>` : ''}`;
-  senderRow.appendChild(meta);
-  header.appendChild(senderRow);
-
+  // Subject + date
   const subjRow = document.createElement('div');
   subjRow.className = 'detail-subject-row';
   subjRow.innerHTML = `<div class="detail-subject">${escHtml(email.subject || '(no subject)')}</div>
     <div class="detail-date">${fmtFull(email.date)}</div>`;
   header.appendChild(subjRow);
+
+  // Sender row (avatar + name/email + to line)
+  const senderRow = document.createElement('div');
+  senderRow.className = 'detail-sender-row';
+  const av = avatarEl(email.fromName, email.fromEmail, 38);
+  av.classList.add('detail-avatar');
+  av.style.width = '38px';
+  av.style.height = '38px';
+  av.style.fontSize = '14px';
+  senderRow.appendChild(av);
+
+  const meta = document.createElement('div');
+  meta.className = 'detail-sender-meta';
+  const nameHtml = email.fromName && email.fromName !== email.fromEmail
+    ? `<span class="detail-from-name">${escHtml(email.fromName)}</span> <span class="detail-from-addr">&lt;${escHtml(email.fromEmail)}&gt;</span>`
+    : `<span class="detail-from-name">${escHtml(email.fromEmail)}</span>`;
+  meta.innerHTML = `<div class="detail-from-row">${nameHtml}</div>
+    ${toStr ? `<div class="detail-recipients">to ${escHtml(toStr)}</div>` : ''}`;
+  senderRow.appendChild(meta);
+  header.appendChild(senderRow);
 
   // Body
   const bodyWrap = document.createElement('div');
@@ -1321,7 +1451,6 @@ function renderDetail(email, body) {
       loadBar.className = 'load-images-bar';
       loadBar.innerHTML = `<span>Remote images blocked to protect your privacy</span><button class="load-images-btn">Load Images</button>`;
       loadBar.querySelector('.load-images-btn').addEventListener('click', () => {
-        S.imagesBlocked = false;
         loadBar.remove();
         try {
           iframe.contentDocument.querySelectorAll('img[data-src]').forEach(img => {
@@ -1336,16 +1465,20 @@ function renderDetail(email, body) {
     const iframe = document.createElement('iframe');
     iframe.className = 'email-iframe';
     const imgBlockCss = S.imagesBlocked ? 'img[data-src]{display:none!important;}' : '';
+    const isDark = document.documentElement.classList.contains('dark');
+    const iframeColors = isDark
+      ? { bg: '#1c1c1e', text: '#f5f5f7', link: '#0a84ff', bqBorder: '#3a3a3c', bqText: '#aeaeb2', preBg: '#2c2c2e', scheme: 'dark' }
+      : { bg: '#ffffff', text: '#1a1a1a', link: '#007aff', bqBorder: '#d0d0d5', bqText: '#6e6e73', preBg: '#f5f5f7', scheme: 'light' };
     const htmlContent = `<!DOCTYPE html><html><head>
       <base target="_blank">
-      <meta name="color-scheme" content="light">
+      <meta name="color-scheme" content="${iframeColors.scheme}">
       <style>
-        html,body{margin:0;padding:0;}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:14px;color:#1a1a1a;padding:18px 22px;line-height:1.65;word-break:break-word;}
-        a{color:#007aff;}img{max-width:100%!important;}
+        html,body{margin:0;padding:0;background:${iframeColors.bg};}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:14px;color:${iframeColors.text};padding:18px 22px;line-height:1.65;word-break:break-word;}
+        a{color:${iframeColors.link};}img{max-width:100%!important;}
         table{max-width:100%!important;border-collapse:collapse;}
-        blockquote{border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;}
-        pre{background:#f5f5f7;padding:12px;border-radius:8px;overflow-x:auto;font-size:13px;}
+        blockquote{border-left:3px solid ${iframeColors.bqBorder};margin:8px 0;padding-left:12px;color:${iframeColors.bqText};}
+        pre{background:${iframeColors.preBg};padding:12px;border-radius:8px;overflow-x:auto;font-size:13px;color:${iframeColors.text};}
         ${imgBlockCss}
       </style>
     </head><body>${processedHtml}</body></html>`;
@@ -1380,7 +1513,7 @@ function renderDetail(email, body) {
       chip.title = 'Download ' + att.filename;
       chip.innerHTML = `
         <svg class="dl-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        <span>${escHtml(att.filename)}${att.size ? ' <span style="color:#aeaeb2">(' + fmtBytes(att.size) + ')</span>' : ''}</span>`;
+        <span>${escHtml(att.filename)}${att.size ? ' <span style="color:var(--text-tertiary)">(' + fmtBytes(att.size) + ')</span>' : ''}</span>`;
       chip.addEventListener('click', () => downloadAttachment(email, att));
       attBar.appendChild(chip);
     });
@@ -1392,9 +1525,8 @@ function renderDetail(email, body) {
 
 async function downloadAttachment(email, att) {
   toast('Downloading ' + att.filename + '…');
-  const folder = await getFolderPath(S.activeFolder, email.accountId);
   const res = await ipc('email:attachment', {
-    accountId: email.accountId, folder, uid: email.uid,
+    accountId: email.accountId, folder: email.folder, uid: email.uid,
     filename: att.filename, contentType: att.contentType, blobId: att.blobId,
   });
   if (res.success) toast('Saved to Downloads');
@@ -1440,21 +1572,37 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
   S.composeExpanded = false;
 
   document.getElementById('composeCcRow').classList.toggle('hidden', !S.ccVisible);
+  document.getElementById('composeBccRow').classList.add('hidden');
+  document.getElementById('composeBcc').value = '';
+  document.getElementById('composeBccToggle').textContent = 'Bcc';
+  S.bccVisible = false;
 
   // Update signature when account changes
   fromSel.onchange = () => {
     const newSig = getAccountSignature(fromSel.value);
     const sigEl = bodyEl.querySelector('.compose-signature');
-    if (sigEl) sigEl.innerHTML = newSig || '';
-    else if (newSig) bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${newSig}</div>`;
+    if (sigEl) {
+      if (newSig) sigEl.innerHTML = newSig;
+      else sigEl.closest('p, div') === sigEl ? sigEl.remove() : sigEl.remove();
+    } else if (newSig) {
+      bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${newSig}</div>`;
+    }
   };
 
   setTimeout(() => (to ? document.getElementById('composeSubject') : document.getElementById('composeTo')).focus(), 60);
 }
 
-function closeCompose() {
+function closeCompose(skipConfirm = false) {
+  const bodyEl = document.getElementById('composeBody');
+  if (!skipConfirm && getSetting('confirm-discard', 'false') === 'true') {
+    const clone = bodyEl.cloneNode(true);
+    clone.querySelector('.compose-signature')?.remove();
+    if (clone.textContent.trim()) {
+      if (!confirm('Discard this message?')) return;
+    }
+  }
   document.getElementById('composeFloat').classList.add('hidden');
-  document.getElementById('composeBody').innerHTML = '';
+  bodyEl.innerHTML = '';
 }
 
 // Toolbar buttons
@@ -1521,6 +1669,25 @@ document.getElementById('composeCcToggle').addEventListener('click', () => {
   if (S.ccVisible) document.getElementById('composeCc').focus();
 });
 
+document.getElementById('composeBccToggle').addEventListener('click', () => {
+  S.bccVisible = !S.bccVisible;
+  document.getElementById('composeBccRow').classList.toggle('hidden', !S.bccVisible);
+  document.getElementById('composeBccToggle').textContent = S.bccVisible ? '− Bcc' : 'Bcc';
+  if (S.bccVisible) document.getElementById('composeBcc').focus();
+});
+
+document.getElementById('composeAttachBtn').addEventListener('click', () => {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.multiple = true;
+  inp.onchange = () => {
+    if (!inp.files.length) return;
+    const names = Array.from(inp.files).map(f => f.name).join(', ');
+    toast('Attachments noted: ' + names + '\n(Full attachment support coming soon)');
+  };
+  inp.click();
+});
+
 document.getElementById('composeSubject').addEventListener('input', () => {
   const s = document.getElementById('composeSubject').value || 'New Message';
   document.getElementById('composeFloatTitle').textContent = s;
@@ -1562,11 +1729,13 @@ function setupAutocomplete(inputId) {
 function removeAutocomplete() { autocompleteDropdown?.remove(); autocompleteDropdown = null; }
 setupAutocomplete('composeTo');
 setupAutocomplete('composeCc');
+setupAutocomplete('composeBcc');
 
 document.getElementById('composeSendBtn').addEventListener('click', async () => {
   const accountId = document.getElementById('composeFrom').value;
   const to = document.getElementById('composeTo').value.trim();
   const cc = document.getElementById('composeCc').value.trim();
+  const bcc = document.getElementById('composeBcc').value.trim();
   const subject = document.getElementById('composeSubject').value.trim();
   const bodyEl = document.getElementById('composeBody');
   const text = bodyEl.innerText || '';
@@ -1576,8 +1745,9 @@ document.getElementById('composeSendBtn').addEventListener('click', async () => 
   if (!subject) { showComposeError('Enter a subject'); return; }
 
   document.getElementById('composeError').classList.add('hidden');
-  closeCompose();
-  sendWithUndo(accountId, { to, cc, subject, text, html });
+  closeCompose(true); // skip discard confirmation — user is sending, not discarding
+  const delay = parseInt(getSetting('undo-delay', '8000'));
+  sendWithUndo(accountId, { to, cc, bcc, subject, text, html }, null, delay);
 });
 
 // ── Inline images in compose ──────────────────────────────────────────────────
@@ -1623,10 +1793,11 @@ function showComposeError(msg) {
 // ── Reply / Forward ───────────────────────────────────────────────────────────
 function openReply(email, body) {
   const replyTo = body?.from?.address || body?.from?.email || email.fromEmail;
+  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body) : '';
   openCompose({
     to: replyTo,
     subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
-    bodyHtml: '<br><br>' + buildQuoteHtml(email, body),
+    bodyHtml: quote,
     title: 'Reply',
   });
 }
@@ -1636,10 +1807,11 @@ function openReplyAll(email, body) {
   const toList = [body?.from?.address || body?.from?.email || email.fromEmail,
     ...(body?.to || []).map(a => a.address)].filter(a => a && a !== myEmail).join(', ');
   const ccVal = (body?.cc || []).map(a => a.address).join(', ');
+  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body) : '';
   openCompose({
     to: toList,
     subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
-    bodyHtml: '<br><br>' + buildQuoteHtml(email, body),
+    bodyHtml: quote,
     title: 'Reply All',
   });
   document.getElementById('composeCc').value = ccVal;
@@ -1647,9 +1819,10 @@ function openReplyAll(email, body) {
 }
 
 function openForward(email, body) {
+  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body, true) : '';
   openCompose({
     subject: email.subject?.startsWith('Fwd:') ? email.subject : 'Fwd: ' + email.subject,
-    bodyHtml: '<br><br>' + buildQuoteHtml(email, body, true),
+    bodyHtml: quote,
     title: 'Forward',
   });
 }
@@ -1659,10 +1832,11 @@ function buildQuoteHtml(email, body, isForward = false) {
   const header = isForward
     ? `<b>---------- Forwarded message ----------</b><br>From: ${from}<br>Date: ${fmtFull(email.date)}<br>Subject: ${escHtml(email.subject)}`
     : `On ${fmtFull(email.date)}, ${from} wrote:`;
+  const bqStyle = 'border-left:3px solid var(--border,#d0d0d5);margin:8px 0;padding-left:12px;color:var(--text-secondary,#6e6e73);';
   const quotedBody = body?.html
-    ? `<blockquote style="border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;">${body.html}</blockquote>`
-    : `<blockquote style="border-left:3px solid #d0d0d5;margin:8px 0;padding-left:12px;color:#6e6e73;white-space:pre-wrap;">${escHtml(body?.text || '')}</blockquote>`;
-  return `<div style="color:#6e6e73;font-size:13px;">${header}</div>${quotedBody}`;
+    ? `<blockquote style="${bqStyle}">${body.html}</blockquote>`
+    : `<blockquote style="${bqStyle}white-space:pre-wrap;">${escHtml(body?.text || '')}</blockquote>`;
+  return `<div style="color:var(--text-secondary,#6e6e73);font-size:13px;">${header}</div>${quotedBody}`;
 }
 
 // ── Settings modal ────────────────────────────────────────────────────────────
@@ -1676,12 +1850,329 @@ function switchSettingsPanel(panel) {
   document.querySelectorAll('.settings-nav-item').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.panel === panel);
   });
-  const titles = { accounts: 'Accounts', apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard Shortcuts' };
+  const titles = {
+    accounts: 'Accounts', general: 'General', notifications: 'Notifications',
+    reading: 'Reading', composing: 'Composing', calendar: 'Calendar',
+    apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard Shortcuts',
+  };
   document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
   if (panel === 'accounts') renderSettingsAccounts();
+  else if (panel === 'general') renderSettingsGeneral();
+  else if (panel === 'notifications') renderSettingsNotifications();
+  else if (panel === 'reading') renderSettingsReading();
+  else if (panel === 'composing') renderSettingsComposing();
+  else if (panel === 'calendar') renderSettingsCalendar();
   else if (panel === 'apps') renderSettingsApps();
   else if (panel === 'appearance') renderSettingsAppearance();
   else renderSettingsShortcuts();
+}
+
+function makePrefRow(label, desc, control) {
+  return `<div class="settings-pref-row">
+    <div class="settings-pref-info">
+      <div class="settings-pref-label">${label}</div>
+      ${desc ? `<div class="settings-pref-desc">${desc}</div>` : ''}
+    </div>
+    <div class="settings-pref-control">${control}</div>
+  </div>`;
+}
+
+function makeToggle(key, defVal) {
+  const on = getSetting(key, defVal) === 'true';
+  return `<label class="toggle-sw"><input type="checkbox" data-pref="${key}" ${on ? 'checked' : ''}><span class="toggle-track"></span></label>`;
+}
+
+function makeSelect(key, defVal, options) {
+  const cur = getSetting(key, defVal);
+  const opts = options.map(([v, l]) => `<option value="${v}"${cur === v ? ' selected' : ''}>${l}</option>`).join('');
+  return `<select class="settings-select" data-pref="${key}">${opts}</select>`;
+}
+
+function bindPrefControls(container) {
+  container.querySelectorAll('input[type="checkbox"][data-pref]').forEach(el => {
+    el.addEventListener('change', () => {
+      setSetting(el.dataset.pref, el.checked);
+      applyPrefChange(el.dataset.pref, String(el.checked));
+    });
+  });
+  container.querySelectorAll('select[data-pref]').forEach(el => {
+    el.addEventListener('change', () => {
+      setSetting(el.dataset.pref, el.value);
+      applyPrefChange(el.dataset.pref, el.value);
+    });
+  });
+}
+
+function syncNotifyPrefs() {
+  _send('prefs:notify', {
+    enabled: getSetting('notifications-enabled', 'true') === 'true',
+    sound:   getSetting('notifications-sound', 'true') === 'true',
+    sender:  getSetting('notifications-sender', 'true') === 'true',
+    subject: getSetting('notifications-subject', 'true') === 'true',
+  });
+}
+
+function applyPrefChange(key, value) {
+  if (key === 'images-blocked') {
+    S.imagesBlocked = value === 'true';
+  } else if (key === 'refresh-interval') {
+    clearTimeout(refreshTimer);
+    const ms = parseInt(value);
+    if (ms > 0 && !S.isSearching) refreshTimer = setTimeout(() => loadEmails(), ms);
+  } else if (key === 'dock-badge') {
+    updateDockBadge();
+  } else if (key.startsWith('notifications-')) {
+    syncNotifyPrefs();
+  }
+}
+
+function renderSettingsGeneral() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">Refresh</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Auto-refresh interval', 'How often to check for new mail',
+          makeSelect('refresh-interval', '120000', [
+            ['60000','Every minute'],['120000','Every 2 minutes'],['300000','Every 5 minutes'],
+            ['600000','Every 10 minutes'],['0','Manual only'],
+          ])
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Startup</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Open to folder', 'Which folder to show on launch',
+          makeSelect('startup-folder', 'inbox', [
+            ['inbox','Inbox'],['last','Last viewed'],
+          ])
+        )}
+        ${makePrefRow('Show unread count in dock', 'Display unread email badge on the app icon',
+          makeToggle('dock-badge', 'true')
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Privacy</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Analytics', 'Help improve Mailplane by sending anonymous usage data',
+          makeToggle('analytics', 'false')
+        )}
+      </div>
+    </div>
+  `;
+  bindPrefControls(content);
+}
+
+function renderSettingsNotifications() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">New Mail</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Show notifications', 'Display a system notification when new mail arrives',
+          makeToggle('notifications-enabled', 'true')
+        )}
+        ${makePrefRow('Notification sound', 'Play a sound with each notification',
+          makeToggle('notifications-sound', 'true')
+        )}
+        ${makePrefRow('Show sender name', 'Include the sender\'s name in notifications',
+          makeToggle('notifications-sender', 'true')
+        )}
+        ${makePrefRow('Show subject', 'Include the email subject in notifications',
+          makeToggle('notifications-subject', 'true')
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Do Not Disturb</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Respect system Do Not Disturb', 'Suppress notifications when macOS DND is active',
+          makeToggle('notifications-dnd', 'true')
+        )}
+      </div>
+    </div>
+  `;
+  bindPrefControls(content);
+}
+
+function renderSettingsReading() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">Reading Pane</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Mark as read', 'When to mark an email as read',
+          makeSelect('mark-read-delay', 'open', [
+            ['open','When opened'],['instant','Immediately'],
+            ['3000','After 3 seconds'],['never','Never'],
+          ])
+        )}
+        ${makePrefRow('Show message preview', 'Number of preview lines in the message list',
+          makeSelect('preview-lines', '2', [
+            ['0','None'],['1','1 line'],['2','2 lines'],['3','3 lines'],
+          ])
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Images & Security</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Block remote images', 'Prevent external images from loading automatically (protects your privacy)',
+          makeToggle('images-blocked', 'true')
+        )}
+        ${makePrefRow('Open links in browser', 'Open all email links in your default browser',
+          makeToggle('links-external', 'true')
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Display</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Group by thread', 'Group related emails into conversations',
+          makeToggle('thread-grouping', String(S.threadGrouping))
+        )}
+        ${makePrefRow('Show snippets', 'Display a preview of each email in the list',
+          makeToggle('show-snippets', 'true')
+        )}
+      </div>
+    </div>
+  `;
+  // Wire thread toggle live (also syncs the toolbar button)
+  const tg = content.querySelector('[data-pref="thread-grouping"]');
+  if (tg) tg.addEventListener('change', () => {
+    S.threadGrouping = tg.checked;
+    setSetting('thread-grouping', tg.checked);
+    document.getElementById('threadToggleBtn').classList.toggle('active', tg.checked);
+    S.expandedThreads.clear();
+    renderEmailList();
+  });
+  bindPrefControls(content);
+}
+
+function renderSettingsComposing() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">Sending</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Undo send window', 'Time to cancel a send after clicking Send',
+          makeSelect('undo-delay', '8000', [
+            ['0','Off (send immediately)'],['5000','5 seconds'],
+            ['8000','8 seconds (recommended)'],['15000','15 seconds'],['30000','30 seconds'],
+          ])
+        )}
+        ${makePrefRow('Confirm before discarding', 'Ask for confirmation when closing a draft',
+          makeToggle('confirm-discard', 'false')
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Replies</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Include quoted message', 'Quote the original email when replying',
+          makeToggle('quote-reply', 'true')
+        )}
+        ${makePrefRow('Reply from same account', 'Use the recipient account when replying',
+          makeToggle('reply-same-account', 'true')
+        )}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Editor</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Spell check', 'Check spelling while composing',
+          makeToggle('spell-check', 'true')
+        )}
+        ${makePrefRow('Rich text by default', 'Compose in HTML/rich-text mode',
+          makeToggle('rich-text', 'true')
+        )}
+      </div>
+    </div>
+  `;
+  bindPrefControls(content);
+}
+
+function renderSettingsCalendar() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = '';
+
+  const section = document.createElement('div');
+  section.className = 'settings-section';
+  const title = document.createElement('div');
+  title.className = 'settings-section-title';
+  title.textContent = 'Calendar Accounts';
+  section.appendChild(title);
+
+  if (calendarState.accounts.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'font-size:13px;color:var(--text-tertiary);padding:8px 0 12px';
+    empty.textContent = 'No calendar accounts connected.';
+    section.appendChild(empty);
+  } else {
+    calendarState.accounts.forEach(acc => {
+      const row = document.createElement('div');
+      row.className = 'settings-calendar-account';
+      row.innerHTML = `
+        <div class="cal-account-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+        </div>
+        <div class="cal-account-info">
+          <div class="cal-account-name">${escHtml(acc.email)}</div>
+          <div class="cal-account-url">${escHtml(acc.serverUrl || '')}</div>
+          <div class="cal-account-url" style="margin-top:2px">${(acc.calendars || []).length} calendar${(acc.calendars || []).length !== 1 ? 's' : ''}</div>
+        </div>`;
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'settings-remove-btn';
+      removeBtn.title = 'Remove calendar account';
+      removeBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
+      removeBtn.addEventListener('click', async () => {
+        if (!confirm(`Remove calendar account ${acc.email}?`)) return;
+        await ipc('caldav:remove', acc.id);
+        calendarState.accounts = calendarState.accounts.filter(a => a.id !== acc.id);
+        renderCalendarNav();
+        renderSettingsCalendar();
+        toast('Calendar account removed');
+      });
+      row.appendChild(removeBtn);
+      section.appendChild(row);
+    });
+  }
+
+  content.appendChild(section);
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'settings-action-btn';
+  addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Add Calendar Account`;
+  addBtn.addEventListener('click', () => { hideSettingsModal(); openCaldavModal(); });
+  content.appendChild(addBtn);
+
+  const syncSection = document.createElement('div');
+  syncSection.className = 'settings-section';
+  syncSection.style.marginTop = '20px';
+  const syncTitle = document.createElement('div');
+  syncTitle.className = 'settings-section-title';
+  syncTitle.textContent = 'Sync';
+  syncSection.appendChild(syncTitle);
+  syncSection.innerHTML += `<div class="settings-pref-group">
+    ${makePrefRow('Sync calendars automatically', 'Fetch new events in the background',
+      makeToggle('calendar-auto-sync', 'true')
+    )}
+    ${makePrefRow('Sync interval', 'How often to check for calendar updates',
+      makeSelect('calendar-sync-interval', '900000', [
+        ['300000','Every 5 minutes'],['900000','Every 15 minutes'],
+        ['1800000','Every 30 minutes'],['3600000','Every hour'],
+      ])
+    )}
+  </div>`;
+  content.appendChild(syncSection);
+  bindPrefControls(syncSection);
 }
 
 function renderSettingsAppearance() {
@@ -1873,7 +2364,7 @@ function renderSettingsApps() {
 
   if (S.apps.length === 0) {
     const empty = document.createElement('div');
-    empty.style.cssText = 'font-size:13px;color:#aeaeb2;padding:8px 0 12px;';
+    empty.style.cssText = 'font-size:13px;color:var(--text-tertiary);padding:8px 0 12px;';
     empty.textContent = 'No apps added yet.';
     content.appendChild(empty);
   } else {
@@ -2136,6 +2627,7 @@ document.getElementById('setupModal').addEventListener('click', e => {
 // ── Toolbar buttons ───────────────────────────────────────────────────────────
 document.getElementById('threadToggleBtn').addEventListener('click', () => {
   S.threadGrouping = !S.threadGrouping;
+  setSetting('thread-grouping', S.threadGrouping);
   S.expandedThreads.clear();
   document.getElementById('threadToggleBtn').classList.toggle('active', S.threadGrouping);
   renderEmailList();
@@ -2162,7 +2654,6 @@ document.addEventListener('keydown', e => {
     if (composeOpen && !S.composeMinimized) { closeCompose(); return; }
     if (setupOpen && document.getElementById('setupCancelBtn').style.display !== 'none') { hideSetupModal(); return; }
     if (!document.getElementById('settingsModal').classList.contains('hidden')) { hideSettingsModal(); return; }
-    removeContextMenu();
     return;
   }
 
@@ -2261,8 +2752,7 @@ function renderCalendarGrid() {
   const d = calendarState.viewDate;
   const year = d.getFullYear();
   const month = d.getMonth();
-  document.getElementById('calendarViewTitle').textContent =
-    `${MONTH_NAMES[month]} ${year}` + (calendarState.activeCalendarUrl ? '' : '');
+  document.getElementById('calendarViewTitle').textContent = `${MONTH_NAMES[month]} ${year}`;
 
   const header = document.getElementById('calendarGridHeader');
   header.innerHTML = DAY_NAMES.map(n => `<div class="cal-day-name">${n}</div>`).join('');
@@ -2355,16 +2845,52 @@ document.getElementById('calendarToday').addEventListener('click', () => {
 
 // ── CalDAV account setup ──────────────────────────────────────────────────────
 
-document.getElementById('addCalendarBtn').addEventListener('click', () => {
+function closeCaldavModal() {
+  document.getElementById('caldavModal').classList.add('hidden');
+}
+
+function openCaldavModal() {
   document.getElementById('caldavServerUrl').value = '';
   document.getElementById('caldavEmail').value = '';
   document.getElementById('caldavPassword').value = '';
   document.getElementById('caldavError').classList.add('hidden');
+  document.getElementById('caldavBtnText').textContent = 'Connect';
+  document.getElementById('caldavSpinner').classList.add('hidden');
+  document.querySelectorAll('.caldav-provider-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('caldavModal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('caldavServerUrl').focus(), 50);
+  setTimeout(() => document.getElementById('caldavEmail').focus(), 50);
+}
+
+document.getElementById('addCalendarBtn').addEventListener('click', openCaldavModal);
+document.getElementById('caldavModalClose').addEventListener('click', closeCaldavModal);
+document.getElementById('caldavCancelBtn').addEventListener('click', closeCaldavModal);
+
+// Provider quick-select
+document.querySelectorAll('.caldav-provider-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.caldav-provider-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const url = btn.dataset.url;
+    const placeholder = btn.dataset.placeholder || url;
+    const urlInput = document.getElementById('caldavServerUrl');
+    if (url) {
+      urlInput.value = url;
+    } else {
+      urlInput.value = '';
+      urlInput.placeholder = placeholder || 'https://';
+    }
+    document.getElementById('caldavEmail').focus();
+  });
 });
-document.getElementById('caldavModalClose').addEventListener('click', () => document.getElementById('caldavModal').classList.add('hidden'));
-document.getElementById('caldavCancelBtn').addEventListener('click', () => document.getElementById('caldavModal').classList.add('hidden'));
+
+// Show/hide password toggle
+document.getElementById('caldavTogglePassword').addEventListener('click', () => {
+  const pwd = document.getElementById('caldavPassword');
+  const btn = document.getElementById('caldavTogglePassword');
+  const showing = pwd.type === 'text';
+  pwd.type = showing ? 'password' : 'text';
+  btn.style.opacity = showing ? '' : '0.6';
+});
 
 document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   let serverUrl = document.getElementById('caldavServerUrl').value.trim();
@@ -2374,8 +2900,13 @@ document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   const spinner = document.getElementById('caldavSpinner');
   const btnText = document.getElementById('caldavBtnText');
 
-  if (!serverUrl || !email || !password) {
-    errEl.textContent = 'Please fill in all fields.';
+  if (!email || !password) {
+    errEl.textContent = 'Email and password are required.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (!serverUrl) {
+    errEl.textContent = 'Select a provider or enter a server URL.';
     errEl.classList.remove('hidden');
     return;
   }
@@ -2390,7 +2921,7 @@ document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   btnText.textContent = 'Connect';
 
   if (!res.success) {
-    errEl.textContent = res.error || 'Could not connect to CalDAV server.';
+    errEl.textContent = res.error || 'Could not connect to CalDAV server. Check the URL and credentials.';
     errEl.classList.remove('hidden');
     return;
   }
@@ -2400,16 +2931,36 @@ document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   const acc = { id, email, serverUrl, calendars: res.calendars || [] };
   calendarState.accounts.push(acc);
   renderCalendarNav();
-  document.getElementById('caldavModal').classList.add('hidden');
+  closeCaldavModal();
 
   if (acc.calendars.length > 0) openCalendar(acc, acc.calendars[0]);
-  else toast('Calendar account added — no calendars found');
+  else toast('Calendar account added — no calendars found on this server');
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   S.accounts = await ipc('accounts:list');
   S.apps = await ipc('apps:list').catch(() => []);
+
+  // Push notification preferences to main process
+  syncNotifyPrefs();
+
+  // Show real app version in settings sidebar
+  const verEl = document.getElementById('settingsVersion');
+  if (verEl && window.electronAPI.appVersion) {
+    verEl.textContent = 'Version ' + window.electronAPI.appVersion;
+  }
+
+  // Restore thread grouping from saved setting
+  S.threadGrouping = getSetting('thread-grouping', 'false') === 'true';
+  document.getElementById('threadToggleBtn').classList.toggle('active', S.threadGrouping);
+
+  // Load saved CalDAV accounts
+  const calRes = await ipc('caldav:list').catch(() => null);
+  if (calRes?.success && calRes.accounts?.length > 0) {
+    calendarState.accounts = calRes.accounts;
+    renderCalendarNav();
+  }
 
   if (S.accounts.length === 0) {
     showLoading(false);
@@ -2418,6 +2969,14 @@ async function init() {
     showSetupModal(false);
   } else {
     S.activeAccountId = S.accounts[0].id;
+
+    // Restore startup folder
+    const startupPref = getSetting('startup-folder', 'inbox');
+    if (startupPref === 'last') {
+      const saved = getSetting('last-folder', 'inbox');
+      if (saved) S.activeFolder = saved;
+    }
+
     showLoading(true);
     showFolderSidebar(true);
     renderAccountTabs();
