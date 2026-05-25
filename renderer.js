@@ -1,5 +1,7 @@
-const { ipcRenderer } = require('electron');
-const crypto = require('crypto');
+/* global electronAPI */
+// All Electron access goes through the contextBridge-exposed API in preload.js.
+// This file runs in an isolated browser context with no Node.js access.
+const { invoke: _invoke, send: _send, on: _on, md5 } = window.electronAPI;
 
 // ── State ──────────────────────────────────────────────────────────────────────
 const S = {
@@ -25,14 +27,21 @@ const S = {
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
-ipcRenderer.on('new-emails', (_, accountId) => {
+_on('new-emails', (accountId) => {
   if (accountId === S.activeAccountId || S.activeAccountId === null) {
     loadEmails();
   }
 });
 
+// ── Background cache refresh completed ────────────────────────────────────────
+_on('emails:refreshed', ({ accountId, folder }) => {
+  if (folder === S.activeFolder && (accountId === S.activeAccountId || S.activeAccountId === null)) {
+    loadEmails();
+  }
+});
+
 // ── Mailto protocol handler ───────────────────────────────────────────────────
-ipcRenderer.on('mailto', (_, url) => {
+_on('mailto', (url) => {
   try {
     const u = new URL(url);
     const to = u.pathname || '';
@@ -46,15 +55,29 @@ ipcRenderer.on('mailto', (_, url) => {
 });
 
 // ── Update available notification ─────────────────────────────────────────────
-ipcRenderer.on('update-ready', () => {
-  toast('Update downloaded — restart to install', false, 8000);
+_on('update-ready', ({ version } = {}) => {
+  const existing = document.getElementById('update-banner');
+  if (existing) return;
+  const banner = document.createElement('div');
+  banner.id = 'update-banner';
+  banner.innerHTML = `
+    <span>Mailplane ${version ? `v${version} ` : ''}is ready to install.</span>
+    <button id="update-install-btn">Restart Now</button>
+    <button id="update-dismiss-btn" aria-label="Dismiss">✕</button>
+  `;
+  document.body.appendChild(banner);
+  document.getElementById('update-install-btn').addEventListener('click', () => {
+    _invoke('update:install');
+  });
+  document.getElementById('update-dismiss-btn').addEventListener('click', () => banner.remove());
 });
 
 // ── Context menu actions ──────────────────────────────────────────────────────
-ipcRenderer.on('context-menu:action', (_, action) => {
-  if (action === 'reply' && S.selectedEmail) ipcRenderer.send('reply');
-  else if (action === 'reply-all' && S.selectedEmail) ipcRenderer.send('reply-all');
-  else if (action === 'forward' && S.selectedEmail) ipcRenderer.send('forward');
+_on('context-menu:action', (action) => {
+  const b = S.bodyCache.get(bodyCacheKey(S.selectedEmail));
+  if (action === 'reply' && S.selectedEmail) openReply(S.selectedEmail, b);
+  else if (action === 'reply-all' && S.selectedEmail) openReplyAll(S.selectedEmail, b);
+  else if (action === 'forward' && S.selectedEmail) openForward(S.selectedEmail, b);
   else if (action === 'archive' && S.selectedEmail) doArchive(S.selectedEmail);
   else if (action === 'delete' && S.selectedEmail) doDelete(S.selectedEmail);
   else if (action === 'mark-read' && S.selectedEmail) setReadState(S.selectedEmail, true);
@@ -63,7 +86,7 @@ ipcRenderer.on('context-menu:action', (_, action) => {
 });
 
 // ── Folder context menu actions ───────────────────────────────────────────────
-ipcRenderer.on('context-menu:folder-action', async (_, { action, accountId, folder }) => {
+_on('context-menu:folder-action', async ({ action, accountId, folder }) => {
   if (action === 'create') {
     const name = await showFolderNameModal('New Folder', '', 'Create');
     if (!name) return;
@@ -147,7 +170,7 @@ function showFolderDeleteConfirm(folderName) {
 }
 
 // ── Fullscreen detection ──────────────────────────────────────────────────────
-ipcRenderer.on('fullscreen-change', (_, isFs) => {
+_on('fullscreen-change', (isFs) => {
   document.documentElement.classList.toggle('fullscreen', isFs);
 });
 
@@ -177,7 +200,7 @@ _darkMQ.addEventListener('change', () => {
 const _inboxUnread = new Map(); // accountId → inbox unread count
 function updateDockBadge() {
   const total = [..._inboxUnread.values()].reduce((a, b) => a + b, 0);
-  ipcRenderer.send('badge:set', total);
+  _send('badge:set', total);
 }
 
 let refreshTimer = null;
@@ -196,7 +219,7 @@ function initials(name) {
 }
 
 function gravatarUrl(email, size = 80) {
-  const hash = crypto.createHash('md5').update((email || '').toLowerCase().trim()).digest('hex');
+  const hash = md5((email || '').toLowerCase().trim());
   return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404`;
 }
 
@@ -212,9 +235,10 @@ function avatarEl(name, email, size = 34) {
 
   if (email) {
     const img = document.createElement('img');
-    img.src = gravatarUrl(email, size * 2);
     img.alt = '';
     img.addEventListener('load', () => { img.classList.add('loaded'); span.style.display = 'none'; });
+    img.addEventListener('error', () => img.remove());
+    img.src = gravatarUrl(email, size * 2);
     wrap.appendChild(img);
   }
   return wrap;
@@ -256,7 +280,21 @@ function toast(msg, error = false, duration = 3200) {
   toastTimer = setTimeout(() => el.className = 'toast', duration);
 }
 
-const ipc = (ch, data) => ipcRenderer.invoke(ch, data);
+/**
+ * Invoke a main-process IPC handler.
+ * For channels returning {success, error}: check res.success at the call site.
+ */
+const ipc = (ch, data) => _invoke(ch, data);
+
+/**
+ * Like ipc() but throws if the response is {success: false}.
+ * Use for fire-and-forget actions where failure should always surface as a toast.
+ */
+async function ipcSafe(ch, data) {
+  const res = await _invoke(ch, data);
+  if (res && res.success === false) throw new Error(res.error || `${ch} failed`);
+  return res;
+}
 
 // ── Per-account folder cache ──────────────────────────────────────────────────
 const folderMaps = new Map();  // accountId → legacy static map (fallback)
@@ -385,6 +423,7 @@ async function switchAccount(id) {
 function showFolderSidebar(showFolders) {
   document.getElementById('folderNav').classList.toggle('hidden', !showFolders);
   document.getElementById('appsNav').classList.toggle('hidden', showFolders);
+  document.getElementById('calendarNav').classList.toggle('hidden', showFolders);
 }
 
 function makeFolderBtn(folder) {
@@ -431,7 +470,7 @@ function makeFolderBtn(folder) {
     e.stopPropagation();
     const accountId = S.activeAccountId;
     if (!accountId) return;
-    ipcRenderer.send('context-menu:folder', { accountId, folder });
+    _send('context-menu:folder', { accountId, folder });
   });
 
   btn.addEventListener('dragover', e => {
@@ -995,7 +1034,7 @@ async function setReadState(email, read) {
 let activeMenu = null;
 function showContextMenu(e, email) {
   // Use native Electron context menu via IPC
-  ipcRenderer.send('context-menu:show', { hasSelection: !!email });
+  _send('context-menu:show', { hasSelection: !!email });
 }
 function removeContextMenu() { activeMenu?.remove(); activeMenu = null; }
 
@@ -1318,7 +1357,7 @@ function renderDetail(email, body) {
       try {
         iframe.contentDocument.addEventListener('click', ev => {
           const link = ev.target.closest('a');
-          if (link?.href) { ev.preventDefault(); ipcRenderer.invoke('shell:open', link.href); }
+          if (link?.href) { ev.preventDefault(); ipc('shell:open', link.href); }
         });
       } catch {}
     });
@@ -2159,16 +2198,213 @@ document.addEventListener('keydown', e => {
 });
 
 // ── App menu IPC ──────────────────────────────────────────────────────────────
-ipcRenderer.on('open-settings', () => showSettingsModal());
-ipcRenderer.on('new-message', () => openCompose());
-ipcRenderer.on('reply', () => { if (S.selectedEmail) openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-ipcRenderer.on('reply-all', () => { if (S.selectedEmail) openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-ipcRenderer.on('forward', () => { if (S.selectedEmail) openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-ipcRenderer.on('refresh', () => loadEmails());
-ipcRenderer.on('delete-email', () => { if (S.selectedEmail) doDelete(S.selectedEmail); });
-ipcRenderer.on('archive-email', () => { if (S.selectedEmail) doArchive(S.selectedEmail); });
-ipcRenderer.on('mark-read', () => { if (S.selectedEmail) setReadState(S.selectedEmail, !S.selectedEmail.read); });
-ipcRenderer.on('toggle-star', () => { if (S.selectedEmail) toggleFlag(S.selectedEmail); });
+_on('open-settings', () => showSettingsModal());
+_on('new-message', () => openCompose());
+_on('reply', () => { if (S.selectedEmail) openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+_on('reply-all', () => { if (S.selectedEmail) openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+_on('forward', () => { if (S.selectedEmail) openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
+_on('refresh', () => loadEmails());
+_on('delete-email', () => { if (S.selectedEmail) doDelete(S.selectedEmail); });
+_on('archive-email', () => { if (S.selectedEmail) doArchive(S.selectedEmail); });
+_on('mark-read', () => { if (S.selectedEmail) setReadState(S.selectedEmail, !S.selectedEmail.read); });
+_on('toggle-star', () => { if (S.selectedEmail) toggleFlag(S.selectedEmail); });
+
+// ── Calendar ──────────────────────────────────────────────────────────────────
+const calendarState = {
+  accounts: [],   // { id, email, serverUrl, calendars: [] }
+  events: [],     // loaded events
+  viewDate: new Date(),
+  activeCalendarUrl: null,
+  activeAccountId: null,
+};
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function renderCalendarNav() {
+  const list = document.getElementById('calendarList');
+  list.innerHTML = '';
+  for (const acc of calendarState.accounts) {
+    const label = document.createElement('div');
+    label.className = 'apps-nav-label';
+    label.style.cssText = 'margin-top:8px;margin-bottom:2px;font-size:10px';
+    label.textContent = acc.email;
+    list.appendChild(label);
+    for (const cal of acc.calendars || []) {
+      const btn = document.createElement('button');
+      btn.className = 'app-item-btn' + (calendarState.activeCalendarUrl === cal.url ? ' active' : '');
+      const dot = document.createElement('span');
+      dot.style.cssText = 'display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--accent);margin-right:8px;flex-shrink:0';
+      btn.appendChild(dot);
+      btn.appendChild(document.createTextNode(cal.name));
+      btn.addEventListener('click', () => openCalendar(acc, cal));
+      list.appendChild(btn);
+    }
+  }
+}
+
+async function openCalendar(acc, cal) {
+  calendarState.activeCalendarUrl = cal.url;
+  calendarState.activeAccountId = acc.id;
+  renderCalendarNav();
+
+  document.getElementById('calendarView').classList.remove('hidden');
+  document.getElementById('calendarViewTitle').textContent = cal.name;
+  document.getElementById('calendarEventDetail').classList.add('hidden');
+
+  const res = await _invoke('caldav:events', { id: acc.id, calendarUrl: cal.url });
+  calendarState.events = res.success ? res.events : [];
+  renderCalendarGrid();
+}
+
+function renderCalendarGrid() {
+  const d = calendarState.viewDate;
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  document.getElementById('calendarViewTitle').textContent =
+    `${MONTH_NAMES[month]} ${year}` + (calendarState.activeCalendarUrl ? '' : '');
+
+  const header = document.getElementById('calendarGridHeader');
+  header.innerHTML = DAY_NAMES.map(n => `<div class="cal-day-name">${n}</div>`).join('');
+
+  const grid = document.getElementById('calendarGrid');
+  grid.innerHTML = '';
+
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const today = new Date();
+
+  for (let i = 0; i < firstDay; i++) {
+    grid.appendChild(Object.assign(document.createElement('div'), { className: 'cal-cell cal-cell-empty' }));
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const cell = document.createElement('div');
+    const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === day;
+    cell.className = 'cal-cell' + (isToday ? ' cal-today' : '');
+
+    const num = document.createElement('div');
+    num.className = 'cal-day-num';
+    num.textContent = day;
+    cell.appendChild(num);
+
+    const dayStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const dayEvents = calendarState.events.filter(ev => {
+      const iso = ev.start?.iso || '';
+      return iso.startsWith(dayStr);
+    });
+
+    for (const ev of dayEvents.slice(0, 3)) {
+      const chip = document.createElement('div');
+      chip.className = 'cal-event-chip';
+      chip.textContent = ev.title || '(No title)';
+      chip.title = ev.title || '';
+      chip.addEventListener('click', e => { e.stopPropagation(); showEventDetail(ev); });
+      cell.appendChild(chip);
+    }
+    if (dayEvents.length > 3) {
+      const more = document.createElement('div');
+      more.className = 'cal-more';
+      more.textContent = `+${dayEvents.length - 3} more`;
+      cell.appendChild(more);
+    }
+
+    grid.appendChild(cell);
+  }
+}
+
+function showEventDetail(ev) {
+  const el = document.getElementById('calendarEventDetail');
+  const fmt = iso => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  el.innerHTML = `
+    <button class="cal-detail-close" id="calDetailClose">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <div class="cal-detail-title">${ev.title || '(No title)'}</div>
+    ${ev.start ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${ev.start.allDay ? ev.start.iso : fmt(ev.start.iso)}${ev.end ? ' → ' + (ev.end.allDay ? ev.end.iso : fmt(ev.end.iso)) : ''}</div>` : ''}
+    ${ev.location ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>${ev.location}</div>` : ''}
+    ${ev.description ? `<div class="cal-detail-desc">${ev.description.slice(0, 300)}</div>` : ''}
+    ${ev.organizer ? `<div class="cal-detail-row" style="font-size:11px;color:var(--text-tertiary)">Organized by ${ev.organizer}</div>` : ''}
+  `;
+  el.classList.remove('hidden');
+  document.getElementById('calDetailClose').addEventListener('click', () => el.classList.add('hidden'));
+}
+
+document.getElementById('calendarViewClose').addEventListener('click', () => {
+  document.getElementById('calendarView').classList.add('hidden');
+  calendarState.activeCalendarUrl = null;
+  calendarState.activeAccountId = null;
+  renderCalendarNav();
+});
+document.getElementById('calendarPrev').addEventListener('click', () => {
+  calendarState.viewDate = new Date(calendarState.viewDate.getFullYear(), calendarState.viewDate.getMonth() - 1, 1);
+  renderCalendarGrid();
+});
+document.getElementById('calendarNext').addEventListener('click', () => {
+  calendarState.viewDate = new Date(calendarState.viewDate.getFullYear(), calendarState.viewDate.getMonth() + 1, 1);
+  renderCalendarGrid();
+});
+document.getElementById('calendarToday').addEventListener('click', () => {
+  calendarState.viewDate = new Date();
+  renderCalendarGrid();
+});
+
+// ── CalDAV account setup ──────────────────────────────────────────────────────
+
+document.getElementById('addCalendarBtn').addEventListener('click', () => {
+  document.getElementById('caldavServerUrl').value = '';
+  document.getElementById('caldavEmail').value = '';
+  document.getElementById('caldavPassword').value = '';
+  document.getElementById('caldavError').classList.add('hidden');
+  document.getElementById('caldavModal').classList.remove('hidden');
+  setTimeout(() => document.getElementById('caldavServerUrl').focus(), 50);
+});
+document.getElementById('caldavModalClose').addEventListener('click', () => document.getElementById('caldavModal').classList.add('hidden'));
+document.getElementById('caldavCancelBtn').addEventListener('click', () => document.getElementById('caldavModal').classList.add('hidden'));
+
+document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
+  let serverUrl = document.getElementById('caldavServerUrl').value.trim();
+  const email = document.getElementById('caldavEmail').value.trim();
+  const password = document.getElementById('caldavPassword').value;
+  const errEl = document.getElementById('caldavError');
+  const spinner = document.getElementById('caldavSpinner');
+  const btnText = document.getElementById('caldavBtnText');
+
+  if (!serverUrl || !email || !password) {
+    errEl.textContent = 'Please fill in all fields.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (!/^https?:\/\//i.test(serverUrl)) serverUrl = 'https://' + serverUrl;
+
+  spinner.classList.remove('hidden');
+  btnText.textContent = 'Connecting…';
+  errEl.classList.add('hidden');
+
+  const res = await _invoke('caldav:test', { serverUrl, email, password });
+  spinner.classList.add('hidden');
+  btnText.textContent = 'Connect';
+
+  if (!res.success) {
+    errEl.textContent = res.error || 'Could not connect to CalDAV server.';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  const id = String(Date.now());
+  await _invoke('caldav:add', { id, serverUrl, email, password });
+  const acc = { id, email, serverUrl, calendars: res.calendars || [] };
+  calendarState.accounts.push(acc);
+  renderCalendarNav();
+  document.getElementById('caldavModal').classList.add('hidden');
+
+  if (acc.calendars.length > 0) openCalendar(acc, acc.calendars[0]);
+  else toast('Calendar account added — no calendars found');
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {

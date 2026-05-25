@@ -133,14 +133,16 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] Inline images in compose (paste or drag image files)
 - [x] Empty state screens (no accounts, empty folder, no search results)
 - [x] Send Later / scheduled send (stores in queue, fires at scheduled time)
+- [x] Local SQLite cache for offline reading (better-sqlite3, WAL mode, messages + bodies)
+- [x] CalDAV / calendar integration (PROPFIND discovery, REPORT fetch, monthly grid view)
+- [x] Auto-update with persistent restart banner (electron-updater, Restart Now button)
+- [x] contextBridge security boundary (preload.js, channel allowlists, sandbox: false)
 
 ## Pending / future
-- [ ] Auto-update (electron-updater — needs GitHub Releases publish config)
+- [ ] Auto-update publish config (needs GitHub Releases owner/repo filled in package.json)
 - [ ] Crash reporting (Sentry — needs DSN from account)
 - [ ] Code signing + notarization (needs Apple Developer ID cert)
-- [ ] Local SQLite cache for offline reading
 - [ ] Email rules / filters
 - [ ] Snooze emails
-- [ ] CalDAV / calendar integration
 - [ ] Spotlight integration (NSUserActivity)
 - [ ] Virtual scrolling for large email lists

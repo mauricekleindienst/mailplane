@@ -326,10 +326,13 @@ async function disconnectAll() {
 // ── IMAP IDLE (push notifications) ───────────────────────────────────────────
 const idleStates = new Map(); // accountId → { stopped, client }
 
+const IDLE_BACKOFF_MIN = 15_000;   // 15 s first retry
+const IDLE_BACKOFF_MAX = 900_000;  // 15 min cap
+
 async function startIdle(account, onNewMail) {
   if (!account?.imap || idleStates.has(account.id)) return;
 
-  const state = { stopped: false, client: null };
+  const state = { stopped: false, client: null, delay: IDLE_BACKOFF_MIN };
   idleStates.set(account.id, state);
 
   async function connect() {
@@ -345,17 +348,24 @@ async function startIdle(account, onNewMail) {
     });
     state.client = client;
 
-    // Attach error/close BEFORE connect to prevent unhandled promise rejections
-    const reconnect = () => {
+    const scheduleReconnect = () => {
       state.client = null;
-      if (!state.stopped) setTimeout(connect, 30000);
+      if (state.stopped) return;
+      // Exponential backoff with ±10 % jitter
+      const jitter = state.delay * 0.1 * (Math.random() * 2 - 1);
+      setTimeout(connect, Math.round(state.delay + jitter));
+      state.delay = Math.min(state.delay * 2, IDLE_BACKOFF_MAX);
     };
-    client.on('error', reconnect);
-    client.on('close', reconnect);
+
+    // Attach error/close BEFORE connect to avoid unhandled rejection events
+    client.on('error', scheduleReconnect);
+    client.on('close', scheduleReconnect);
 
     try {
       await client.connect();
       if (state.stopped) { client.logout().catch(() => {}); return; }
+      // Successful connection — reset backoff
+      state.delay = IDLE_BACKOFF_MIN;
       await client.mailboxOpen('INBOX');
       client.on('exists', ({ count, prevCount }) => {
         if (count > (prevCount ?? 0)) onNewMail(account.id);
@@ -363,11 +373,10 @@ async function startIdle(account, onNewMail) {
     } catch {
       state.client = null;
       client.logout().catch(() => {});
-      if (!state.stopped) setTimeout(connect, 30000);
+      scheduleReconnect();
     }
   }
 
-  // Swallow top-level rejection if the first connect attempt throws synchronously
   connect().catch(() => {});
 }
 

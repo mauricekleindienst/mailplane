@@ -8,10 +8,16 @@
     "start": "electron .",
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
-    "build:dmg": "electron-builder --mac dmg"
+    "build:dmg": "electron-builder --mac dmg",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,json,css,html}\" --ignore-path .prettierignore",
+    "test": "node --test test/**/*.test.js",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@sentry/electron": "^7.13.0",
+    "better-sqlite3": "^12.10.0",
     "electron": "^30.5.1",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
@@ -20,7 +26,10 @@
     "nodemailer": "^6.10.1"
   },
   "devDependencies": {
-    "electron-builder": "^24.13.3"
+    "@electron/rebuild": "^4.0.4",
+    "electron-builder": "^24.13.3",
+    "eslint": "^8.57.1",
+    "prettier": "^3.8.3"
   },
   "build": {
     "appId": "com.mailplane.app",
@@ -32,6 +41,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "renderer.js",
       "index.html",
       "styles.css",
@@ -44,8 +54,10 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
+      "entitlements": "entitlements.mac.plist",
+      "entitlementsInherit": "entitlements.mac.plist",
       "target": [
         {
           "target": "dmg",
@@ -73,6 +85,12 @@
     "nsis": {
       "oneClick": true,
       "perMachine": false
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "your-github-username",
+      "repo": "mailplane",
+      "releaseType": "release"
     }
   }
 }

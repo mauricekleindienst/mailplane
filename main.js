@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Notification, Menu, nativeTheme, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Notification, Menu, nativeTheme, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -35,6 +35,8 @@ const accountStore = require('./src/account-store');
 const imapManager = require('./src/imap-manager');
 const jmapManager = require('./src/jmap-manager');
 const smtpManager = require('./src/smtp-manager');
+const emailCache = require('./src/email-cache');
+const caldavManager = require('./src/caldav-manager');
 
 // Expose safeStorage helpers to the store (called only from main process)
 accountStore.setSafeStorage(safeStorage);
@@ -61,19 +63,25 @@ app.on('open-url', (event, url) => {
 
 // ── Auto-updater ──────────────────────────────────────────────────────────────
 // Only active in packaged builds. Set publish.url in package.json to enable.
+let _autoUpdater = null;
 if (app.isPackaged) {
   try {
     const { autoUpdater } = require('electron-updater');
+    _autoUpdater = autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on('update-downloaded', () => {
+    autoUpdater.on('update-downloaded', (info) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-ready');
+        mainWindow.webContents.send('update-ready', { version: info.version });
       }
     });
     autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   } catch {}
 }
+
+ipcMain.handle('update:install', () => {
+  if (_autoUpdater) _autoUpdater.quitAndInstall();
+});
 
 function buildAppMenu() {
   const send = (ch) => mainWindow?.webContents.send(ch);
@@ -167,8 +175,10 @@ function createWindow() {
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff',
     title: 'Mailplane',
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,   // required: allows preload.js to require('crypto') and other Node built-ins
+      preload: path.join(__dirname, 'preload.js'),
       webviewTag: true,
       spellcheck: true,
     },
@@ -245,9 +255,34 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
-    const result = await mgr(account).fetchEmails(account, folder, limit || 60, offset || 0);
+    const lim = limit || 60;
+    const off = offset || 0;
+
+    // Serve cached messages instantly on first page if cache is older than 30s.
+    // (After a background refresh the cache age resets, preventing an infinite loop.)
+    const CACHE_STALE_MS = 30_000;
+    const cached = off === 0 ? emailCache.getCachedMessages(accountId, folder, lim) : [];
+    const cacheAge = Date.now() - emailCache.getNewestCachedAt(accountId, folder);
+    if (cached.length > 0 && cacheAge > CACHE_STALE_MS) {
+      // Kick off a background refresh — don't await
+      mgr(account).fetchEmails(account, folder, lim, off).then(result => {
+        if (result.messages?.length) {
+          emailCache.cacheMessages(accountId, folder, result.messages);
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('emails:refreshed', { accountId, folder });
+          }
+        }
+      }).catch(() => {});
+      return { success: true, messages: cached, total: emailCache.countCachedMessages(accountId, folder), unseen: 0, fromCache: true };
+    }
+
+    const result = await mgr(account).fetchEmails(account, folder, lim, off);
+    if (result.messages?.length) emailCache.cacheMessages(accountId, folder, result.messages);
     return { success: true, ...result };
   } catch (err) {
+    // Offline fallback: serve cache even on error
+    const cached = emailCache.getCachedMessages(accountId, folder, limit || 60, offset || 0);
+    if (cached.length > 0) return { success: true, messages: cached, total: cached.length, unseen: 0, fromCache: true, offline: true };
     return { success: false, error: err.message };
   }
 });
@@ -267,9 +302,16 @@ ipcMain.handle('email:body', async (_, { accountId, folder, uid }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
+
+    const cachedBody = emailCache.getCachedBody(accountId, folder, uid);
+    if (cachedBody) return { success: true, body: cachedBody };
+
     const body = await mgr(account).fetchEmailBody(account, folder, uid);
+    if (body) emailCache.cacheBody(accountId, folder, uid, body);
     return { success: true, body };
   } catch (err) {
+    const cachedBody = emailCache.getCachedBody(accountId, folder, uid);
+    if (cachedBody) return { success: true, body: cachedBody };
     return { success: false, error: err.message };
   }
 });
@@ -376,7 +418,13 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
   }
 });
 
-ipcMain.handle('shell:open', (_, url) => shell.openExternal(url));
+ipcMain.handle('shell:open', (_, url) => {
+  // Only open safe external protocols — never file://, javascript:, etc.
+  let parsed;
+  try { parsed = new URL(url); } catch { return; }
+  if (!['https:', 'http:', 'mailto:'].includes(parsed.protocol)) return;
+  return shell.openExternal(url);
+});
 
 // ── Folder management ─────────────────────────────────────────────────────────
 
@@ -408,6 +456,36 @@ ipcMain.handle('folder:delete', async (_, { accountId, path }) => {
   } catch (err) { return { success: false, error: err.message }; }
 });
 
+// ── CalDAV ────────────────────────────────────────────────────────────────────
+
+ipcMain.handle('caldav:test', async (_, { serverUrl, email, password }) => {
+  return caldavManager.testCalDavConnection(serverUrl, email, password);
+});
+
+ipcMain.handle('caldav:add', (_, { id, serverUrl, email, password }) => {
+  caldavManager.addCalendarAccount(id, { serverUrl, email, password });
+  return { success: true };
+});
+
+ipcMain.handle('caldav:remove', (_, { id }) => {
+  caldavManager.removeCalendarAccount(id);
+  return { success: true };
+});
+
+ipcMain.handle('caldav:calendars', async (_, { id }) => {
+  try {
+    const calendars = await caldavManager.syncCalendars(id);
+    return { success: true, calendars };
+  } catch (err) { return { success: false, error: err.message }; }
+});
+
+ipcMain.handle('caldav:events', async (_, { id, calendarUrl }) => {
+  try {
+    const events = await caldavManager.getEvents(id, calendarUrl);
+    return { success: true, events };
+  } catch (err) { return { success: false, error: err.message }; }
+});
+
 ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
   const isSystem = !!folder.role;
   const items = [
@@ -427,7 +505,7 @@ ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
 });
 
 // ── Context menu ──────────────────────────────────────────────────────────────
-ipcMain.on('context-menu:show', (event, { hasSelection }) => {
+ipcMain.on('context-menu:show', (event, _payload) => {
   const items = [
     { label: 'Reply',       click: () => event.sender.send('context-menu:action', 'reply') },
     { label: 'Reply All',   click: () => event.sender.send('context-menu:action', 'reply-all') },
@@ -450,6 +528,7 @@ app.whenReady().then(() => {
   buildAppMenu();
   createWindow();
   accountStore.getAccounts().forEach(startIdleForAccount);
+  emailCache.pruneOldEntries(30);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -461,5 +540,6 @@ app.on('window-all-closed', async () => {
     imapManager.disconnectAll(),
     jmapManager.disconnectAll(),
   ]);
+  emailCache.close();
   if (process.platform !== 'darwin') app.quit();
 });

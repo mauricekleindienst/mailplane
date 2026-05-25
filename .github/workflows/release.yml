@@ -1,0 +1,82 @@
+name: Release
+
+# Run via Actions → Release → Run workflow
+# Choose patch / minor / major — it bumps package.json, commits, tags, builds
+# DMG + ZIP for arm64 + x64, uploads them to a new GitHub Release, and
+# publishes the latest-mac.yml manifest that electron-updater fetches.
+#
+# ⚠ Before this works you must update package.json:
+#   "publish": { "owner": "<your-github-username>", "repo": "mailplane" }
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write   # needed to push the version commit/tag and create a release
+
+jobs:
+  release:
+    runs-on: macos-latest   # arm64 runner; electron-builder cross-compiles x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      # npm version creates a commit + annotated tag automatically
+      - name: Bump version
+        id: ver
+        run: |
+          RAW=$(npm version ${{ inputs.bump }})
+          VERSION=${RAW#v}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped to v$VERSION"
+
+      - name: Push commit and tag
+        run: git push origin HEAD --follow-tags
+
+      # npm ci triggers postinstall → electron-rebuild for better-sqlite3
+      - name: Install dependencies
+        run: npm ci
+
+      # electron-builder publishes DMG + ZIP + latest-mac.yml to a new GitHub Release
+      - name: Build and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable ad-hoc signing discovery so unsigned CI builds don't fail.
+          # Add the secrets below for a properly signed + notarized release:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # CSC_LINK:                     ${{ secrets.CSC_LINK }}
+          # CSC_KEY_PASSWORD:             ${{ secrets.CSC_KEY_PASSWORD }}
+          # APPLE_ID:                     ${{ secrets.APPLE_ID }}
+          # APPLE_APP_SPECIFIC_PASSWORD:  ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          # APPLE_TEAM_ID:                ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --publish always
+
+      - name: Summary
+        run: |
+          echo "### Released v${{ steps.ver.outputs.version }} 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "GitHub Release created with DMG + ZIP for arm64 + x64." >> "$GITHUB_STEP_SUMMARY"
+          echo "electron-updater will serve this via \`latest-mac.yml\`." >> "$GITHUB_STEP_SUMMARY"

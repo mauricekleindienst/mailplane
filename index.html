@@ -46,6 +46,18 @@
           <span class="folder-label" style="color:#8e8e93">Add App</span>
         </button>
       </nav>
+
+      <!-- Calendar nav -->
+      <nav class="apps-nav hidden" id="calendarNav">
+        <div class="apps-nav-label">Calendars</div>
+        <div id="calendarList"></div>
+        <button class="add-app-btn" id="addCalendarBtn">
+          <span class="folder-icon-wrap" style="background:#e5e5ea">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#8e8e93" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </span>
+          <span class="folder-label" style="color:#8e8e93">Add Calendar Account</span>
+        </button>
+      </nav>
     </aside>
 
     <!-- Email list -->
@@ -120,6 +132,30 @@
         </div>
       </div>
       <webview id="appWebview" src="about:blank"></webview>
+    </div>
+
+    <!-- Calendar view overlay -->
+    <div class="app-view hidden" id="calendarView">
+      <div class="app-view-bar">
+        <span class="app-view-title" id="calendarViewTitle">Calendar</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="icon-btn-sm" id="calendarPrev" title="Previous month">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <button class="icon-btn-sm" id="calendarNext" title="Next month">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="icon-btn-sm" id="calendarToday" title="Today" style="font-size:11px;padding:0 8px;width:auto">Today</button>
+          <button class="icon-btn-sm" id="calendarViewClose" title="Close">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="calendar-container">
+        <div class="calendar-grid-header" id="calendarGridHeader"></div>
+        <div class="calendar-grid" id="calendarGrid"></div>
+      </div>
+      <div class="calendar-event-detail hidden" id="calendarEventDetail"></div>
     </div>
 
   </div>
@@ -315,6 +351,45 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ── CalDAV Setup Modal ───────────────────────────────────────────── -->
+<div class="modal-overlay hidden" id="caldavModal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <div>
+        <h2>Add Calendar Account</h2>
+        <p class="modal-subtitle">Connect any CalDAV server (iCloud, Fastmail, Nextcloud…)</p>
+      </div>
+      <button class="modal-close" id="caldavModalClose">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="form-group">
+      <label>Server URL</label>
+      <input type="url" id="caldavServerUrl" placeholder="https://caldav.icloud.com" spellcheck="false" autocomplete="off" />
+      <div class="field-hint">iCloud: caldav.icloud.com · Fastmail: caldav.fastmail.com · Nextcloud: /remote.php/dav</div>
+    </div>
+    <div class="form-group">
+      <label>Email / Username</label>
+      <input type="email" id="caldavEmail" placeholder="you@example.com" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="form-group">
+      <label>Password <span class="label-hint">App password recommended</span></label>
+      <input type="password" id="caldavPassword" placeholder="••••••••••••••••" autocomplete="off" />
+    </div>
+    <div class="modal-error hidden" id="caldavError"></div>
+
+    <div class="modal-footer">
+      <button class="btn-ghost" id="caldavCancelBtn">Cancel</button>
+      <button class="btn-primary" id="caldavSaveBtn">
+        <span id="caldavBtnText">Connect</span>
+        <div class="btn-spinner hidden" id="caldavSpinner"></div>
+      </button>
+    </div>
+  </div>
+</div>
+
 <script src="renderer.js"></script>
 </body>
 </html>

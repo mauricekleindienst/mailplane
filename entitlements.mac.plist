@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- Required for all hardened-runtime Electron apps -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Electron's Node.js runtime needs this to load non-library code -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <!-- Required to load the V8 snapshot (Chromium) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Network access for IMAP / SMTP / JMAP -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <!-- Keychain access for safeStorage password encryption -->
+    <key>com.apple.security.keychain-access-groups</key>
+    <array>
+      <string>$(AppIdentifierPrefix)com.mailplane.app</string>
+    </array>
+  </dict>
+</plist>
