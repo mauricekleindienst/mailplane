@@ -72,11 +72,11 @@
       <!-- Bulk action bar (shown when emails are multi-selected) -->
       <div class="bulk-bar hidden" id="bulkBar">
         <span class="bulk-count" id="bulkCount">0 selected</span>
-        <button class="bulk-btn" id="bulkMarkRead">Mark Read</button>
-        <button class="bulk-btn" id="bulkMarkUnread">Mark Unread</button>
-        <button class="bulk-btn" id="bulkArchive">Archive</button>
-        <button class="bulk-btn bulk-btn-danger" id="bulkDelete">Delete</button>
-        <button class="bulk-btn bulk-btn-clear" id="bulkClear">✕</button>
+        <button class="bulk-btn" id="bulkMarkRead" title="Mark as Read"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></button>
+        <button class="bulk-btn" id="bulkMarkUnread" title="Mark as Unread"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></button>
+        <button class="bulk-btn" id="bulkArchive" title="Archive"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg></button>
+        <button class="bulk-btn bulk-btn-danger" id="bulkDelete" title="Delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+        <button class="bulk-btn bulk-btn-clear" id="bulkClear" title="Clear selection"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
       <div class="email-list" id="emailList">
         <div class="list-empty hidden" id="listEmpty"></div>
@@ -200,29 +200,56 @@
   <div class="modal setup-modal">
     <div class="modal-header">
       <div class="modal-icon-wrap"><img src="assets/icon.svg" width="24" height="24" alt="" style="border-radius:6px" /></div>
-      <div><h2>Add Email Account</h2><p class="modal-subtitle">Connect your mailbox to get started</p></div>
+      <div><h2>Add Email Account</h2><p class="modal-subtitle">Connect your mailbox to Mailplane</p></div>
     </div>
-    <div class="form-group"><label>Email address</label><input type="email" id="setupEmail" placeholder="you@gmail.com" autocomplete="off" spellcheck="false" /></div>
+
+    <div class="form-group">
+      <label>Email address</label>
+      <input type="email" id="setupEmail" placeholder="you@example.com" autocomplete="email" spellcheck="false" />
+      <div class="provider-badge hidden" id="providerBadge"></div>
+    </div>
+
     <div class="form-group">
       <label>Password <span class="label-hint" id="passwordHint"></span></label>
       <div class="input-wrap">
-        <input type="password" id="setupPassword" placeholder="••••••••••••••••" autocomplete="new-password" />
-        <button class="input-eye" id="togglePassword" tabindex="-1" type="button"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        <input type="password" id="setupPassword" placeholder="••••••••••••••••" autocomplete="current-password" />
+        <button class="input-eye" id="togglePassword" tabindex="-1" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
       </div>
     </div>
-    <div class="form-group"><label>Display name <span class="label-optional">(optional)</span></label><input type="text" id="setupName" placeholder="Your Name" /></div>
-    <details class="advanced-settings">
-      <summary>Advanced settings</summary>
+
+    <div class="form-group">
+      <label>Display name <span class="label-optional">(optional)</span></label>
+      <input type="text" id="setupName" placeholder="Your Name" autocomplete="name" />
+    </div>
+
+    <div class="provider-tip hidden" id="gmailTip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+      <span>Gmail requires an <strong>App Password</strong>. Go to <strong>myaccount.google.com → Security → App passwords</strong>.</span>
+    </div>
+    <div class="provider-tip hidden" id="fastmailTip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#7c3aed"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+      <span>Fastmail uses JMAP. Create an <strong>App Password</strong> in Settings → Privacy & Security.</span>
+    </div>
+    <div class="provider-tip hidden" id="outlookTip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#3b82f6"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+      <span>Outlook may need IMAP enabled at <strong>Settings → Mail → Sync email</strong>.</span>
+    </div>
+
+    <button class="advanced-toggle" id="advancedToggle" type="button">
+      <svg class="advanced-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      Server settings
+    </button>
+    <div class="advanced-section hidden" id="advancedSection">
       <div class="advanced-grid">
-        <div class="form-group"><label>IMAP host</label><input type="text" id="imapHost" placeholder="imap.example.com" spellcheck="false" /></div>
-        <div class="form-group"><label>Port</label><input type="number" id="imapPort" value="993" /></div>
-        <div class="form-group"><label>SMTP host</label><input type="text" id="smtpHost" placeholder="smtp.example.com" spellcheck="false" /></div>
-        <div class="form-group"><label>Port</label><input type="number" id="smtpPort" value="587" /></div>
+        <div class="form-group"><label>IMAP host</label><input type="text" id="imapHost" placeholder="imap.example.com" spellcheck="false" autocomplete="off" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="imapPort" value="993" min="1" max="65535" /></div>
+        <div class="form-group"><label>SMTP host</label><input type="text" id="smtpHost" placeholder="smtp.example.com" spellcheck="false" autocomplete="off" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="smtpPort" value="587" min="1" max="65535" /></div>
       </div>
-    </details>
-    <div class="provider-tip hidden" id="gmailTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Gmail needs an <strong>App Password</strong>. Go to <strong>myaccount.google.com → Security → App passwords</strong>.</span></div>
-    <div class="provider-tip hidden" id="fastmailTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#7c3aed"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Fastmail uses <strong>JMAP</strong>. Create an <strong>App Password</strong> in Settings → Privacy & Security.</span></div>
-    <div class="provider-tip hidden" id="outlookTip"><svg width="14" height="14" viewBox="0 0 24 24" fill="#3b82f6"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Enable IMAP at <strong>Settings → Mail → Sync email → IMAP</strong>.</span></div>
+    </div>
+
     <div class="modal-error hidden" id="setupError"></div>
     <div class="modal-footer">
       <button class="btn-ghost" id="setupCancelBtn" style="display:none">Cancel</button>

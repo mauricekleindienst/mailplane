@@ -62,6 +62,95 @@ ipcRenderer.on('context-menu:action', (_, action) => {
   else if (action === 'toggle-star' && S.selectedEmail) toggleFlag(S.selectedEmail);
 });
 
+// ── Folder context menu actions ───────────────────────────────────────────────
+ipcRenderer.on('context-menu:folder-action', async (_, { action, accountId, folder }) => {
+  if (action === 'create') {
+    const name = await showFolderNameModal('New Folder', '', 'Create');
+    if (!name) return;
+    const res = await ipc('folder:create', { accountId, name });
+    if (res.success) {
+      toast('Folder created');
+      await loadAndRenderFolders(accountId);
+      renderFolderNav();
+    } else { toast('Could not create folder: ' + res.error, true); }
+  } else if (action === 'rename') {
+    const name = await showFolderNameModal('Rename Folder', folder.name, 'Rename');
+    if (!name || name === folder.name) return;
+    const res = await ipc('folder:rename', { accountId, path: folder.path, newName: name });
+    if (res.success) {
+      toast('Folder renamed');
+      await loadAndRenderFolders(accountId);
+      renderFolderNav();
+    } else { toast('Could not rename folder: ' + res.error, true); }
+  } else if (action === 'delete') {
+    const confirmed = await showFolderDeleteConfirm(folder.name);
+    if (!confirmed) return;
+    const res = await ipc('folder:delete', { accountId, path: folder.path });
+    if (res.success) {
+      toast('Folder deleted');
+      if (S.activeFolder === folder.key) S.activeFolder = 'inbox';
+      await loadAndRenderFolders(accountId);
+      renderFolderNav();
+      loadEmails();
+    } else { toast('Could not delete folder: ' + res.error, true); }
+  }
+});
+
+function showFolderNameModal(title, initialValue, confirmLabel) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay folder-name-overlay';
+    overlay.innerHTML = `
+      <div class="modal folder-name-modal">
+        <div class="folder-name-modal-title">${title}</div>
+        <input class="folder-name-input" type="text" value="${initialValue.replace(/"/g, '&quot;')}" placeholder="Folder name" spellcheck="false" />
+        <div class="folder-name-modal-footer">
+          <button class="btn-ghost folder-name-cancel">Cancel</button>
+          <button class="btn-primary folder-name-confirm">${confirmLabel}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('.folder-name-input');
+    input.focus();
+    input.select();
+    const done = (val) => { document.body.removeChild(overlay); resolve(val); };
+    overlay.querySelector('.folder-name-cancel').addEventListener('click', () => done(null));
+    overlay.querySelector('.folder-name-confirm').addEventListener('click', () => done(input.value.trim() || null));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') done(input.value.trim() || null);
+      if (e.key === 'Escape') done(null);
+    });
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(null); });
+  });
+}
+
+function showFolderDeleteConfirm(folderName) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay folder-name-overlay';
+    overlay.innerHTML = `
+      <div class="modal folder-name-modal">
+        <div class="folder-name-modal-title">Delete "${folderName}"?</div>
+        <div class="folder-delete-msg">This folder and all emails inside it will be permanently deleted. This cannot be undone.</div>
+        <div class="folder-name-modal-footer">
+          <button class="btn-ghost folder-name-cancel">Cancel</button>
+          <button class="btn-primary btn-danger folder-name-confirm">Delete</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const done = (val) => { document.body.removeChild(overlay); resolve(val); };
+    overlay.querySelector('.folder-name-cancel').addEventListener('click', () => done(false));
+    overlay.querySelector('.folder-name-confirm').addEventListener('click', () => done(true));
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
+  });
+}
+
+// ── Fullscreen detection ──────────────────────────────────────────────────────
+ipcRenderer.on('fullscreen-change', (_, isFs) => {
+  document.documentElement.classList.toggle('fullscreen', isFs);
+});
+
 // ── Dark mode + theme preference ──────────────────────────────────────────────
 const _darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
 
@@ -246,6 +335,13 @@ function renderAccountTabs() {
     wrap.appendChild(tab);
   });
 
+  // Add account + button
+  const addBtn = document.createElement('button');
+  addBtn.className = 'acc-add-btn';
+  addBtn.title = 'Add Account';
+  addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+  addBtn.addEventListener('click', () => showSetupModal(true));
+  wrap.appendChild(addBtn);
 }
 
 function switchToAll() {
@@ -328,6 +424,14 @@ function makeFolderBtn(folder) {
     showFolderSidebar(true);
     renderDetail(null);
     loadEmails();
+  });
+
+  btn.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const accountId = S.activeAccountId;
+    if (!accountId) return;
+    ipcRenderer.send('context-menu:folder', { accountId, folder });
   });
 
   btn.addEventListener('dragover', e => {
@@ -763,7 +867,7 @@ function makeEmailItem(email, showAccountBadge) {
       const pill = document.createElement('span');
       pill.className = 'account-pill';
       pill.style.background = colorFor(acc.email);
-      pill.textContent = acc.email.split('@')[1] || acc.email;
+      pill.textContent = acc.email;
       footer.appendChild(pill);
     }
   }
@@ -1024,6 +1128,18 @@ function renderBulkBar() {
   bar.classList.remove('hidden');
   document.getElementById('bulkCount').textContent = `${S.selectedUids.size} selected`;
 }
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('bulkMarkRead')?.addEventListener('click', () => doBulkAction('read'));
+  document.getElementById('bulkMarkUnread')?.addEventListener('click', () => doBulkAction('unread'));
+  document.getElementById('bulkArchive')?.addEventListener('click', () => doBulkAction('archive'));
+  document.getElementById('bulkDelete')?.addEventListener('click', () => doBulkAction('delete'));
+  document.getElementById('bulkClear')?.addEventListener('click', () => {
+    S.selectedUids.clear();
+    renderBulkBar();
+    renderEmailList();
+  });
+});
 
 // ── Detail shell ──────────────────────────────────────────────────────────────
 function renderDetailShell(email) {
@@ -1787,8 +1903,31 @@ document.getElementById('settingsModal').addEventListener('click', e => {
 });
 
 // ── Account setup modal ───────────────────────────────────────────────────────
-function showSetupModal(cancellable = false) {
+
+const SETUP_KNOWN_DOMAINS = {
+  'gmail.com': 'Gmail', 'googlemail.com': 'Gmail',
+  'outlook.com': 'Outlook', 'hotmail.com': 'Outlook', 'live.com': 'Outlook',
+  'yahoo.com': 'Yahoo', 'icloud.com': 'iCloud', 'me.com': 'iCloud',
+  'fastmail.com': 'Fastmail', 'fastmail.fm': 'Fastmail',
+};
+
+function setupModalReset() {
+  ['setupEmail', 'setupPassword', 'setupName', 'imapHost', 'smtpHost'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('imapPort').value = '993';
+  document.getElementById('smtpPort').value = '587';
+  document.getElementById('setupPassword').type = 'password';
   document.getElementById('setupError').classList.add('hidden');
+  document.getElementById('providerBadge').className = 'provider-badge hidden';
+  document.getElementById('passwordHint').textContent = '';
+  ['gmailTip', 'outlookTip', 'fastmailTip'].forEach(id => document.getElementById(id).classList.add('hidden'));
+  document.getElementById('advancedSection').classList.add('hidden');
+  document.getElementById('advancedToggle').classList.remove('open');
+}
+
+function showSetupModal(cancellable = false) {
+  setupModalReset();
   document.getElementById('setupCancelBtn').style.display = cancellable ? '' : 'none';
   document.getElementById('setupModal').classList.remove('hidden');
   setTimeout(() => document.getElementById('setupEmail').focus(), 50);
@@ -1800,53 +1939,123 @@ document.getElementById('togglePassword').addEventListener('click', () => {
   inp.type = inp.type === 'password' ? 'text' : 'password';
 });
 
-document.getElementById('setupEmail').addEventListener('input', async () => {
-  const email = document.getElementById('setupEmail').value.trim();
-  const domain = (email.split('@')[1] || '').toLowerCase();
-  const isGmail = ['gmail.com', 'googlemail.com'].includes(domain);
-  const isOutlook = ['outlook.com', 'hotmail.com', 'live.com'].includes(domain);
-  const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
-  document.getElementById('gmailTip').classList.toggle('hidden', !isGmail);
-  document.getElementById('outlookTip').classList.toggle('hidden', !isOutlook);
-  document.getElementById('fastmailTip').classList.toggle('hidden', !isFastmail);
-  document.getElementById('passwordHint').textContent = isGmail ? '(App Password required)' : isFastmail ? '(App Password — JMAP)' : '';
-  if (email.includes('@')) {
+document.getElementById('advancedToggle').addEventListener('click', () => {
+  const sec = document.getElementById('advancedSection');
+  const btn = document.getElementById('advancedToggle');
+  const isOpen = btn.classList.contains('open');
+  sec.classList.toggle('hidden', isOpen);
+  btn.classList.toggle('open', !isOpen);
+});
+
+let _setupPresetDebounce = null;
+document.getElementById('setupEmail').addEventListener('input', () => {
+  clearTimeout(_setupPresetDebounce);
+  _setupPresetDebounce = setTimeout(async () => {
+    const email = document.getElementById('setupEmail').value.trim();
+    const atIdx = email.indexOf('@');
+    if (atIdx < 1) {
+      document.getElementById('providerBadge').className = 'provider-badge hidden';
+      return;
+    }
+    const domain = email.slice(atIdx + 1).toLowerCase();
+    const isGmail = ['gmail.com', 'googlemail.com'].includes(domain);
+    const isOutlook = ['outlook.com', 'hotmail.com', 'live.com'].includes(domain);
+    const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
+
+    document.getElementById('gmailTip').classList.toggle('hidden', !isGmail);
+    document.getElementById('outlookTip').classList.toggle('hidden', !isOutlook);
+    document.getElementById('fastmailTip').classList.toggle('hidden', !isFastmail);
+    document.getElementById('passwordHint').textContent =
+      (isGmail || isFastmail) ? '(App Password required)' : '';
+
+    const badge = document.getElementById('providerBadge');
     const preset = await ipc('accounts:preset', email);
     if (preset) {
+      // Fill advanced fields silently
       document.getElementById('imapHost').value = preset.imap?.host || '';
       document.getElementById('imapPort').value = preset.imap?.port || '993';
       document.getElementById('smtpHost').value = preset.smtp?.host || '';
       document.getElementById('smtpPort').value = preset.smtp?.port || '587';
+      const providerName = SETUP_KNOWN_DOMAINS[domain] || domain;
+      badge.textContent = `✓ ${providerName} detected — server settings auto-filled`;
+      badge.className = 'provider-badge provider-badge-ok';
+      // Keep advanced collapsed for known providers
+      if (!document.getElementById('advancedToggle').classList.contains('open')) {
+        document.getElementById('advancedSection').classList.add('hidden');
+      }
+    } else {
+      // Unknown provider — auto-expand server settings so user sees what to fill
+      badge.textContent = 'Custom provider — enter your server details below';
+      badge.className = 'provider-badge provider-badge-custom';
+      document.getElementById('advancedSection').classList.remove('hidden');
+      document.getElementById('advancedToggle').classList.add('open');
     }
-  }
+  }, 280);
 });
+
+function parseSetupError(err) {
+  const m = (err || '').toLowerCase();
+  if (m.includes('auth') || m.includes('credentials') || m.includes('invalid') || m.includes('535') || m.includes('534') || m.includes('login') || m.includes('password')) {
+    return 'Wrong password or credentials. Gmail and Fastmail require an App Password — not your regular account password.';
+  }
+  if (m.includes('econnrefused') || m.includes('connection refused')) {
+    return 'Connection refused. Check that the host and port are correct in Server settings.';
+  }
+  if (m.includes('etimedout') || m.includes('timed out') || m.includes('timeout')) {
+    return 'Connection timed out. Check the server address and make sure IMAP is enabled for your account.';
+  }
+  if (m.includes('enotfound') || m.includes('getaddrinfo') || m.includes('not found')) {
+    return 'Server not found. Check the IMAP host name in Server settings.';
+  }
+  if (m.includes('certificate') || m.includes('ssl') || m.includes('tls') || m.includes('self-signed')) {
+    return 'SSL/TLS error. Try port 993 (IMAP SSL) or 587 (SMTP STARTTLS).';
+  }
+  return err || 'Connection failed. Check your credentials and server settings.';
+}
 
 document.getElementById('setupSaveBtn').addEventListener('click', async () => {
   const email = document.getElementById('setupEmail').value.trim();
   const password = document.getElementById('setupPassword').value;
   const name = document.getElementById('setupName').value.trim() || email.split('@')[0];
-  const imapHost = document.getElementById('imapHost').value.trim();
+  const imapHostInput = document.getElementById('imapHost').value.trim();
   const imapPort = parseInt(document.getElementById('imapPort').value) || 993;
-  const smtpHost = document.getElementById('smtpHost').value.trim();
+  const smtpHostInput = document.getElementById('smtpHost').value.trim();
   const smtpPort = parseInt(document.getElementById('smtpPort').value) || 587;
 
-  if (!email) { showSetupError('Enter your email address'); return; }
+  if (!email || !email.includes('@') || email.split('@')[1]?.length < 2) {
+    showSetupError('Enter a valid email address'); return;
+  }
   if (!password) { showSetupError('Enter your password'); return; }
-
-  const domain = (email.split('@')[1] || '').toLowerCase();
-  const isJmap = ['fastmail.com', 'fastmail.fm'].includes(domain);
-  if (!imapHost && !isJmap) { showSetupError('Enter server settings (open Advanced settings)'); return; }
 
   document.getElementById('setupError').classList.add('hidden');
   setSetupLoading(true);
 
   const preset = await ipc('accounts:preset', email);
-  const protocol = preset?.protocol || 'imap';
+  const domain = (email.split('@')[1] || '').toLowerCase();
+  const isJmap = ['fastmail.com', 'fastmail.fm'].includes(domain);
+
+  const resolvedImap = imapHostInput
+    ? { host: imapHostInput, port: imapPort, secure: imapPort === 993 || imapPort === 465 }
+    : preset?.imap || null;
+  const resolvedSmtp = smtpHostInput
+    ? { host: smtpHostInput, port: smtpPort, secure: smtpPort === 465 }
+    : preset?.smtp || null;
+
+  if (!resolvedImap && !isJmap) {
+    setSetupLoading(false);
+    document.getElementById('advancedSection').classList.remove('hidden');
+    document.getElementById('advancedToggle').classList.add('open');
+    showSetupError('Enter your IMAP and SMTP server settings below');
+    document.getElementById('imapHost').focus();
+    return;
+  }
+
   const accountData = {
-    name, email, password, protocol,
+    name, email, password,
+    protocol: preset?.protocol || 'imap',
     jmapUrl: preset?.jmapUrl || null,
-    imap: imapHost ? { host: imapHost, port: imapPort, secure: imapPort === 993 } : preset?.imap || null,
-    smtp: smtpHost ? { host: smtpHost, port: smtpPort, secure: smtpPort === 465 } : preset?.smtp || null,
+    imap: resolvedImap,
+    smtp: resolvedSmtp,
   };
 
   const res = await ipc('accounts:add', accountData);
@@ -1858,11 +2067,12 @@ document.getElementById('setupSaveBtn').addEventListener('click', async () => {
     renderAccountTabs();
     hideSetupModal();
     showFolderSidebar(true);
+    toast('Account added — ' + email);
+    await loadAndRenderFolders(res.account.id);
     renderFolderNav();
     loadEmails();
-    toast('Account added — ' + email);
   } else {
-    showSetupError(res.error || 'Connection failed. Check your credentials.');
+    showSetupError(parseSetupError(res.error));
   }
 });
 
@@ -1880,8 +2090,8 @@ document.getElementById('setupCancelBtn').addEventListener('click', hideSetupMod
 document.getElementById('setupModal').addEventListener('click', e => {
   if (e.target === e.currentTarget && document.getElementById('setupCancelBtn').style.display !== 'none') hideSetupModal();
 });
-['setupEmail', 'setupPassword', 'setupName'].forEach(id => {
-  document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('setupSaveBtn').click(); });
+['setupEmail', 'setupPassword', 'setupName', 'imapHost', 'imapPort', 'smtpHost', 'smtpPort'].forEach(id => {
+  document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('setupSaveBtn').click(); });
 });
 
 // ── Toolbar buttons ───────────────────────────────────────────────────────────

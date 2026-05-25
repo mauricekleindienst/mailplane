@@ -174,6 +174,11 @@ function createWindow() {
     },
   });
   mainWindow.loadFile('index.html');
+
+  // Notify renderer so it can shift the account bar
+  const sendFs = (v) => mainWindow.webContents.send('fullscreen-change', v);
+  mainWindow.on('enter-full-screen', () => sendFs(true));
+  mainWindow.on('leave-full-screen', () => sendFs(false));
 }
 
 // ── Dock badge ────────────────────────────────────────────────────────────────
@@ -372,6 +377,54 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
 });
 
 ipcMain.handle('shell:open', (_, url) => shell.openExternal(url));
+
+// ── Folder management ─────────────────────────────────────────────────────────
+
+ipcMain.handle('folder:create', async (_, { accountId, name }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    await mgr(account).createFolder(account, name);
+    return { success: true };
+  } catch (err) { return { success: false, error: err.message }; }
+});
+
+ipcMain.handle('folder:rename', async (_, { accountId, path, newName }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    const newPath = path.includes('/') ? path.split('/').slice(0, -1).join('/') + '/' + newName : newName;
+    await mgr(account).renameFolder(account, path, newPath);
+    return { success: true, newPath };
+  } catch (err) { return { success: false, error: err.message }; }
+});
+
+ipcMain.handle('folder:delete', async (_, { accountId, path }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    await mgr(account).deleteFolder(account, path);
+    return { success: true };
+  } catch (err) { return { success: false, error: err.message }; }
+});
+
+ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
+  const isSystem = !!folder.role;
+  const items = [
+    {
+      label: 'New Folder…',
+      click: () => event.sender.send('context-menu:folder-action', { action: 'create', accountId, folder }),
+    },
+  ];
+  if (!isSystem) {
+    items.push(
+      { label: 'Rename…', click: () => event.sender.send('context-menu:folder-action', { action: 'rename', accountId, folder }) },
+      { type: 'separator' },
+      { label: 'Delete Folder', click: () => event.sender.send('context-menu:folder-action', { action: 'delete', accountId, folder }) },
+    );
+  }
+  Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 ipcMain.on('context-menu:show', (event, { hasSelection }) => {

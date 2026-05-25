@@ -299,6 +299,23 @@ async function listFolders(account) {
   }
 }
 
+async function createFolder(account, name) {
+  const client = await getClient(account);
+  await client.mailboxCreate(name);
+}
+
+async function renameFolder(account, path, newPath) {
+  const client = await getClient(account);
+  await client.mailboxRename(path, newPath);
+  // Connection state is now invalid for the old mailbox name — drop cached client
+  clients.delete(account.id);
+}
+
+async function deleteFolder(account, path) {
+  const client = await getClient(account);
+  await client.mailboxDelete(path);
+}
+
 async function disconnectAll() {
   for (const [, client] of clients) {
     try { await client.logout(); } catch {}
@@ -377,6 +394,7 @@ function stopAllIdle() {
 
 module.exports = {
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
-  setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders, disconnectAll,
-  startIdle, stopIdle, stopAllIdle,
+  setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders,
+  createFolder, renameFolder, deleteFolder,
+  disconnectAll, startIdle, stopIdle, stopAllIdle,
 };
