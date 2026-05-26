@@ -273,7 +273,8 @@ function initials(name) {
 
 function gravatarUrl(email, size = 80) {
   const hash = md5((email || '').toLowerCase().trim());
-  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404`;
+  // d=blank returns a 1×1 transparent PNG instead of 404 — avoids console errors
+  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=blank`;
 }
 
 function avatarEl(name, email, size = 34) {
@@ -289,7 +290,11 @@ function avatarEl(name, email, size = 34) {
   if (email) {
     const img = document.createElement('img');
     img.alt = '';
-    img.addEventListener('load', () => { img.classList.add('loaded'); span.style.display = 'none'; });
+    img.addEventListener('load', () => {
+      // naturalWidth === 1 means Gravatar returned its blank placeholder — keep initials
+      if (img.naturalWidth > 1) { img.classList.add('loaded'); span.style.display = 'none'; }
+      else img.remove();
+    });
     img.addEventListener('error', () => img.remove());
     img.src = gravatarUrl(email, size * 2);
     wrap.appendChild(img);
@@ -388,6 +393,7 @@ async function getFolderPath(key, accountId) {
 
 // ── Body cache key ────────────────────────────────────────────────────────────
 function bodyCacheKey(email) { return `${email.accountId}:${email.folder || ''}:${email.uid}`; }
+function selKey(email) { return `${email.accountId}:${email.uid}`; }
 
 // ── Account tabs (top) ────────────────────────────────────────────────────────
 function renderAccountTabs() {
@@ -995,11 +1001,11 @@ function makeEmailItem(email, showAccountBadge) {
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.className = 'email-checkbox';
-  checkbox.checked = S.selectedUids.has(email.uid);
+  checkbox.checked = S.selectedUids.has(selKey(email));
   checkbox.addEventListener('change', e => {
     e.stopPropagation();
-    if (checkbox.checked) S.selectedUids.add(email.uid);
-    else S.selectedUids.delete(email.uid);
+    if (checkbox.checked) S.selectedUids.add(selKey(email));
+    else S.selectedUids.delete(selKey(email));
     renderBulkBar();
     item.classList.toggle('multi-selected', checkbox.checked);
   });
@@ -1008,7 +1014,7 @@ function makeEmailItem(email, showAccountBadge) {
   item.appendChild(top);
   item.appendChild(body);
   item.appendChild(flagBtn);
-  item.classList.toggle('multi-selected', S.selectedUids.has(email.uid));
+  item.classList.toggle('multi-selected', S.selectedUids.has(selKey(email)));
   item.addEventListener('click', e => {
     if (e.target === checkbox) return;
     selectEmail(email);
@@ -1065,6 +1071,7 @@ function renderEmailList(isSearch = false) {
               </div>
               <div class="thread-member-subject">${escHtml(email.subject || '(no subject)')}</div>`;
             mem.addEventListener('click', () => selectEmail(email));
+            mem.addEventListener('contextmenu', e => { e.preventDefault(); showContextMenu(e, email); });
             frag.appendChild(mem);
           });
         }
@@ -1238,19 +1245,31 @@ function sendWithUndo(accountId, emailData, onSent, delay) {
 // ── Bulk actions ──────────────────────────────────────────────────────────────
 async function doBulkAction(action) {
   if (!S.selectedUids.size) return;
-  const accountId = S.activeAccountId || S.accounts[0]?.id;
-  if (!accountId) return;
-  const folder = await getFolderPath(S.activeFolder, accountId);
-  const uids = [...S.selectedUids];
-  const res = await ipc('email:bulk', { accountId, folder, uids, action });
-  if (res.success) {
+
+  // Collect selected email objects, then group by accountId+folder so bulk
+  // calls across accounts/folders (e.g. All Mail mode) are handled correctly.
+  const selectedEmails = S.emails.filter(e => S.selectedUids.has(selKey(e)));
+  if (!selectedEmails.length) return;
+
+  const groups = new Map();
+  for (const e of selectedEmails) {
+    const key = `${e.accountId}:${e.folder}`;
+    if (!groups.has(key)) groups.set(key, { accountId: e.accountId, folder: e.folder, uids: [] });
+    groups.get(key).uids.push(e.uid);
+  }
+
+  const results = await Promise.all(
+    [...groups.values()].map(g => ipc('email:bulk', { accountId: g.accountId, folder: g.folder, uids: g.uids, action }))
+  );
+
+  if (results.every(r => r.success)) {
     if (action === 'delete' || action === 'archive') {
-      S.emails = S.emails.filter(e => !S.selectedUids.has(e.uid));
-      if (S.selectedEmail && S.selectedUids.has(S.selectedEmail.uid)) {
+      S.emails = S.emails.filter(e => !S.selectedUids.has(selKey(e)));
+      if (S.selectedEmail && S.selectedUids.has(selKey(S.selectedEmail))) {
         S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
       }
     } else if (action === 'read' || action === 'unread') {
-      S.emails.forEach(e => { if (S.selectedUids.has(e.uid)) e.read = action === 'read'; });
+      S.emails.forEach(e => { if (S.selectedUids.has(selKey(e))) e.read = action === 'read'; });
     }
     S.selectedUids.clear();
     renderEmailList();
@@ -1582,8 +1601,13 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
     const newSig = getAccountSignature(fromSel.value);
     const sigEl = bodyEl.querySelector('.compose-signature');
     if (sigEl) {
-      if (newSig) sigEl.innerHTML = newSig;
-      else sigEl.closest('p, div') === sigEl ? sigEl.remove() : sigEl.remove();
+      if (newSig) {
+        sigEl.innerHTML = newSig;
+      } else {
+        const prev = sigEl.previousElementSibling;
+        if (prev?.tagName === 'P' && prev.innerHTML === '<br>') prev.remove();
+        sigEl.remove();
+      }
     } else if (newSig) {
       bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${newSig}</div>`;
     }
