@@ -34,6 +34,7 @@ const S = {
   expandedThreads: new Set(),
   selectedUids: new Set(),   // multi-select
   imagesBlocked: getSetting('images-blocked', 'true') === 'true',
+  pendingAttachments: [],    // { name, type, path, size } — cleared on open/close compose
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
@@ -1558,7 +1559,43 @@ function getAccountSignature(accountId) {
   return acc?.signature || '';
 }
 
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1048576) return Math.round(bytes / 1024) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
+function renderAttachmentChips() {
+  const list = document.getElementById('composeAttachList');
+  if (!list) return;
+  list.classList.toggle('hidden', !S.pendingAttachments.length);
+  list.innerHTML = '';
+  S.pendingAttachments.forEach((att, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'compose-attach-chip';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'attach-chip-name';
+    nameEl.textContent = att.name;
+    const sizeEl = document.createElement('span');
+    sizeEl.className = 'attach-chip-size';
+    sizeEl.textContent = formatFileSize(att.size);
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'attach-chip-remove';
+    removeBtn.title = 'Remove';
+    removeBtn.textContent = '×';
+    removeBtn.addEventListener('click', () => {
+      S.pendingAttachments.splice(i, 1);
+      renderAttachmentChips();
+    });
+    chip.append(nameEl, sizeEl, removeBtn);
+    list.appendChild(chip);
+  });
+}
+
 function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message' } = {}) {
+  S.pendingAttachments = [];
+  renderAttachmentChips();
+
   const fromSel = document.getElementById('composeFrom');
   fromSel.innerHTML = S.accounts.map(a =>
     `<option value="${a.id}">${escHtml(a.name || a.email)} &lt;${escHtml(a.email)}&gt;</option>`
@@ -1627,6 +1664,8 @@ function closeCompose(skipConfirm = false) {
   }
   document.getElementById('composeFloat').classList.add('hidden');
   bodyEl.innerHTML = '';
+  S.pendingAttachments = [];
+  renderAttachmentChips();
 }
 
 // Toolbar buttons
@@ -1706,8 +1745,12 @@ document.getElementById('composeAttachBtn').addEventListener('click', () => {
   inp.multiple = true;
   inp.onchange = () => {
     if (!inp.files.length) return;
-    const names = Array.from(inp.files).map(f => f.name).join(', ');
-    toast('Attachments noted: ' + names + '\n(Full attachment support coming soon)');
+    Array.from(inp.files).forEach(f => {
+      if (!S.pendingAttachments.some(a => a.path === f.path && a.name === f.name)) {
+        S.pendingAttachments.push({ name: f.name, type: f.type || 'application/octet-stream', path: f.path, size: f.size });
+      }
+    });
+    renderAttachmentChips();
   };
   inp.click();
 });
@@ -1769,9 +1812,12 @@ document.getElementById('composeSendBtn').addEventListener('click', async () => 
   if (!subject) { showComposeError('Enter a subject'); return; }
 
   document.getElementById('composeError').classList.add('hidden');
+  const attachments = S.pendingAttachments.length
+    ? S.pendingAttachments.map(a => ({ name: a.name, type: a.type, path: a.path }))
+    : undefined;
   closeCompose(true); // skip discard confirmation — user is sending, not discarding
   const delay = parseInt(getSetting('undo-delay', '8000'));
-  sendWithUndo(accountId, { to, cc, bcc, subject, text, html }, null, delay);
+  sendWithUndo(accountId, { to, cc, bcc, subject, text, html, attachments }, null, delay);
 });
 
 // ── Inline images in compose ──────────────────────────────────────────────────

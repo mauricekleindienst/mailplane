@@ -11,7 +11,8 @@ function encryptPassword(plain) {
   if (_safeStorage?.isEncryptionAvailable()) {
     return _safeStorage.encryptString(plain).toString('base64');
   }
-  return plain; // fallback: store plaintext if keychain unavailable
+  console.error('[Mailplane] safeStorage unavailable — storing password as plaintext. Run from a normal macOS session to enable keychain encryption.');
+  return plain;
 }
 
 function decryptPassword(account) {

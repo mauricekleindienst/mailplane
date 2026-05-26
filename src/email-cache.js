@@ -172,7 +172,7 @@ function getCachedBody(accountId, folder, uid) {
   return {
     html: row.html,
     text: row.text,
-    attachments: JSON.parse(row.attachments || '[]'),
+    attachments: (() => { try { return JSON.parse(row.attachments || '[]'); } catch { return []; } })(),
     _fromCache: true,
   };
 }
