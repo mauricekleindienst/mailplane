@@ -7,11 +7,13 @@ const { version: APP_VERSION } = require('./package.json');
 // Explicit channel allowlists — nothing outside these lists can cross the boundary
 const INVOKE_CHANNELS = new Set([
   'accounts:list', 'accounts:add', 'accounts:remove', 'accounts:update',
-  'accounts:preset', 'accounts:folders', 'accounts:folders:all',
+  'accounts:preset', 'accounts:autodiscover', 'accounts:folders', 'accounts:folders:all',
   'apps:list', 'apps:add', 'apps:remove',
   'emails:fetch', 'emails:search',
   'email:body', 'email:send', 'email:delete', 'email:archive',
   'email:move', 'email:flag', 'email:markread', 'email:bulk', 'email:attachment',
+  'email:bimi',
+  'email:scheduled:list', 'email:scheduled:cancel',
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
   'update:install',
@@ -22,14 +24,15 @@ const SEND_CHANNELS = new Set([
   'badge:set',
   'context-menu:show',
   'context-menu:folder',
+  'context-menu:account',
   'prefs:notify',
 ]);
 
 const RECEIVE_CHANNELS = new Set([
-  'new-emails', 'mailto', 'update-ready',
+  'new-emails', 'mailto', 'update-ready', 'email:scheduled:fired',
   'open-settings', 'new-message', 'reply', 'reply-all', 'forward',
   'refresh', 'delete-email', 'archive-email', 'mark-read', 'toggle-star',
-  'context-menu:action', 'context-menu:folder-action',
+  'context-menu:action', 'context-menu:folder-action', 'context-menu:account-action',
   'fullscreen-change',
   'emails:refreshed',
 ]);

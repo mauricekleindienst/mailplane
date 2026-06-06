@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src *; frame-src *; media-src 'self';" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; connect-src 'self' https:; frame-src 'self'; media-src 'self';" />
   <title>Mailplane</title>
   <link rel="icon" type="image/svg+xml" href="assets/icon.svg" />
   <link rel="stylesheet" href="styles.css" />
@@ -137,7 +137,7 @@
           </button>
         </div>
       </div>
-      <webview id="appWebview" src="about:blank"></webview>
+      <webview id="appWebview" src="about:blank" partition="persist:apps" nodeintegration="false"></webview>
     </div>
 
     <!-- Calendar view overlay -->
@@ -211,6 +211,24 @@
       <button class="tb-btn" data-cmd="underline" title="Underline"><u>U</u></button>
       <button class="tb-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
       <div class="tb-sep"></div>
+      <select class="tb-select" id="tbFontSize" title="Font size">
+        <option value="">Size</option>
+        <option value="11">11</option>
+        <option value="12">12</option>
+        <option value="13">13</option>
+        <option value="14">14</option>
+        <option value="16">16</option>
+        <option value="18">18</option>
+        <option value="20">20</option>
+        <option value="24">24</option>
+        <option value="28">28</option>
+        <option value="36">36</option>
+      </select>
+      <label class="tb-color-wrap" title="Text colour">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+        <input type="color" id="tbTextColor" value="#000000" title="Text colour" />
+      </label>
+      <div class="tb-sep"></div>
       <button class="tb-btn" id="tbLink" title="Link">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
       </button>
@@ -223,6 +241,10 @@
       <div class="tb-sep"></div>
       <button class="tb-btn" data-cmd="removeFormat" title="Clear formatting">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="5" x2="19" y2="5"/><line x1="8" y1="5" x2="13" y2="19"/><line x1="4" y1="19" x2="12" y2="19"/><line x1="18" y1="13" x2="23" y2="18"/><line x1="23" y1="13" x2="18" y2="18"/></svg>
+      </button>
+      <div class="tb-sep"></div>
+      <button class="tb-btn" id="tbPlainToggle" title="Toggle plain text / rich text">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/><line x1="17" y1="14" x2="22" y2="14"/><line x1="19" y1="12" x2="19" y2="16"/></svg>
       </button>
     </div>
     <div class="compose-body-rt" id="composeBody" contenteditable="true" spellcheck="true" data-placeholder="Write your message…"></div>
@@ -238,11 +260,26 @@
       <div class="compose-footer-right">
         <div class="compose-error hidden" id="composeError"></div>
         <button class="btn-discard" id="composeCancelBtn">Discard</button>
-        <button class="btn-send" id="composeSendBtn">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
-          <span id="composeBtnText">Send</span>
-          <div class="btn-spinner hidden" id="composeSpinner"></div>
-        </button>
+        <div class="btn-send-group">
+          <button class="btn-send" id="composeSendBtn">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+            <span id="composeBtnText">Send</span>
+          </button>
+          <button class="btn-send btn-send-later-arrow" id="composeSendLaterBtn" title="Send Later">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+        </div>
+        <div class="send-later-picker hidden" id="sendLaterPicker">
+          <div class="slp-title">Send later</div>
+          <button class="slp-opt" data-hours="3">In 3 hours</button>
+          <button class="slp-opt" data-preset="tonight">Tonight 8 pm</button>
+          <button class="slp-opt" data-preset="tomorrow">Tomorrow 8 am</button>
+          <button class="slp-opt" data-preset="monday">Monday 8 am</button>
+          <div class="slp-sep"></div>
+          <label class="slp-custom-label">Pick date &amp; time</label>
+          <input type="datetime-local" id="sendLaterCustom" class="slp-datetime" />
+          <button class="slp-confirm btn-send" id="sendLaterConfirm">Schedule</button>
+        </div>
       </div>
     </div>
   </div>
@@ -254,6 +291,34 @@
     <div class="modal-header">
       <div class="modal-icon-wrap"><img src="assets/icon.svg" width="24" height="24" alt="" style="border-radius:6px" /></div>
       <div><h2>Add Email Account</h2><p class="modal-subtitle">Connect your mailbox to Mailplane</p></div>
+    </div>
+
+    <!-- Provider quick-pick shortcuts -->
+    <div class="provider-picker" id="providerPicker">
+      <button class="prov-btn" data-domain="gmail.com" data-name="Gmail">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=gmail.com&sz=32" alt="" /><span>Gmail</span>
+      </button>
+      <button class="prov-btn" data-domain="outlook.com" data-name="Outlook">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=outlook.com&sz=32" alt="" /><span>Outlook</span>
+      </button>
+      <button class="prov-btn" data-domain="icloud.com" data-name="iCloud">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=icloud.com&sz=32" alt="" /><span>iCloud</span>
+      </button>
+      <button class="prov-btn" data-domain="yahoo.com" data-name="Yahoo">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=yahoo.com&sz=32" alt="" /><span>Yahoo</span>
+      </button>
+      <button class="prov-btn" data-domain="fastmail.com" data-name="Fastmail">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=fastmail.com&sz=32" alt="" /><span>Fastmail</span>
+      </button>
+      <button class="prov-btn" data-domain="proton.me" data-name="Proton Mail">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=proton.me&sz=32" alt="" /><span>Proton</span>
+      </button>
+      <button class="prov-btn" data-domain="zoho.com" data-name="Zoho">
+        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=zoho.com&sz=32" alt="" /><span>Zoho</span>
+      </button>
+      <button class="prov-btn" data-domain="" data-name="Other">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="3.6" y1="9" x2="20.4" y2="9"/><line x1="3.6" y1="15" x2="20.4" y2="15"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Other</span>
+      </button>
     </div>
 
     <div class="form-group">
@@ -288,6 +353,14 @@
     <div class="provider-tip hidden" id="outlookTip">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="#3b82f6"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
       <span>Outlook may need IMAP enabled at <strong>Settings → Mail → Sync email</strong>.</span>
+    </div>
+    <div class="provider-tip hidden" id="protonTip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#6d4aff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+      <span>Proton Mail requires the <strong>Proton Mail Bridge</strong> desktop app to be running. Download it at proton.me/mail/bridge.</span>
+    </div>
+    <div class="provider-tip hidden" id="autodiscoverTip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="#10b981"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+      <span id="autodiscoverTipText">Server settings detected automatically.</span>
     </div>
 
     <button class="advanced-toggle" id="advancedToggle" type="button">

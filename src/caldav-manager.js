@@ -4,6 +4,20 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 
+// Resolve a CalDAV href against the original server URL, rejecting redirects
+// to a different host to prevent SSRF via malicious server responses.
+function resolveCalDavUrl(serverUrl, href) {
+  const origin = new URL(serverUrl);
+  if (!href.startsWith('http')) {
+    return `${origin.protocol}//${origin.host}${href}`;
+  }
+  const target = new URL(href);
+  if (target.host !== origin.host) {
+    throw new Error(`CalDAV response redirects to unexpected host: ${target.host}`);
+  }
+  return href;
+}
+
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
 function request(method, url, { auth, headers = {}, body } = {}) {
@@ -97,8 +111,7 @@ async function discoverCalendars(serverUrl, auth) {
     const res = await request('PROPFIND', serverUrl, { auth, body: principalXml, headers: { Depth: '0' } });
     const match = res.body.match(/<D:href[^>]*>([^<]+)<\/D:href>/);
     if (match) {
-      const parsed = new URL(serverUrl);
-      principalUrl = match[1].startsWith('http') ? match[1] : `${parsed.protocol}//${parsed.host}${match[1]}`;
+      try { principalUrl = resolveCalDavUrl(serverUrl, match[1]); } catch {}
     }
   } catch {}
 
@@ -113,8 +126,7 @@ async function discoverCalendars(serverUrl, auth) {
     const res = await request('PROPFIND', principalUrl, { auth, body: homeXml, headers: { Depth: '0' } });
     const match = res.body.match(/<[^>]*calendar-home-set[^>]*>\s*<D:href[^>]*>([^<]+)<\/D:href>/);
     if (match) {
-      const parsed = new URL(serverUrl);
-      homeUrl = match[1].startsWith('http') ? match[1] : `${parsed.protocol}//${parsed.host}${match[1]}`;
+      try { homeUrl = resolveCalDavUrl(serverUrl, match[1]); } catch {}
     }
   } catch {}
 
@@ -140,8 +152,8 @@ async function discoverCalendars(serverUrl, auth) {
     const nameMatch = block.match(/<D:displayname[^>]*>([^<]*)<\/D:displayname>/);
     if (!hrefMatch) continue;
     const href = hrefMatch[1];
-    const parsed = new URL(serverUrl);
-    const url = href.startsWith('http') ? href : `${parsed.protocol}//${parsed.host}${href}`;
+    let url;
+    try { url = resolveCalDavUrl(serverUrl, href); } catch { continue; }
     const name = nameMatch?.[1] || url.split('/').filter(Boolean).pop() || 'Calendar';
     if (url === homeUrl) continue;
     calendars.push({ url, name });

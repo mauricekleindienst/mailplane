@@ -22,23 +22,58 @@ function decryptPassword(account) {
         return _safeStorage.decryptString(Buffer.from(account.passwordEncrypted, 'base64'));
       } catch { return null; }
     }
-    return account.passwordEncrypted;
+    // safeStorage unavailable — cannot decrypt the stored password blob
+    return null;
   }
   // legacy plaintext migration
   return account.password || null;
 }
 
 const PRESETS = {
-  'gmail.com':      { protocol: 'imap', imap: { host: 'imap.gmail.com', port: 993, secure: true }, smtp: { host: 'smtp.gmail.com', port: 587, secure: false } },
-  'googlemail.com': { protocol: 'imap', imap: { host: 'imap.gmail.com', port: 993, secure: true }, smtp: { host: 'smtp.gmail.com', port: 587, secure: false } },
-  'outlook.com':    { protocol: 'imap', imap: { host: 'outlook.office365.com', port: 993, secure: true }, smtp: { host: 'smtp.office365.com', port: 587, secure: false } },
-  'hotmail.com':    { protocol: 'imap', imap: { host: 'outlook.office365.com', port: 993, secure: true }, smtp: { host: 'smtp.office365.com', port: 587, secure: false } },
-  'live.com':       { protocol: 'imap', imap: { host: 'outlook.office365.com', port: 993, secure: true }, smtp: { host: 'smtp.office365.com', port: 587, secure: false } },
-  'yahoo.com':      { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com', port: 993, secure: true }, smtp: { host: 'smtp.mail.yahoo.com', port: 465, secure: true } },
-  'icloud.com':     { protocol: 'imap', imap: { host: 'imap.mail.me.com', port: 993, secure: true }, smtp: { host: 'smtp.mail.me.com', port: 587, secure: false } },
-  'me.com':         { protocol: 'imap', imap: { host: 'imap.mail.me.com', port: 993, secure: true }, smtp: { host: 'smtp.mail.me.com', port: 587, secure: false } },
-  'fastmail.com':   { protocol: 'jmap', jmapUrl: 'https://api.fastmail.com', imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 587, secure: false } },
-  'fastmail.fm':    { protocol: 'jmap', jmapUrl: 'https://api.fastmail.com', imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 587, secure: false } },
+  // Google
+  'gmail.com':       { protocol: 'imap', imap: { host: 'imap.gmail.com',           port: 993, secure: true  }, smtp: { host: 'smtp.gmail.com',           port: 587, secure: false } },
+  'googlemail.com':  { protocol: 'imap', imap: { host: 'imap.gmail.com',           port: 993, secure: true  }, smtp: { host: 'smtp.gmail.com',           port: 587, secure: false } },
+  // Microsoft
+  'outlook.com':     { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'hotmail.com':     { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'hotmail.co.uk':   { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'hotmail.fr':      { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'hotmail.de':      { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'live.com':        { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  'msn.com':         { protocol: 'imap', imap: { host: 'outlook.office365.com',    port: 993, secure: true  }, smtp: { host: 'smtp.office365.com',       port: 587, secure: false } },
+  // Yahoo
+  'yahoo.com':       { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com',      port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.com',      port: 465, secure: true  } },
+  'yahoo.co.uk':     { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com',      port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.com',      port: 465, secure: true  } },
+  'yahoo.fr':        { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com',      port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.com',      port: 465, secure: true  } },
+  'yahoo.de':        { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com',      port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.com',      port: 465, secure: true  } },
+  'yahoo.co.jp':     { protocol: 'imap', imap: { host: 'imap.mail.yahoo.co.jp',    port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.co.jp',    port: 465, secure: true  } },
+  'ymail.com':       { protocol: 'imap', imap: { host: 'imap.mail.yahoo.com',      port: 993, secure: true  }, smtp: { host: 'smtp.mail.yahoo.com',      port: 465, secure: true  } },
+  // Apple
+  'icloud.com':      { protocol: 'imap', imap: { host: 'imap.mail.me.com',         port: 993, secure: true  }, smtp: { host: 'smtp.mail.me.com',         port: 587, secure: false } },
+  'me.com':          { protocol: 'imap', imap: { host: 'imap.mail.me.com',         port: 993, secure: true  }, smtp: { host: 'smtp.mail.me.com',         port: 587, secure: false } },
+  'mac.com':         { protocol: 'imap', imap: { host: 'imap.mail.me.com',         port: 993, secure: true  }, smtp: { host: 'smtp.mail.me.com',         port: 587, secure: false } },
+  // Fastmail
+  'fastmail.com':    { protocol: 'jmap', jmapUrl: 'https://api.fastmail.com', imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 587, secure: false } },
+  'fastmail.fm':     { protocol: 'jmap', jmapUrl: 'https://api.fastmail.com', imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 587, secure: false } },
+  // AOL
+  'aol.com':         { protocol: 'imap', imap: { host: 'imap.aol.com',             port: 993, secure: true  }, smtp: { host: 'smtp.aol.com',             port: 587, secure: false } },
+  // GMX / Web.de
+  'gmx.com':         { protocol: 'imap', imap: { host: 'imap.gmx.com',             port: 993, secure: true  }, smtp: { host: 'mail.gmx.com',             port: 587, secure: false } },
+  'gmx.net':         { protocol: 'imap', imap: { host: 'imap.gmx.net',             port: 993, secure: true  }, smtp: { host: 'mail.gmx.net',             port: 587, secure: false } },
+  'gmx.de':          { protocol: 'imap', imap: { host: 'imap.gmx.net',             port: 993, secure: true  }, smtp: { host: 'mail.gmx.net',             port: 587, secure: false } },
+  'web.de':          { protocol: 'imap', imap: { host: 'imap.web.de',              port: 993, secure: true  }, smtp: { host: 'smtp.web.de',              port: 587, secure: false } },
+  // Zoho
+  'zoho.com':        { protocol: 'imap', imap: { host: 'imap.zoho.com',            port: 993, secure: true  }, smtp: { host: 'smtp.zoho.com',            port: 587, secure: false } },
+  'zohomail.com':    { protocol: 'imap', imap: { host: 'imap.zoho.com',            port: 993, secure: true  }, smtp: { host: 'smtp.zoho.com',            port: 587, secure: false } },
+  // Yandex
+  'yandex.com':      { protocol: 'imap', imap: { host: 'imap.yandex.com',          port: 993, secure: true  }, smtp: { host: 'smtp.yandex.com',          port: 465, secure: true  } },
+  'yandex.ru':       { protocol: 'imap', imap: { host: 'imap.yandex.ru',           port: 993, secure: true  }, smtp: { host: 'smtp.yandex.ru',           port: 465, secure: true  } },
+  // Mail.com
+  'mail.com':        { protocol: 'imap', imap: { host: 'imap.mail.com',            port: 993, secure: true  }, smtp: { host: 'smtp.mail.com',            port: 587, secure: false } },
+  // Proton Mail (requires Proton Mail Bridge running locally)
+  'protonmail.com':  { protocol: 'imap', imap: { host: '127.0.0.1',               port: 1143, secure: false }, smtp: { host: '127.0.0.1',               port: 1025, secure: false } },
+  'proton.me':       { protocol: 'imap', imap: { host: '127.0.0.1',               port: 1143, secure: false }, smtp: { host: '127.0.0.1',               port: 1025, secure: false } },
+  'pm.me':           { protocol: 'imap', imap: { host: '127.0.0.1',               port: 1143, secure: false }, smtp: { host: '127.0.0.1',               port: 1025, secure: false } },
 };
 
 const FOLDER_MAP = {

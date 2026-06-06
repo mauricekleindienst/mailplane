@@ -132,6 +132,32 @@ async function searchEmails(account, folder, query) {
   }
 }
 
+function parseUnsubscribeUrl(headers) {
+  const raw = headers?.get?.('list-unsubscribe') || '';
+  if (!raw) return null;
+  // Prefer https URL, fall back to mailto — explicitly reject everything else
+  const httpsMatch = raw.match(/<(https?:\/\/[^>]+)>/);
+  if (httpsMatch) {
+    const url = httpsMatch[1];
+    if (/^https?:\/\//i.test(url)) return url;
+  }
+  const mailtoMatch = raw.match(/<(mailto:[^>]+)>/);
+  if (mailtoMatch) {
+    const url = mailtoMatch[1];
+    if (/^mailto:/i.test(url)) return url;
+  }
+  return null;
+}
+
+function parseAuthResults(headers) {
+  const raw = (headers?.get?.('authentication-results') || '').toLowerCase();
+  const pick = (key) => {
+    const m = raw.match(new RegExp(`\\b${key}=(\\w+)`));
+    return m ? m[1] : null;
+  };
+  return { dkim: pick('dkim'), spf: pick('spf'), dmarc: pick('dmarc') };
+}
+
 async function fetchEmailBody(account, folder, uid) {
   const client = await getClient(account);
   const lock = await client.getMailboxLock(folder);
@@ -152,6 +178,8 @@ async function fetchEmailBody(account, folder, uid) {
         contentType: a.contentType,
         size: a.size || 0,
       })),
+      auth: parseAuthResults(parsed.headers),
+      unsubscribeUrl: parseUnsubscribeUrl(parsed.headers),
     };
   } finally {
     lock.release();
@@ -250,7 +278,7 @@ async function listFolders(account) {
     socketTimeout: 30000,
   });
 
-  client.on('error', () => {}); // prevent uncaught error events
+  client.on('error', (err) => { console.error('[Mailplane] listFolders connection error:', err.message); });
   try {
     await client.connect();
     const folders = [];
@@ -382,7 +410,7 @@ async function startIdle(account, onNewMail) {
     }
   }
 
-  connect().catch(() => {});
+  connect().catch(err => { console.error('[Mailplane] IDLE initial connect failed for', account.id, ':', err.message); });
 }
 
 function stopIdle(accountId) {

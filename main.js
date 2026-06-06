@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, Notification, Menu, nativeTheme, saf
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const dns = require('dns').promises;
 
 // Set app name before any store initializes (affects userData path)
 app.setName('Mailplane');
@@ -175,9 +176,15 @@ function startIdleForAccount(account) {
 }
 
 function createWindow() {
+  const Store = require('electron-store');
+  const winStore = new Store({ name: 'window', defaults: { bounds: null } });
+  const saved = winStore.get('bounds');
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width:  saved?.width  || 1280,
+    height: saved?.height || 820,
+    x: saved?.x,
+    y: saved?.y,
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
@@ -194,6 +201,19 @@ function createWindow() {
     },
   });
   mainWindow.loadFile('index.html');
+
+  // Persist window bounds on every resize/move (debounced)
+  let _saveBoundsTimer;
+  const saveBounds = () => {
+    clearTimeout(_saveBoundsTimer);
+    _saveBoundsTimer = setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMaximized() && !mainWindow.isMinimized()) {
+        winStore.set('bounds', mainWindow.getBounds());
+      }
+    }, 400);
+  };
+  mainWindow.on('resize', saveBounds);
+  mainWindow.on('move', saveBounds);
 
   // Notify renderer so it can shift the account bar
   const sendFs = (v) => mainWindow.webContents.send('fullscreen-change', v);
@@ -212,6 +232,66 @@ ipcMain.handle('accounts:list', () =>
   accountStore.getAccounts().map(a => ({ ...a, password: undefined, passwordEncrypted: undefined }))
 );
 ipcMain.handle('accounts:preset', (_, email) => accountStore.getPreset(email));
+
+// ── Auto-discover IMAP/SMTP for unknown domains ───────────────────────────────
+async function fetchText(url, timeoutMs = 5000) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch { return null; }
+}
+
+function parseMozillaXml(xml) {
+  // Extracts first IMAP incomingServer + first SMTP outgoingServer blocks
+  const imap = xml.match(/<incomingServer[^>]*type=["']imap["'][^>]*>([\s\S]*?)<\/incomingServer>/i);
+  const smtp = xml.match(/<outgoingServer[^>]*type=["']smtp["'][^>]*>([\s\S]*?)<\/outgoingServer>/i);
+  if (!imap) return null;
+  const tag = (block, t) => { const m = block.match(new RegExp(`<${t}>([^<]+)</${t}>`, 'i')); return m?.[1]?.trim(); };
+  const imapHost = tag(imap[1], 'hostname');
+  const imapPort = parseInt(tag(imap[1], 'port') || '993');
+  const imapSecure = (tag(imap[1], 'socketType') || '').toUpperCase() === 'SSL';
+  if (!imapHost) return null;
+  const result = { imap: { host: imapHost, port: imapPort, secure: imapSecure } };
+  if (smtp) {
+    const smtpHost = tag(smtp[1], 'hostname');
+    const smtpPort = parseInt(tag(smtp[1], 'port') || '587');
+    const smtpSecure = (tag(smtp[1], 'socketType') || '').toUpperCase() === 'SSL';
+    if (smtpHost) result.smtp = { host: smtpHost, port: smtpPort, secure: smtpSecure };
+  }
+  return result;
+}
+
+function parseAutodiscoverXml(xml) {
+  const pick = (block, t) => { const m = block?.match(new RegExp(`<${t}>([^<]+)</${t}>`, 'i')); return m?.[1]?.trim(); };
+  const imapBlock = xml.match(/<Protocol>([\s\S]*?<Type>IMAP[\s\S]*?)<\/Protocol>/i);
+  const smtpBlock = xml.match(/<Protocol>([\s\S]*?<Type>SMTP[\s\S]*?)<\/Protocol>/i);
+  const imapHost = pick(imapBlock?.[1], 'Server');
+  if (!imapHost) return null;
+  const result = {
+    imap: { host: imapHost, port: parseInt(pick(imapBlock[1], 'Port') || '993'), secure: pick(imapBlock[1], 'SSL') === 'on' },
+  };
+  const smtpHost = pick(smtpBlock?.[1], 'Server');
+  if (smtpHost) result.smtp = { host: smtpHost, port: parseInt(pick(smtpBlock[1], 'Port') || '587'), secure: pick(smtpBlock[1], 'SSL') === 'on' };
+  return result;
+}
+
+ipcMain.handle('accounts:autodiscover', async (_, domain) => {
+  if (!domain) return null;
+  // 1. Mozilla ISPDB — covers thousands of providers
+  const ispdb = await fetchText(`https://autoconfig.thunderbird.net/v1.1/${domain}`);
+  if (ispdb) { const r = parseMozillaXml(ispdb); if (r) return r; }
+  // 2. Domain's own autoconfig endpoint (Mozilla-format)
+  const autoconf = await fetchText(`https://autoconfig.${domain}/mail/config-v1.1.xml`, 4000);
+  if (autoconf) { const r = parseMozillaXml(autoconf); if (r) return r; }
+  // 3. Microsoft Autodiscover
+  const autodis = await fetchText(`https://autodiscover.${domain}/autodiscover/autodiscover.xml`, 4000);
+  if (autodis) { const r = parseAutodiscoverXml(autodis); if (r) return r; }
+  return null;
+});
 ipcMain.handle('accounts:add', async (_, data) => {
   try {
     const manager = data.protocol === 'jmap' ? jmapManager : imapManager;
@@ -327,15 +407,58 @@ ipcMain.handle('email:body', async (_, { accountId, folder, uid }) => {
   }
 });
 
-ipcMain.handle('email:send', async (_, { accountId, ...emailData }) => {
+// ── Scheduled send queue (in-memory; survives until app quit) ─────────────────
+const scheduledQueue = new Map(); // id → { timer, accountId, subject, scheduledAt }
+
+async function dispatchSend(accountId, emailData) {
+  const account = accountStore.getAccounts().find(a => a.id === accountId);
+  if (!account) return { success: false, error: 'Account not found' };
+  if (account.protocol === 'jmap') return await jmapManager.sendEmail(account, emailData);
+  return await smtpManager.sendEmail(account, emailData);
+}
+
+ipcMain.handle('email:send', async (_, { accountId, scheduledAt, ...emailData }) => {
+  if (scheduledAt) {
+    const delay = new Date(scheduledAt) - Date.now();
+    if (delay > 500) {
+      const id = `sched_${Date.now()}`;
+      const timer = setTimeout(async () => {
+        scheduledQueue.delete(id);
+        let result;
+        try { result = await dispatchSend(accountId, emailData); }
+        catch (err) { result = { success: false, error: err.message }; }
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('email:scheduled:fired', {
+            id, success: result.success,
+            subject: emailData.subject,
+            error: result.error,
+          });
+        }
+      }, delay);
+      scheduledQueue.set(id, { timer, accountId, subject: emailData.subject || '(no subject)', scheduledAt });
+      return { success: true, scheduledId: id };
+    }
+    // Scheduled time is in the past / immediate — fall through to regular send
+  }
   try {
-    const account = accountStore.getAccounts().find(a => a.id === accountId);
-    if (!account) return { success: false, error: 'Account not found' };
-    if (account.protocol === 'jmap') return await jmapManager.sendEmail(account, emailData);
-    return await smtpManager.sendEmail(account, emailData);
+    return await dispatchSend(accountId, emailData);
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+ipcMain.handle('email:scheduled:list', () =>
+  [...scheduledQueue.entries()].map(([id, e]) => ({
+    id, subject: e.subject, scheduledAt: e.scheduledAt, accountId: e.accountId,
+  }))
+);
+
+ipcMain.handle('email:scheduled:cancel', (_, { id }) => {
+  const entry = scheduledQueue.get(id);
+  if (!entry) return { success: false, error: 'Not found' };
+  clearTimeout(entry.timer);
+  scheduledQueue.delete(id);
+  return { success: true };
 });
 
 ipcMain.handle('email:delete', async (_, { accountId, folder, uid }) => {
@@ -426,6 +549,27 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
     return { success: true, path: dest };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+});
+
+// ── BIMI (Brand Indicators for Message Identification) ────────────────────────
+
+ipcMain.handle('email:bimi', async (_, { domain }) => {
+  if (!domain || !/^[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}$/.test(domain)) return null;
+  try {
+    const records = await dns.resolveTxt(`default._bimi.${domain}`);
+    for (const parts of records) {
+      const txt = parts.join('');
+      if (!/^v=BIMI1/i.test(txt)) continue;
+      const lMatch = txt.match(/(?:^|;)\s*l=([^;]+)/i);
+      if (!lMatch) continue;
+      const logoUrl = lMatch[1].trim();
+      if (!logoUrl.startsWith('https://')) continue;
+      return { logoUrl };
+    }
+    return null;
+  } catch {
+    return null;
   }
 });
 
@@ -521,6 +665,22 @@ ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
   Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(event.sender) });
 });
 
+// ── Account tab context menu ──────────────────────────────────────────────────
+ipcMain.on('context-menu:account', (event, { accountId }) => {
+  const items = [
+    {
+      label: 'Edit Account…',
+      click: () => event.sender.send('context-menu:account-action', { action: 'edit', accountId }),
+    },
+    { type: 'separator' },
+    {
+      label: 'Remove Account',
+      click: () => event.sender.send('context-menu:account-action', { action: 'remove', accountId }),
+    },
+  ];
+  Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(event.sender) });
+});
+
 // ── Context menu ──────────────────────────────────────────────────────────────
 ipcMain.on('context-menu:show', (event, _payload) => {
   const items = [
@@ -545,7 +705,11 @@ app.whenReady().then(() => {
   buildAppMenu();
   createWindow();
   accountStore.getAccounts().forEach(startIdleForAccount);
-  caldavManager.loadStoredAccounts(accountStore);
+  try {
+    caldavManager.loadStoredAccounts(accountStore);
+  } catch (err) {
+    console.error('[Mailplane] CalDAV loadStoredAccounts failed:', err.message);
+  }
   emailCache.pruneOldEntries(30);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

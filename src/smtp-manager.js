@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const fs = require('fs');
+const path = require('path');
 
 function buildTransport(account) {
   return nodemailer.createTransport({
@@ -16,28 +17,35 @@ function buildTransport(account) {
 
 async function sendEmail(account, { to, cc, bcc, subject, text, html, attachments }) {
   const transport = buildTransport(account);
+  try {
+    const mailOptions = {
+      from: `${account.name} <${account.email}>`,
+      to,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      subject,
+      text: text || '',
+      html: html || text || '',
+    };
 
-  const mailOptions = {
-    from: `${account.name} <${account.email}>`,
-    to,
-    cc: cc || undefined,
-    bcc: bcc || undefined,
-    subject,
-    text: text || '',
-    html: html || text || '',
-  };
+    if (attachments?.length) {
+      mailOptions.attachments = attachments.map(a => {
+        const resolved = path.resolve(a.path);
+        const stat = fs.statSync(resolved);
+        if (!stat.isFile()) throw new Error(`Attachment is not a regular file: ${a.name}`);
+        return {
+          filename: a.name,
+          contentType: a.type || 'application/octet-stream',
+          content: fs.readFileSync(resolved),
+        };
+      });
+    }
 
-  if (attachments?.length) {
-    mailOptions.attachments = attachments.map(a => ({
-      filename: a.name,
-      contentType: a.type || 'application/octet-stream',
-      content: fs.readFileSync(a.path),
-    }));
+    const info = await transport.sendMail(mailOptions);
+    return { success: true, messageId: info.messageId };
+  } finally {
+    transport.close();
   }
-
-  const info = await transport.sendMail(mailOptions);
-  transport.close();
-  return { success: true, messageId: info.messageId };
 }
 
 async function testSmtp(account) {

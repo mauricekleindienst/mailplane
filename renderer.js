@@ -35,6 +35,7 @@ const S = {
   selectedUids: new Set(),   // multi-select
   imagesBlocked: getSetting('images-blocked', 'true') === 'true',
   pendingAttachments: [],    // { name, type, path, size } — cleared on open/close compose
+  scheduledSends: [],        // { id, subject, scheduledAt, accountId }
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
@@ -50,6 +51,58 @@ _on('emails:refreshed', ({ accountId, folder }) => {
     loadEmails();
   }
 });
+
+// ── Scheduled send: fired notification ───────────────────────────────────────
+_on('email:scheduled:fired', ({ id, success, subject, error }) => {
+  S.scheduledSends = S.scheduledSends.filter(s => s.id !== id);
+  renderScheduledOutbox();
+  toast(success ? `Sent: ${subject}` : `Scheduled send failed: ${error || 'Unknown error'}`, !success, 5000);
+});
+
+// ── Scheduled outbox bar ──────────────────────────────────────────────────────
+function renderScheduledOutbox() {
+  let bar = document.getElementById('scheduledOutbox');
+  if (S.scheduledSends.length === 0) { bar?.remove(); return; }
+
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'scheduledOutbox';
+    bar.className = 'scheduled-outbox';
+    document.body.appendChild(bar);
+  }
+  bar.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'sob-title';
+  title.textContent = `${S.scheduledSends.length} scheduled`;
+  bar.appendChild(title);
+
+  S.scheduledSends.forEach(s => {
+    const row = document.createElement('div');
+    row.className = 'sob-row';
+
+    const info = document.createElement('div');
+    info.className = 'sob-info';
+    const time = new Date(s.scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    info.innerHTML = `<span class="sob-subj">${escHtml(s.subject)}</span><span class="sob-time">${escHtml(time)}</span>`;
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'sob-cancel';
+    cancelBtn.title = 'Cancel scheduled send';
+    cancelBtn.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+    cancelBtn.addEventListener('click', async () => {
+      const res = await ipc('email:scheduled:cancel', { id: s.id });
+      if (res.success) {
+        S.scheduledSends = S.scheduledSends.filter(x => x.id !== s.id);
+        renderScheduledOutbox();
+        toast('Scheduled send cancelled');
+      }
+    });
+
+    row.append(info, cancelBtn);
+    bar.appendChild(row);
+  });
+}
 
 // ── Mailto protocol handler ───────────────────────────────────────────────────
 _on('mailto', (url) => {
@@ -127,6 +180,35 @@ _on('context-menu:folder-action', async ({ action, accountId, folder }) => {
       renderFolderNav();
       loadEmails();
     } else { toast('Could not delete folder: ' + res.error, true); }
+  }
+});
+
+// ── Account tab context menu actions ─────────────────────────────────────────
+_on('context-menu:account-action', async ({ action, accountId }) => {
+  if (action === 'edit') {
+    showSettingsModal();
+    // Switch to accounts panel then expand/scroll to the right card
+    switchSettingsPanel('accounts');
+    // Wait one tick for renderSettingsAccounts to finish populating DOM
+    setTimeout(() => {
+      const content = document.getElementById('settingsPanelContent');
+      const cards = content.querySelectorAll('.settings-acc-card');
+      const idx = S.accounts.findIndex(a => a.id === accountId);
+      if (idx !== -1 && cards[idx]) {
+        cards[idx].classList.add('open');
+        cards[idx].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 30);
+  } else if (action === 'remove') {
+    const acc = S.accounts.find(a => a.id === accountId);
+    if (!acc || !confirm(`Remove ${acc.email}?`)) return;
+    await ipc('accounts:remove', accountId);
+    S.accounts = S.accounts.filter(a => a.id !== accountId);
+    folderMaps.delete(accountId);
+    accountFolders.delete(accountId);
+    if (S.activeAccountId === accountId) S.activeAccountId = S.accounts[0]?.id || null;
+    renderAccountTabs();
+    loadEmails();
   }
 });
 
@@ -278,6 +360,18 @@ function gravatarUrl(email, size = 80) {
   return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=blank`;
 }
 
+// Free / personal email providers — skip Clearbit for these (would show Gmail/MS logo, not the person)
+const PERSONAL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk', 'yahoo.fr', 'yahoo.co.jp',
+  'outlook.com', 'hotmail.com', 'hotmail.co.uk', 'hotmail.fr', 'live.com', 'msn.com',
+  'icloud.com', 'me.com', 'mac.com',
+  'aol.com', 'protonmail.com', 'proton.me', 'pm.me',
+  'fastmail.com', 'fastmail.fm',
+  'zoho.com', 'gmx.com', 'gmx.net', 'gmx.de',
+  'tutanota.com', 'tutamail.com', 'tuta.io',
+  'mail.com', 'yandex.com', 'yandex.ru',
+]);
+
 function avatarEl(name, email, size = 34) {
   const wrap = document.createElement('div');
   wrap.className = 'sender-avatar';
@@ -288,19 +382,107 @@ function avatarEl(name, email, size = 34) {
   span.textContent = initials(name || email);
   wrap.appendChild(span);
 
-  if (email) {
-    const img = document.createElement('img');
-    img.alt = '';
-    img.addEventListener('load', () => {
-      // naturalWidth === 1 means Gravatar returned its blank placeholder — keep initials
-      if (img.naturalWidth > 1) { img.classList.add('loaded'); span.style.display = 'none'; }
-      else img.remove();
+  if (!email) return wrap;
+
+  const domain = (email.split('@')[1] || '').toLowerCase();
+  let hasRealGravatar = false;
+
+  // Layer 1: Gravatar — personal photo for anyone who registered
+  const gravatarImg = document.createElement('img');
+  gravatarImg.alt = '';
+  gravatarImg.addEventListener('load', () => {
+    if (gravatarImg.naturalWidth > 1) {
+      hasRealGravatar = true;
+      gravatarImg.classList.add('loaded');
+      span.style.display = 'none';
+      // Hide domain logo if it loaded first
+      wrap.querySelector('.av-domain-logo')?.remove();
+    } else {
+      gravatarImg.remove();
+    }
+  });
+  gravatarImg.addEventListener('error', () => gravatarImg.remove());
+  gravatarImg.src = gravatarUrl(email, size * 2);
+  wrap.appendChild(gravatarImg);
+
+  // Layer 2: Clearbit company logo — for business domains only
+  // Clearbit returns 404 for unknown domains so the error handler fires cleanly
+  if (domain && !PERSONAL_DOMAINS.has(domain)) {
+    const logoImg = document.createElement('img');
+    logoImg.className = 'av-domain-logo';
+    logoImg.alt = '';
+    logoImg.addEventListener('load', () => {
+      if (!wrap.isConnected || hasRealGravatar) { logoImg.remove(); return; }
+      logoImg.classList.add('loaded');
+      span.style.display = 'none';
     });
-    img.addEventListener('error', () => img.remove());
-    img.src = gravatarUrl(email, size * 2);
-    wrap.appendChild(img);
+    logoImg.addEventListener('error', () => logoImg.remove());
+    logoImg.src = `https://logo.clearbit.com/${domain}`;
+    wrap.appendChild(logoImg);
   }
+
+  // Layer 3: BIMI — verified brand indicator, overrides everything
+  if (domain) {
+    getBimi(domain).then(bimi => {
+      if (!bimi?.logoUrl || !wrap.isConnected) return;
+      const bimiImg = document.createElement('img');
+      bimiImg.className = 'bimi-logo';
+      bimiImg.alt = '';
+      bimiImg.title = 'BIMI verified sender';
+      bimiImg.addEventListener('load', () => {
+        bimiImg.classList.add('loaded');
+        span.style.display = 'none';
+        gravatarImg.style.display = 'none';
+        wrap.querySelector('.av-domain-logo')?.remove();
+        wrap.dataset.bimi = '1';
+      });
+      bimiImg.addEventListener('error', () => bimiImg.remove());
+      bimiImg.src = bimi.logoUrl;
+      wrap.appendChild(bimiImg);
+    });
+  }
+
   return wrap;
+}
+
+// ── BIMI cache ────────────────────────────────────────────────────────────────
+const bimiCache = new Map(); // domain → Promise<{logoUrl}|null>
+const BIMI_CACHE_MAX = 500;
+
+function getBimi(domain) {
+  if (!bimiCache.has(domain)) {
+    if (bimiCache.size >= BIMI_CACHE_MAX) {
+      bimiCache.delete(bimiCache.keys().next().value); // evict oldest
+    }
+    bimiCache.set(domain, ipc('email:bimi', { domain }).catch(() => null));
+  }
+  return bimiCache.get(domain);
+}
+
+// Render DKIM/SPF/DMARC authentication result badges.
+function authBadgesEl(auth) {
+  if (!auth) return null;
+  const checks = [
+    { key: 'dkim', label: 'DKIM' },
+    { key: 'spf',  label: 'SPF'  },
+    { key: 'dmarc', label: 'DMARC' },
+  ];
+  const visible = checks.filter(c => auth[c.key]);
+  if (!visible.length) return null;
+
+  const row = document.createElement('div');
+  row.className = 'auth-badges';
+  visible.forEach(({ key, label }) => {
+    const pass = auth[key] === 'pass';
+    const badge = document.createElement('span');
+    badge.className = `auth-badge ${pass ? 'auth-pass' : 'auth-fail'}`;
+    badge.title = `${label}: ${auth[key]}`;
+    badge.innerHTML = pass
+      ? `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>${label}`
+      : `<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>${label}`;
+    row.appendChild(badge);
+  });
+  return row;
 }
 
 function fmtDate(d) {
@@ -328,6 +510,27 @@ function fmtBytes(b) {
 
 function escHtml(s) {
   return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Strip scripts and event-handler attributes from untrusted HTML before
+// inserting into the compose contenteditable or as a blockquote.
+function sanitizeHtml(html) {
+  if (!html) return '';
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,noscript,iframe,object,embed,form,base,meta,link[rel="stylesheet"]').forEach(el => el.remove());
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
+  let node;
+  while ((node = walker.nextNode())) {
+    for (const attr of [...node.attributes]) {
+      const n = attr.name.toLowerCase();
+      if (n.startsWith('on') || n === 'srcdoc') {
+        node.removeAttribute(attr.name);
+      } else if ((n === 'href' || n === 'src' || n === 'action') && /^\s*javascript:/i.test(attr.value)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  }
+  return doc.body.innerHTML;
 }
 
 let toastTimer;
@@ -421,6 +624,10 @@ function renderAccountTabs() {
     tab.appendChild(document.createTextNode(acc.name || acc.email.split('@')[0]));
 
     tab.addEventListener('click', () => switchAccount(acc.id));
+    tab.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      _send('context-menu:account', { accountId: acc.id });
+    });
     wrap.appendChild(tab);
   });
 
@@ -667,6 +874,10 @@ function openApp(app) {
   activeAppId = app.id;
   renderAppsNav();
   const view = document.getElementById('appView');
+  // Align left edge to the current sidebar width (tracks resize)
+  const sidebar = document.querySelector('.folder-sidebar');
+  const resizer = document.getElementById('sidebarResizer');
+  view.style.left = (sidebar.offsetWidth + (resizer ? resizer.offsetWidth : 5)) + 'px';
   view.classList.remove('hidden');
   document.getElementById('appViewTitle').textContent = app.name;
   const wv = document.getElementById('appWebview');
@@ -853,11 +1064,15 @@ document.getElementById('searchClear').addEventListener('click', () => {
 async function runSearch(query) {
   S.isSearching = true;
   showLoading(true);
+  const snapshotAccountId = S.activeAccountId;
+  const snapshotFolder = S.activeFolder;
 
   let messages = [];
   if (S.activeAccountId) {
     const folder = await getFolderPath(S.activeFolder);
+    if (S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
     const res = await ipc('emails:search', { accountId: S.activeAccountId, folder, query });
+    if (S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
     if (!res.success) { showLoading(false); toast('Search error: ' + res.error, true); return; }
     messages = res.messages;
   } else {
@@ -867,6 +1082,7 @@ async function runSearch(query) {
         .then(r => r.success ? r.messages : [])
         .catch(() => [])
     ));
+    if (S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
     messages = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
@@ -885,7 +1101,8 @@ function normalizeSubject(s) {
 function groupEmails(emails) {
   const groups = new Map();
   emails.forEach(email => {
-    const key = `${email.accountId}:${normalizeSubject(email.subject) || email.uid}`;
+    const normalized = normalizeSubject(email.subject);
+    const key = normalized ? `${email.accountId}:subj:${normalized}` : `${email.accountId}:uid:${email.uid}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(email);
   });
@@ -981,6 +1198,16 @@ function makeEmailItem(email, showAccountBadge) {
       pill.textContent = acc.email;
       footer.appendChild(pill);
     }
+  }
+
+  if (S.isSearching && email.folder) {
+    const folders = accountFolders.get(email.accountId);
+    const f = folders?.find(fl => fl.path === email.folder || fl.key === email.folder);
+    const folderName = f ? (f.role ? (FOLDER_LABELS[f.role] || f.name) : f.name) : email.folder.split('/').pop();
+    const folderPill = document.createElement('span');
+    folderPill.className = 'folder-pill';
+    folderPill.textContent = folderName;
+    footer.appendChild(folderPill);
   }
 
   if (email.hasAttachment) {
@@ -1159,20 +1386,30 @@ async function selectEmail(email) {
     if (addr && !S.contacts.find(c => c.email === addr)) S.contacts.push({ name: nm || '', email: addr });
   }
 
+  if (S.bodyCache.size >= 300) S.bodyCache.delete(S.bodyCache.keys().next().value); // evict oldest
   S.bodyCache.set(cacheKey, res.body);
   renderDetail(email, res.body);
   scheduleMarkRead(email);
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
+function advanceSelectionAfterRemove(email) {
+  if (S.selectedEmail?.uid !== email.uid || S.selectedEmail?.accountId !== email.accountId) return;
+  const idx = S.emails.findIndex(e => e.uid === email.uid && e.accountId === email.accountId);
+  const next = S.emails[idx + 1] || S.emails[idx - 1] || null;
+  if (next) {
+    selectEmail(next);
+  } else {
+    S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
+  }
+}
+
 async function doDelete(email) {
   const res = await ipc('email:delete', { accountId: email.accountId, folder: email.folder, uid: email.uid });
   if (res.success) {
+    advanceSelectionAfterRemove(email);
     S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
     S.bodyCache.delete(bodyCacheKey(email));
-    if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
-      S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
-    }
     renderEmailList();
     toast('Deleted');
   } else toast('Delete failed: ' + res.error, true);
@@ -1181,11 +1418,9 @@ async function doDelete(email) {
 async function doArchive(email) {
   const res = await ipc('email:archive', { accountId: email.accountId, folder: email.folder, uid: email.uid });
   if (res.success) {
+    advanceSelectionAfterRemove(email);
     S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
     S.bodyCache.delete(bodyCacheKey(email));
-    if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
-      S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
-    }
     renderEmailList();
     toast('Archived');
   } else toast('Archive failed: ' + res.error, true);
@@ -1193,15 +1428,20 @@ async function doArchive(email) {
 
 // ── Undo send queue ───────────────────────────────────────────────────────────
 let _undoSendTimer = null;
-let _undoSendCancel = null;
+let _undoSendFlush = null; // fires the pending send immediately if another send starts
 
 function sendWithUndo(accountId, emailData, onSent, delay) {
   const DELAY = delay !== undefined ? delay : parseInt(getSetting('undo-delay', '8000'));
-  clearTimeout(_undoSendTimer);
-  if (_undoSendCancel) _undoSendCancel();
+
+  // If a countdown is already running, fire that email immediately before starting the new one
+  if (_undoSendFlush) {
+    clearTimeout(_undoSendTimer);
+    _undoSendTimer = null;
+    _undoSendFlush();
+    _undoSendFlush = null;
+  }
 
   if (DELAY === 0) {
-    // Send immediately
     ipc('email:send', { accountId, ...emailData }).then(res => {
       if (res.success) { toast('Sent'); onSent?.(); }
       else toast('Send failed: ' + (res.error || 'Unknown error'), true);
@@ -1210,7 +1450,13 @@ function sendWithUndo(accountId, emailData, onSent, delay) {
   }
 
   let cancelled = false;
-  _undoSendCancel = () => { cancelled = true; };
+  _undoSendFlush = () => {
+    if (cancelled) return;
+    ipc('email:send', { accountId, ...emailData }).then(res => {
+      if (res.success) { toast('Sent'); onSent?.(); }
+      else toast('Send failed: ' + (res.error || 'Unknown error'), true);
+    });
+  };
 
   let remaining = Math.ceil(DELAY / 1000);
   const toastEl = document.getElementById('toast');
@@ -1219,6 +1465,7 @@ function sendWithUndo(accountId, emailData, onSent, delay) {
     toastEl.className = 'toast show undo';
     document.getElementById('undoSendBtn')?.addEventListener('click', () => {
       cancelled = true;
+      _undoSendFlush = null;
       clearTimeout(_undoSendTimer);
       clearInterval(_undoCountdown);
       toastEl.className = 'toast';
@@ -1235,6 +1482,8 @@ function sendWithUndo(accountId, emailData, onSent, delay) {
 
   _undoSendTimer = setTimeout(async () => {
     clearInterval(_undoCountdown);
+    _undoSendFlush = null;
+    _undoSendTimer = null;
     if (cancelled) return;
     toastEl.className = 'toast';
     const res = await ipc('email:send', { accountId, ...emailData });
@@ -1413,6 +1662,7 @@ function renderDetail(email, body) {
     mkIconBtn(email.read ? 'Mark Unread' : 'Mark Read',
       `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>`,
       '', () => setReadState(email, !email.read)),
+    mkIconBtn('Print', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>`, '', () => printEmail(email, body)),
     mkIconBtn('Delete', `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`, 'delete-btn', () => doDelete(email)),
   );
 
@@ -1448,6 +1698,40 @@ function renderDetail(email, body) {
     : `<span class="detail-from-name">${escHtml(email.fromEmail)}</span>`;
   meta.innerHTML = `<div class="detail-from-row">${nameHtml}</div>
     ${toStr ? `<div class="detail-recipients">to ${escHtml(toStr)}</div>` : ''}`;
+
+  const badges = authBadgesEl(body?.auth);
+  if (badges) meta.appendChild(badges);
+
+  // Click email address → copy to clipboard
+  const addrEl = meta.querySelector('.detail-from-addr');
+  if (addrEl) {
+    addrEl.classList.add('copyable');
+    addrEl.title = 'Click to copy address';
+    addrEl.addEventListener('click', () => {
+      navigator.clipboard.writeText(email.fromEmail).then(() => toast('Copied ' + email.fromEmail));
+    });
+  }
+
+  // Unsubscribe button
+  if (body?.unsubscribeUrl) {
+    const unsubBtn = document.createElement('button');
+    unsubBtn.className = 'unsub-btn';
+    unsubBtn.textContent = 'Unsubscribe';
+    unsubBtn.addEventListener('click', async () => {
+      const url = body.unsubscribeUrl;
+      if (url.startsWith('mailto:')) {
+        const m = url.match(/^mailto:([^?]+)(\?(.*))?/);
+        const to = m?.[1] || '';
+        const params = new URLSearchParams(m?.[3] || '');
+        openCompose({ to, subject: params.get('subject') || 'Unsubscribe' });
+      } else {
+        await ipc('shell:open', url);
+        toast('Opened unsubscribe page');
+      }
+    });
+    meta.appendChild(unsubBtn);
+  }
+
   senderRow.appendChild(meta);
   header.appendChild(senderRow);
 
@@ -1456,15 +1740,28 @@ function renderDetail(email, body) {
   bodyWrap.className = 'detail-body';
 
   if (body?.html) {
-    // Remote image blocking
+    // Remote image blocking (skip if user already loaded images for this email)
     let processedHtml = body.html;
     let hasRemoteImages = false;
-    if (S.imagesBlocked) {
-      processedHtml = body.html.replace(/<img([^>]*?)src=(["'])(https?:\/\/[^"']*)\2/gi, (_, pre, q, src) => {
-        hasRemoteImages = true;
-        return `<img${pre}data-src=${q}${src}${q} src="" style="display:none"`;
-      });
+    if (S.imagesBlocked && !body._imagesLoaded) {
+      // Quoted src (double or single quotes)
+      processedHtml = body.html.replace(
+        /<img([^>]*?)\ssrc=(["'])(https?:\/\/[^"'>\s]*)\2/gi,
+        (_, pre, q, src) => { hasRemoteImages = true; return `<img${pre} data-src=${q}${src}${q} src="" style="display:none"`; }
+      );
+      // Unquoted src
+      processedHtml = processedHtml.replace(
+        /<img([^>]*?)\ssrc=(https?:\/\/[^\s>"']+)/gi,
+        (_, pre, src) => { hasRemoteImages = true; return `<img${pre} data-src="${src}" src="" style="display:none"`; }
+      );
+      // Strip srcset attributes on any element (img, source, etc.)
+      processedHtml = processedHtml.replace(/\ssrcset=(["'])[^"']*\1/gi, () => { hasRemoteImages = true; return ''; });
+      processedHtml = processedHtml.replace(/\ssrcset=[^\s>"']+/gi, () => { hasRemoteImages = true; return ''; });
     }
+
+    const iframeWrap = document.createElement('div');
+    iframeWrap.className = 'email-iframe-wrap';
+    const iframe = document.createElement('iframe');
 
     if (hasRemoteImages) {
       const loadBar = document.createElement('div');
@@ -1477,12 +1774,16 @@ function renderDetail(email, body) {
             img.src = img.dataset.src;
             img.style.display = '';
           });
+          // Re-measure after images start loading
+          setTimeout(() => { try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 'px'; } catch {} }, 400);
         } catch {}
+        // Update the cached body so re-opening this email doesn't re-block images
+        const cacheKey = bodyCacheKey(email);
+        const cached = S.bodyCache.get(cacheKey);
+        if (cached) S.bodyCache.set(cacheKey, { ...cached, _imagesLoaded: true });
       });
       bodyWrap.appendChild(loadBar);
     }
-
-    const iframe = document.createElement('iframe');
     iframe.className = 'email-iframe';
     const imgBlockCss = S.imagesBlocked ? 'img[data-src]{display:none!important;}' : '';
     const isDark = document.documentElement.classList.contains('dark');
@@ -1494,19 +1795,41 @@ function renderDetail(email, body) {
       <meta name="color-scheme" content="${iframeColors.scheme}">
       <style>
         html,body{margin:0;padding:0;background:${iframeColors.bg};}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:14px;color:${iframeColors.text};padding:18px 22px;line-height:1.65;word-break:break-word;}
-        a{color:${iframeColors.link};}img{max-width:100%!important;}
-        table{max-width:100%!important;border-collapse:collapse;}
-        blockquote{border-left:3px solid ${iframeColors.bqBorder};margin:8px 0;padding-left:12px;color:${iframeColors.bqText};}
-        pre{background:${iframeColors.preBg};padding:12px;border-radius:8px;overflow-x:auto;font-size:13px;color:${iframeColors.text};}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;font-size:14px;color:${iframeColors.text};padding:20px 24px 32px;line-height:1.7;word-break:break-word;-webkit-text-size-adjust:100%;}
+        a{color:${iframeColors.link};text-decoration:underline;text-underline-offset:2px;}
+        a:hover{opacity:0.8;}
+        img{max-width:100%!important;height:auto!important;}
+        table{max-width:100%!important;border-collapse:collapse;table-layout:fixed;word-break:break-word;}
+        td,th{max-width:100%;overflow-wrap:break-word;}
+        blockquote{border-left:3px solid ${iframeColors.bqBorder};margin:12px 0;padding:4px 0 4px 14px;color:${iframeColors.bqText};}
+        pre,code{font-family:'SF Mono',SFMono-Regular,ui-monospace,Menlo,monospace;font-size:13px;}
+        pre{background:${iframeColors.preBg};padding:12px 16px;border-radius:8px;overflow-x:auto;line-height:1.5;white-space:pre;margin:12px 0;}
+        code{background:${iframeColors.preBg};padding:2px 5px;border-radius:4px;}
+        pre code{background:none;padding:0;}
+        p{margin:0 0 10px;}p:last-child{margin-bottom:0;}
+        ul,ol{margin:0 0 10px;padding-left:24px;}
+        li{margin-bottom:4px;}
+        hr{border:none;border-top:1px solid ${iframeColors.bqBorder};margin:16px 0;}
+        h1,h2,h3,h4,h5,h6{margin:16px 0 8px;font-weight:600;line-height:1.3;}
+        h1{font-size:20px;}h2{font-size:17px;}h3{font-size:15px;}h4,h5,h6{font-size:14px;}
+        .gmail_quote,.yahoo_quoted,[class*="quote"]{opacity:0.75;}
         ${imgBlockCss}
       </style>
     </head><body>${processedHtml}</body></html>`;
     iframe.srcdoc = htmlContent;
-    bodyWrap.appendChild(iframe);
+    iframeWrap.appendChild(iframe);
+    bodyWrap.appendChild(iframeWrap);
     iframe.addEventListener('load', () => {
-      const resize = () => { try { iframe.style.height = (iframe.contentDocument.body.scrollHeight + 40) + 'px'; } catch {} };
-      resize(); setTimeout(resize, 600);
+      const fitHeight = () => {
+        try { iframe.style.height = iframe.contentDocument.body.scrollHeight + 'px'; } catch {}
+      };
+      fitHeight();
+      iframe.classList.add('loaded');
+      // ResizeObserver catches late-loading images and dynamic content reflows
+      try {
+        const ro = new iframe.contentWindow.ResizeObserver(fitHeight);
+        ro.observe(iframe.contentDocument.body);
+      } catch { setTimeout(fitHeight, 800); }
       try {
         iframe.contentDocument.addEventListener('click', ev => {
           const link = ev.target.closest('a');
@@ -1541,6 +1864,36 @@ function renderDetail(email, body) {
   }
 
   panel.appendChild(view);
+}
+
+function printEmail(email, body) {
+  const printWin = window.open('', '_blank', 'width=800,height=600');
+  if (!printWin) { toast('Could not open print window', true); return; }
+  const isDark = document.documentElement.classList.contains('dark');
+  printWin.document.write(`<!DOCTYPE html><html><head>
+    <meta charset="UTF-8"><title>${escHtml(email.subject || '(no subject)')}</title>
+    <style>
+      body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',Arial,sans-serif;max-width:720px;margin:40px auto;color:#111;font-size:14px;line-height:1.6;}
+      .hdr{border-bottom:1px solid #ddd;padding-bottom:16px;margin-bottom:24px;}
+      h1{margin:0 0 8px;font-size:18px;font-weight:600;}
+      .meta{font-size:12px;color:#555;}
+      img{max-width:100%!important;}
+      a{color:#0066cc;}
+      @media print{.no-print{display:none}}
+    </style>
+  </head><body>
+    <div class="hdr">
+      <h1>${escHtml(email.subject || '(no subject)')}</h1>
+      <div class="meta">
+        <b>From:</b> ${escHtml(email.fromName ? `${email.fromName} <${email.fromEmail}>` : email.fromEmail)}<br>
+        <b>Date:</b> ${fmtFull(email.date)}
+      </div>
+    </div>
+    ${body?.html ? sanitizeHtml(body.html) : `<pre style="white-space:pre-wrap">${escHtml(body?.text || '')}</pre>`}
+  </body></html>`);
+  printWin.document.close();
+  printWin.focus();
+  printWin.print();
 }
 
 async function downloadAttachment(email, att) {
@@ -1595,6 +1948,7 @@ function renderAttachmentChips() {
 function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message' } = {}) {
   S.pendingAttachments = [];
   renderAttachmentChips();
+  setScheduledAt(null);
 
   const fromSel = document.getElementById('composeFrom');
   fromSel.innerHTML = S.accounts.map(a =>
@@ -1609,7 +1963,7 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
 
   const bodyEl = document.getElementById('composeBody');
   const sig = getAccountSignature(activeAcc);
-  const sigHtml = sig ? `<p><br></p><div class="compose-signature">${sig}</div>` : '';
+  const sigHtml = sig ? `<p><br></p><div class="compose-signature">${sanitizeHtml(sig)}</div>` : '';
   if (bodyHtml) {
     bodyEl.innerHTML = bodyHtml + sigHtml;
   } else if (bodyText) {
@@ -1633,20 +1987,21 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
   document.getElementById('composeBccToggle').textContent = 'Bcc';
   S.bccVisible = false;
 
-  // Update signature when account changes
+  // Update signature when account changes (skip in plain-text mode)
   fromSel.onchange = () => {
+    if (_composePlainText) return;
     const newSig = getAccountSignature(fromSel.value);
     const sigEl = bodyEl.querySelector('.compose-signature');
     if (sigEl) {
       if (newSig) {
-        sigEl.innerHTML = newSig;
+        sigEl.innerHTML = sanitizeHtml(newSig);
       } else {
         const prev = sigEl.previousElementSibling;
         if (prev?.tagName === 'P' && prev.innerHTML === '<br>') prev.remove();
         sigEl.remove();
       }
     } else if (newSig) {
-      bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${newSig}</div>`;
+      bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${sanitizeHtml(newSig)}</div>`;
     }
   };
 
@@ -1663,6 +2018,18 @@ function closeCompose(skipConfirm = false) {
     }
   }
   document.getElementById('composeFloat').classList.add('hidden');
+  document.getElementById('sendLaterPicker').classList.add('hidden');
+  setScheduledAt(null);
+  // Reset plain-text mode without triggering click handler side-effects
+  if (_composePlainText) {
+    _composePlainText = false;
+    bodyEl.contentEditable = 'true';
+    bodyEl.classList.remove('plain-text-mode');
+    document.getElementById('tbPlainToggle').classList.remove('active');
+    document.getElementById('composeToolbar')
+      .querySelectorAll('.tb-btn:not(#tbPlainToggle), .tb-select, .tb-color-wrap, .tb-sep:not(:last-of-type)')
+      .forEach(el => { el.style.opacity = ''; el.style.pointerEvents = ''; });
+  }
   bodyEl.innerHTML = '';
   S.pendingAttachments = [];
   renderAttachmentChips();
@@ -1671,7 +2038,7 @@ function closeCompose(skipConfirm = false) {
 // Toolbar buttons
 document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
   btn.addEventListener('mousedown', e => {
-    e.preventDefault(); // don't lose focus from body
+    e.preventDefault();
     document.execCommand(btn.dataset.cmd, false, null);
     updateToolbarState();
   });
@@ -1685,6 +2052,58 @@ document.getElementById('tbLink').addEventListener('mousedown', e => {
   if (url) { document.execCommand('createLink', false, url); updateToolbarState(); }
 });
 
+// Font size
+document.getElementById('tbFontSize').addEventListener('change', e => {
+  const size = e.target.value;
+  if (!size) return;
+  document.getElementById('composeBody').focus();
+  document.execCommand('styleWithCSS', false, true);
+  document.execCommand('fontSize', false, '7');
+  document.getElementById('composeBody').querySelectorAll('font[size="7"]').forEach(el => {
+    el.removeAttribute('size');
+    el.style.fontSize = size + 'px';
+  });
+  e.target.value = '';
+});
+
+// Text colour
+document.getElementById('tbTextColor').addEventListener('input', e => {
+  document.getElementById('composeBody').focus();
+  document.execCommand('styleWithCSS', false, true);
+  document.execCommand('foreColor', false, e.target.value);
+});
+
+// Plain text / rich text toggle
+let _composePlainText = false;
+document.getElementById('tbPlainToggle').addEventListener('click', () => {
+  const bodyEl = document.getElementById('composeBody');
+  _composePlainText = !_composePlainText;
+  document.getElementById('tbPlainToggle').classList.toggle('active', _composePlainText);
+  document.getElementById('composeToolbar').querySelectorAll('.tb-btn:not(#tbPlainToggle), .tb-select, .tb-color-wrap, .tb-sep:not(:last-of-type)')
+    .forEach(el => {
+      el.style.opacity = _composePlainText ? '0.35' : '';
+      el.style.pointerEvents = _composePlainText ? 'none' : '';
+    });
+  if (_composePlainText) {
+    const text = bodyEl.innerText;
+    bodyEl.contentEditable = 'plaintext-only';
+    bodyEl.classList.add('plain-text-mode');
+    bodyEl.textContent = text;
+  } else {
+    const text = bodyEl.textContent;
+    bodyEl.contentEditable = 'true';
+    bodyEl.classList.remove('plain-text-mode');
+    bodyEl.innerText = text;
+    // Re-inject signature if it's missing after the plain-text round-trip
+    const accountId = document.getElementById('composeFrom').value;
+    const sig = getAccountSignature(accountId);
+    if (sig && !bodyEl.querySelector('.compose-signature')) {
+      bodyEl.innerHTML += `<p><br></p><div class="compose-signature">${sanitizeHtml(sig)}</div>`;
+    }
+    bodyEl.focus();
+  }
+});
+
 function updateToolbarState() {
   document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
     try { btn.classList.toggle('active', document.queryCommandState(btn.dataset.cmd)); } catch {}
@@ -1696,6 +2115,7 @@ document.getElementById('composeBody').addEventListener('mouseup', updateToolbar
 // Compose controls
 document.getElementById('composeMinimize').addEventListener('click', e => {
   e.stopPropagation();
+  removeAutocomplete();
   S.composeMinimized = !S.composeMinimized;
   S.composeExpanded = false;
   const panel = document.getElementById('composeFloat');
@@ -1706,6 +2126,7 @@ document.getElementById('composeMinimize').addEventListener('click', e => {
 
 document.getElementById('composeExpand').addEventListener('click', e => {
   e.stopPropagation();
+  removeAutocomplete();
   S.composeExpanded = !S.composeExpanded;
   S.composeMinimized = false;
   const panel = document.getElementById('composeFloat');
@@ -1798,26 +2219,126 @@ setupAutocomplete('composeTo');
 setupAutocomplete('composeCc');
 setupAutocomplete('composeBcc');
 
-document.getElementById('composeSendBtn').addEventListener('click', async () => {
-  const accountId = document.getElementById('composeFrom').value;
-  const to = document.getElementById('composeTo').value.trim();
-  const cc = document.getElementById('composeCc').value.trim();
-  const bcc = document.getElementById('composeBcc').value.trim();
-  const subject = document.getElementById('composeSubject').value.trim();
+// ── Scheduled send state ──────────────────────────────────────────────────────
+let _scheduledAt = null;
+
+function setScheduledAt(iso) {
+  _scheduledAt = iso;
+  const btnText = document.getElementById('composeBtnText');
+  if (iso) {
+    const d = new Date(iso);
+    btnText.textContent = 'Send ' + d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } else {
+    btnText.textContent = 'Send';
+  }
+}
+
+function collectComposeData() {
   const bodyEl = document.getElementById('composeBody');
-  const text = bodyEl.innerText || '';
-  const html = bodyEl.innerHTML || '';
+  return {
+    accountId: document.getElementById('composeFrom').value,
+    to:      document.getElementById('composeTo').value.trim(),
+    cc:      document.getElementById('composeCc').value.trim(),
+    bcc:     document.getElementById('composeBcc').value.trim(),
+    subject: document.getElementById('composeSubject').value.trim(),
+    text:    bodyEl.innerText || '',
+    html:    _composePlainText ? '' : (bodyEl.innerHTML || ''),
+    attachments: S.pendingAttachments.length
+      ? S.pendingAttachments.map(a => ({ name: a.name, type: a.type, path: a.path }))
+      : undefined,
+  };
+}
 
-  if (!to) { showComposeError('Enter a recipient'); return; }
+// Extract bare email addresses from a comma-separated recipients string.
+// Handles both "Name <addr>" and plain "addr" forms.
+function parseAddresses(str) {
+  return str.split(',').map(s => {
+    const m = s.match(/<([^>]+)>/);
+    return (m ? m[1] : s).trim();
+  }).filter(Boolean);
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateRecipients(str, label) {
+  if (!str) return `Enter a ${label}`;
+  const addrs = parseAddresses(str);
+  if (!addrs.length) return `Enter a ${label}`;
+  const bad = addrs.find(a => !EMAIL_RE.test(a));
+  if (bad) return `Invalid address in ${label}: ${bad}`;
+  return null;
+}
+
+document.getElementById('composeSendBtn').addEventListener('click', () => {
+  const { accountId, to, cc, bcc, subject, text, html, attachments } = collectComposeData();
+  const toErr = validateRecipients(to, 'recipient');
+  if (toErr) { showComposeError(toErr); return; }
+  if (cc) { const e = validateRecipients(cc, 'Cc'); if (e) { showComposeError(e); return; } }
+  if (bcc) { const e = validateRecipients(bcc, 'Bcc'); if (e) { showComposeError(e); return; } }
   if (!subject) { showComposeError('Enter a subject'); return; }
-
   document.getElementById('composeError').classList.add('hidden');
-  const attachments = S.pendingAttachments.length
-    ? S.pendingAttachments.map(a => ({ name: a.name, type: a.type, path: a.path }))
-    : undefined;
-  closeCompose(true); // skip discard confirmation — user is sending, not discarding
-  const delay = parseInt(getSetting('undo-delay', '8000'));
-  sendWithUndo(accountId, { to, cc, bcc, subject, text, html, attachments }, null, delay);
+  const scheduledAt = _scheduledAt;
+  closeCompose(true);
+  if (scheduledAt) {
+    ipc('email:send', { accountId, to, cc, bcc, subject, text, html, attachments, scheduledAt })
+      .then(r => {
+        if (r.success && r.scheduledId) {
+          S.scheduledSends.push({ id: r.scheduledId, subject, scheduledAt, accountId });
+          renderScheduledOutbox();
+          const time = new Date(scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          toast('Scheduled for ' + time);
+        } else {
+          toast('Send failed: ' + (r.error || 'Unknown error'), true);
+        }
+      });
+  } else {
+    sendWithUndo(accountId, { to, cc, bcc, subject, text, html, attachments }, null, parseInt(getSetting('undo-delay', '8000')));
+  }
+});
+
+// ── Send Later picker ─────────────────────────────────────────────────────────
+document.getElementById('composeSendLaterBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const picker = document.getElementById('sendLaterPicker');
+  picker.classList.toggle('hidden');
+  if (!picker.classList.contains('hidden')) {
+    // Pre-fill datetime-local with "tomorrow 8am"
+    const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0);
+    document.getElementById('sendLaterCustom').value = d.toISOString().slice(0, 16);
+  }
+});
+
+document.getElementById('sendLaterPicker').addEventListener('click', e => {
+  const opt = e.target.closest('.slp-opt');
+  if (!opt) return;
+  const d = new Date();
+  if (opt.dataset.hours) {
+    d.setHours(d.getHours() + parseInt(opt.dataset.hours));
+  } else if (opt.dataset.preset === 'tonight') {
+    d.setHours(20, 0, 0, 0);
+    if (d < new Date()) d.setDate(d.getDate() + 1);
+  } else if (opt.dataset.preset === 'tomorrow') {
+    d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0);
+  } else if (opt.dataset.preset === 'monday') {
+    const daysUntilMon = (8 - d.getDay()) % 7 || 7;
+    d.setDate(d.getDate() + daysUntilMon); d.setHours(8, 0, 0, 0);
+  }
+  setScheduledAt(d.toISOString());
+  document.getElementById('sendLaterPicker').classList.add('hidden');
+});
+
+document.getElementById('sendLaterConfirm').addEventListener('click', () => {
+  const val = document.getElementById('sendLaterCustom').value;
+  if (!val) return;
+  setScheduledAt(new Date(val).toISOString());
+  document.getElementById('sendLaterPicker').classList.add('hidden');
+});
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('sendLaterPicker').classList.contains('hidden') &&
+      !e.target.closest('#sendLaterPicker') && !e.target.closest('#composeSendLaterBtn')) {
+    document.getElementById('sendLaterPicker').classList.add('hidden');
+  }
 });
 
 // ── Inline images in compose ──────────────────────────────────────────────────
@@ -1904,7 +2425,7 @@ function buildQuoteHtml(email, body, isForward = false) {
     : `On ${fmtFull(email.date)}, ${from} wrote:`;
   const bqStyle = 'border-left:3px solid var(--border,#d0d0d5);margin:8px 0;padding-left:12px;color:var(--text-secondary,#6e6e73);';
   const quotedBody = body?.html
-    ? `<blockquote style="${bqStyle}">${body.html}</blockquote>`
+    ? `<blockquote style="${bqStyle}">${sanitizeHtml(body.html)}</blockquote>`
     : `<blockquote style="${bqStyle}white-space:pre-wrap;">${escHtml(body?.text || '')}</blockquote>`;
   return `<div style="color:var(--text-secondary,#6e6e73);font-size:13px;">${header}</div>${quotedBody}`;
 }
@@ -2505,11 +3026,22 @@ document.getElementById('settingsModal').addEventListener('click', e => {
 // ── Account setup modal ───────────────────────────────────────────────────────
 
 const SETUP_KNOWN_DOMAINS = {
-  'gmail.com': 'Gmail', 'googlemail.com': 'Gmail',
-  'outlook.com': 'Outlook', 'hotmail.com': 'Outlook', 'live.com': 'Outlook',
-  'yahoo.com': 'Yahoo', 'icloud.com': 'iCloud', 'me.com': 'iCloud',
-  'fastmail.com': 'Fastmail', 'fastmail.fm': 'Fastmail',
+  'gmail.com': 'Gmail',        'googlemail.com': 'Gmail',
+  'outlook.com': 'Outlook',    'hotmail.com': 'Outlook',   'hotmail.co.uk': 'Outlook',
+  'hotmail.fr': 'Outlook',     'hotmail.de': 'Outlook',    'live.com': 'Outlook',  'msn.com': 'Outlook',
+  'yahoo.com': 'Yahoo',        'yahoo.co.uk': 'Yahoo',     'yahoo.fr': 'Yahoo',    'yahoo.de': 'Yahoo',
+  'yahoo.co.jp': 'Yahoo',      'ymail.com': 'Yahoo',
+  'icloud.com': 'iCloud',      'me.com': 'iCloud',         'mac.com': 'iCloud',
+  'fastmail.com': 'Fastmail',  'fastmail.fm': 'Fastmail',
+  'aol.com': 'AOL',
+  'gmx.com': 'GMX',            'gmx.net': 'GMX',           'gmx.de': 'GMX',        'web.de': 'Web.de',
+  'zoho.com': 'Zoho',          'zohomail.com': 'Zoho',
+  'yandex.com': 'Yandex',      'yandex.ru': 'Yandex',
+  'mail.com': 'Mail.com',
+  'protonmail.com': 'Proton Mail', 'proton.me': 'Proton Mail', 'pm.me': 'Proton Mail',
 };
+
+const ALL_TIPS = ['gmailTip', 'outlookTip', 'fastmailTip', 'protonTip', 'autodiscoverTip'];
 
 function setupModalReset() {
   ['setupEmail', 'setupPassword', 'setupName', 'imapHost', 'smtpHost'].forEach(id => {
@@ -2521,9 +3053,10 @@ function setupModalReset() {
   document.getElementById('setupError').classList.add('hidden');
   document.getElementById('providerBadge').className = 'provider-badge hidden';
   document.getElementById('passwordHint').textContent = '';
-  ['gmailTip', 'outlookTip', 'fastmailTip'].forEach(id => document.getElementById(id).classList.add('hidden'));
+  ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
   document.getElementById('advancedSection').classList.add('hidden');
   document.getElementById('advancedToggle').classList.remove('open');
+  document.querySelectorAll('.prov-btn').forEach(b => b.classList.remove('active'));
 }
 
 function showSetupModal(cancellable = false) {
@@ -2547,6 +3080,34 @@ document.getElementById('advancedToggle').addEventListener('click', () => {
   btn.classList.toggle('open', !isOpen);
 });
 
+function applyProviderSettings(domain, preset, providerName) {
+  const isGmail    = ['gmail.com', 'googlemail.com'].includes(domain);
+  const isOutlook  = ['outlook.com', 'hotmail.com', 'hotmail.co.uk', 'hotmail.fr', 'hotmail.de', 'live.com', 'msn.com'].includes(domain);
+  const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
+  const isProton   = ['protonmail.com', 'proton.me', 'pm.me'].includes(domain);
+
+  ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
+  if (isGmail)    document.getElementById('gmailTip').classList.remove('hidden');
+  if (isOutlook)  document.getElementById('outlookTip').classList.remove('hidden');
+  if (isFastmail) document.getElementById('fastmailTip').classList.remove('hidden');
+  if (isProton)   document.getElementById('protonTip').classList.remove('hidden');
+  document.getElementById('passwordHint').textContent =
+    (isGmail || isFastmail) ? '(App Password required)' : '';
+
+  if (preset) {
+    document.getElementById('imapHost').value = preset.imap?.host || '';
+    document.getElementById('imapPort').value = preset.imap?.port || '993';
+    document.getElementById('smtpHost').value = preset.smtp?.host || '';
+    document.getElementById('smtpPort').value = preset.smtp?.port || '587';
+    const badge = document.getElementById('providerBadge');
+    badge.textContent = `✓ ${providerName || domain} — server settings auto-filled`;
+    badge.className = 'provider-badge provider-badge-ok';
+    if (!document.getElementById('advancedToggle').classList.contains('open')) {
+      document.getElementById('advancedSection').classList.add('hidden');
+    }
+  }
+}
+
 let _setupPresetDebounce = null;
 document.getElementById('setupEmail').addEventListener('input', () => {
   clearTimeout(_setupPresetDebounce);
@@ -2555,42 +3116,73 @@ document.getElementById('setupEmail').addEventListener('input', () => {
     const atIdx = email.indexOf('@');
     if (atIdx < 1) {
       document.getElementById('providerBadge').className = 'provider-badge hidden';
+      ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
       return;
     }
     const domain = email.slice(atIdx + 1).toLowerCase();
-    const isGmail = ['gmail.com', 'googlemail.com'].includes(domain);
-    const isOutlook = ['outlook.com', 'hotmail.com', 'live.com'].includes(domain);
-    const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
 
-    document.getElementById('gmailTip').classList.toggle('hidden', !isGmail);
-    document.getElementById('outlookTip').classList.toggle('hidden', !isOutlook);
-    document.getElementById('fastmailTip').classList.toggle('hidden', !isFastmail);
-    document.getElementById('passwordHint').textContent =
-      (isGmail || isFastmail) ? '(App Password required)' : '';
+    // Sync the provider quick-pick highlight
+    document.querySelectorAll('.prov-btn').forEach(b => b.classList.toggle('active', b.dataset.domain === domain));
 
     const badge = document.getElementById('providerBadge');
     const preset = await ipc('accounts:preset', email);
     if (preset) {
-      // Fill advanced fields silently
-      document.getElementById('imapHost').value = preset.imap?.host || '';
-      document.getElementById('imapPort').value = preset.imap?.port || '993';
-      document.getElementById('smtpHost').value = preset.smtp?.host || '';
-      document.getElementById('smtpPort').value = preset.smtp?.port || '587';
-      const providerName = SETUP_KNOWN_DOMAINS[domain] || domain;
-      badge.textContent = `✓ ${providerName} detected — server settings auto-filled`;
-      badge.className = 'provider-badge provider-badge-ok';
-      // Keep advanced collapsed for known providers
-      if (!document.getElementById('advancedToggle').classList.contains('open')) {
-        document.getElementById('advancedSection').classList.add('hidden');
-      }
+      applyProviderSettings(domain, preset, SETUP_KNOWN_DOMAINS[domain]);
     } else {
-      // Unknown provider — auto-expand server settings so user sees what to fill
-      badge.textContent = 'Custom provider — enter your server details below';
+      // Unknown domain — try autodiscover (ISPDB, autoconfig, autodiscover)
+      badge.textContent = 'Detecting server settings…';
       badge.className = 'provider-badge provider-badge-custom';
       document.getElementById('advancedSection').classList.remove('hidden');
       document.getElementById('advancedToggle').classList.add('open');
+
+      const discovered = await ipc('accounts:autodiscover', domain);
+      if (discovered) {
+        applyProviderSettings(domain, discovered, domain);
+        badge.textContent = `✓ ${domain} — server settings detected automatically`;
+        badge.className = 'provider-badge provider-badge-ok';
+        document.getElementById('autodiscoverTipText').textContent =
+          `Found: ${discovered.imap.host}:${discovered.imap.port} (IMAP) / ${discovered.smtp?.host || '?'}:${discovered.smtp?.port || '?'} (SMTP)`;
+        document.getElementById('autodiscoverTip').classList.remove('hidden');
+        if (!document.getElementById('advancedToggle').classList.contains('open')) {
+          document.getElementById('advancedSection').classList.add('hidden');
+        }
+      } else {
+        badge.textContent = 'Custom provider — enter your server details below';
+        badge.className = 'provider-badge provider-badge-custom';
+      }
     }
-  }, 280);
+  }, 350);
+});
+
+// Provider quick-pick buttons
+document.querySelectorAll('.prov-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const domain = btn.dataset.domain;
+    const name   = btn.dataset.name;
+    document.querySelectorAll('.prov-btn').forEach(b => b.classList.remove('active'));
+
+    if (!domain) {
+      // "Other" — expand server settings
+      btn.classList.add('active');
+      document.getElementById('advancedSection').classList.remove('hidden');
+      document.getElementById('advancedToggle').classList.add('open');
+      document.getElementById('providerBadge').className = 'provider-badge hidden';
+      ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
+      document.getElementById('setupEmail').focus();
+      return;
+    }
+
+    btn.classList.add('active');
+    // Update email placeholder hint
+    const emailEl = document.getElementById('setupEmail');
+    if (!emailEl.value.includes('@')) {
+      emailEl.placeholder = `you@${domain}`;
+    }
+    // Apply preset settings
+    const preset = await ipc('accounts:preset', `user@${domain}`);
+    applyProviderSettings(domain, preset, name);
+    emailEl.focus();
+  });
 });
 
 function parseSetupError(err) {
@@ -2719,6 +3311,10 @@ document.addEventListener('keydown', e => {
     document.activeElement.contentEditable === 'true';
   const composeOpen = !document.getElementById('composeFloat').classList.contains('hidden');
   const setupOpen = !document.getElementById('setupModal').classList.contains('hidden');
+  const anyModalOpen = setupOpen ||
+    !document.getElementById('settingsModal').classList.contains('hidden') ||
+    !document.getElementById('caldavModal').classList.contains('hidden') ||
+    !document.getElementById('addAppModal').classList.contains('hidden');
 
   if (e.key === 'Escape') {
     if (composeOpen && !S.composeMinimized) { closeCompose(); return; }
@@ -2727,7 +3323,7 @@ document.addEventListener('keydown', e => {
     return;
   }
 
-  if (inInput) return;
+  if (inInput || anyModalOpen) return;
 
   const idx = S.emails.findIndex(e => e.uid === S.selectedUid && e.accountId === S.selectedEmail?.accountId);
 
@@ -2884,11 +3480,11 @@ function showEventDetail(ev) {
     <button class="cal-detail-close" id="calDetailClose">
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
-    <div class="cal-detail-title">${ev.title || '(No title)'}</div>
-    ${ev.start ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${ev.start.allDay ? ev.start.iso : fmt(ev.start.iso)}${ev.end ? ' → ' + (ev.end.allDay ? ev.end.iso : fmt(ev.end.iso)) : ''}</div>` : ''}
-    ${ev.location ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>${ev.location}</div>` : ''}
-    ${ev.description ? `<div class="cal-detail-desc">${ev.description.slice(0, 300)}</div>` : ''}
-    ${ev.organizer ? `<div class="cal-detail-row" style="font-size:11px;color:var(--text-tertiary)">Organized by ${ev.organizer}</div>` : ''}
+    <div class="cal-detail-title">${escHtml(ev.title || '(No title)')}</div>
+    ${ev.start ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>${escHtml(ev.start.allDay ? ev.start.iso : fmt(ev.start.iso))}${ev.end ? ' → ' + escHtml(ev.end.allDay ? ev.end.iso : fmt(ev.end.iso)) : ''}</div>` : ''}
+    ${ev.location ? `<div class="cal-detail-row"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>${escHtml(ev.location)}</div>` : ''}
+    ${ev.description ? `<div class="cal-detail-desc">${escHtml(ev.description.slice(0, 300))}</div>` : ''}
+    ${ev.organizer ? `<div class="cal-detail-row" style="font-size:11px;color:var(--text-tertiary)">Organized by ${escHtml(ev.organizer)}</div>` : ''}
   `;
   el.classList.remove('hidden');
   document.getElementById('calDetailClose').addEventListener('click', () => el.classList.add('hidden'));
@@ -3032,6 +3628,13 @@ async function init() {
     renderCalendarNav();
   }
 
+  // Restore any pending scheduled sends (survives renderer reload within same main process)
+  const pending = await ipc('email:scheduled:list').catch(() => []);
+  if (pending.length > 0) {
+    S.scheduledSends = pending;
+    renderScheduledOutbox();
+  }
+
   if (S.accounts.length === 0) {
     showLoading(false);
     showFolderSidebar(true);
@@ -3059,4 +3662,8 @@ async function init() {
   }
 }
 
-init();
+init().catch(err => {
+  console.error('[Mailplane] init failed:', err);
+  showLoading(false);
+  showEmpty(true, 'Error loading emails');
+});
