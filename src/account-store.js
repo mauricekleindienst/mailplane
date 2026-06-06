@@ -70,6 +70,8 @@ const PRESETS = {
   'yandex.ru':       { protocol: 'imap', imap: { host: 'imap.yandex.ru',           port: 993, secure: true  }, smtp: { host: 'smtp.yandex.ru',           port: 465, secure: true  } },
   // Mail.com
   'mail.com':        { protocol: 'imap', imap: { host: 'imap.mail.com',            port: 993, secure: true  }, smtp: { host: 'smtp.mail.com',            port: 587, secure: false } },
+  // T-Online (Deutsche Telekom)
+  't-online.de':     { protocol: 'imap', imap: { host: 'secureimap.t-online.de',   port: 993, secure: true  }, smtp: { host: 'securesmtp.t-online.de',   port: 465, secure: true  } },
   // Proton Mail (requires Proton Mail Bridge running locally)
   'protonmail.com':  { protocol: 'imap', imap: { host: '127.0.0.1',               port: 1143, secure: false }, smtp: { host: '127.0.0.1',               port: 1025, secure: false } },
   'proton.me':       { protocol: 'imap', imap: { host: '127.0.0.1',               port: 1143, secure: false }, smtp: { host: '127.0.0.1',               port: 1025, secure: false } },

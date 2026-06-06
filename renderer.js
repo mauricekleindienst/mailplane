@@ -1,4 +1,3 @@
-/* global electronAPI */
 // All Electron access goes through the contextBridge-exposed API in preload.js.
 // This file runs in an isolated browser context with no Node.js access.
 const { invoke: _invoke, send: _send, on: _on, md5 } = window.electronAPI;
@@ -36,6 +35,7 @@ const S = {
   imagesBlocked: getSetting('images-blocked', 'true') === 'true',
   pendingAttachments: [],    // { name, type, path, size } — cleared on open/close compose
   scheduledSends: [],        // { id, subject, scheduledAt, accountId }
+  updateStatus: null,        // { state, version?, percent?, message? }
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
@@ -116,6 +116,13 @@ _on('mailto', (url) => {
       body: params.get('body') || '',
     });
   } catch { openCompose(); }
+});
+
+// ── Update status (feeds into Settings → General) ─────────────────────────────
+_on('update:status', (status = {}) => {
+  S.updateStatus = status;
+  const row = document.getElementById('updateStatusText');
+  if (row) _renderUpdateStatus(row, status);
 });
 
 // ── Update available notification ─────────────────────────────────────────────
@@ -1869,7 +1876,6 @@ function renderDetail(email, body) {
 function printEmail(email, body) {
   const printWin = window.open('', '_blank', 'width=800,height=600');
   if (!printWin) { toast('Could not open print window', true); return; }
-  const isDark = document.documentElement.classList.contains('dark');
   printWin.document.write(`<!DOCTYPE html><html><head>
     <meta charset="UTF-8"><title>${escHtml(email.subject || '(no subject)')}</title>
     <style>
@@ -2445,6 +2451,7 @@ function switchSettingsPanel(panel) {
     accounts: 'Accounts', general: 'General', notifications: 'Notifications',
     reading: 'Reading', composing: 'Composing', calendar: 'Calendar',
     apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard Shortcuts',
+    about: 'About',
   };
   document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
   if (panel === 'accounts') renderSettingsAccounts();
@@ -2455,6 +2462,7 @@ function switchSettingsPanel(panel) {
   else if (panel === 'calendar') renderSettingsCalendar();
   else if (panel === 'apps') renderSettingsApps();
   else if (panel === 'appearance') renderSettingsAppearance();
+  else if (panel === 'about') renderSettingsAbout();
   else renderSettingsShortcuts();
 }
 
@@ -2515,6 +2523,20 @@ function applyPrefChange(key, value) {
   } else if (key.startsWith('notifications-')) {
     syncNotifyPrefs();
   }
+}
+
+function _renderUpdateStatus(el, status) {
+  if (!status) { el.textContent = ''; return; }
+  const map = {
+    checking:    'Checking for updates…',
+    upToDate:    'Mailplane is up to date.',
+    available:   `Downloading update${status.version ? ` v${status.version}` : ''}…`,
+    downloading: `Downloading… ${status.percent ?? 0}%`,
+    ready:       `v${status.version} ready — click Restart Now to install.`,
+    error:       `Update error: ${status.message || 'unknown'}`,
+    unavailable: 'Auto-update not available in development builds.',
+  };
+  el.textContent = map[status.state] || '';
 }
 
 function renderSettingsGeneral() {
@@ -2632,13 +2654,15 @@ function renderSettingsReading() {
   `;
   // Wire thread toggle live (also syncs the toolbar button)
   const tg = content.querySelector('[data-pref="thread-grouping"]');
-  if (tg) tg.addEventListener('change', () => {
-    S.threadGrouping = tg.checked;
-    setSetting('thread-grouping', tg.checked);
-    document.getElementById('threadToggleBtn').classList.toggle('active', tg.checked);
-    S.expandedThreads.clear();
-    renderEmailList();
-  });
+  if (tg) {
+    tg.addEventListener('change', () => {
+      S.threadGrouping = tg.checked;
+      setSetting('thread-grouping', tg.checked);
+      document.getElementById('threadToggleBtn').classList.toggle('active', tg.checked);
+      S.expandedThreads.clear();
+      renderEmailList();
+    });
+  }
   bindPrefControls(content);
 }
 
@@ -2991,6 +3015,76 @@ function renderSettingsApps() {
   content.appendChild(addBtn);
 }
 
+function renderSettingsAbout() {
+  const content = document.getElementById('settingsPanelContent');
+  const version = window.electronAPI.appVersion || '1.0.0';
+  content.innerHTML = `
+    <div class="about-panel">
+
+      <div class="about-hero">
+        <div class="about-orb about-orb-1"></div>
+        <div class="about-orb about-orb-2"></div>
+        <div class="about-orb about-orb-3"></div>
+        <div class="about-icon-wrap">
+          <img src="assets/icon.svg" class="about-icon" alt="Mailplane" />
+        </div>
+        <div class="about-name">Mailplane</div>
+        <div class="about-tagline">Opensource email client for macOS &nbsp;·&nbsp; v${version}</div>
+      </div>
+
+      <div class="about-body">
+
+        <div class="about-update-row">
+          <div>
+            <div class="about-row-label">Software Update</div>
+            <div class="about-update-status" id="updateStatusText">Up to date</div>
+          </div>
+          <button class="btn-secondary" id="checkUpdateBtn">Check for Updates</button>
+        </div>
+
+        <div class="about-sep"></div>
+
+        <div class="about-row-label">Built with</div>
+        <div class="about-pills">
+          <span class="about-pill">Electron 30</span>
+          <span class="about-pill">imapflow</span>
+          <span class="about-pill">nodemailer</span>
+          <span class="about-pill">mailparser</span>
+          <span class="about-pill">better-sqlite3</span>
+          <span class="about-pill">electron-updater</span>
+        </div>
+
+        <div class="about-footer-row">
+          <span class="about-copyright">© ${new Date().getFullYear()} Mailplane</span>
+          <div class="about-links">
+            <button class="about-link-btn" id="aboutGithubBtn">GitHub</button>
+            <span class="about-link-sep">·</span>
+            <button class="about-link-btn" id="aboutIssueBtn">Report Issue</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  `;
+
+  const statusEl = content.querySelector('#updateStatusText');
+  _renderUpdateStatus(statusEl, S.updateStatus);
+
+  content.querySelector('#checkUpdateBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    await _invoke('update:check');
+    btn.disabled = false;
+    btn.textContent = 'Check for Updates';
+  });
+
+  content.querySelector('#aboutGithubBtn').addEventListener('click', () =>
+    _invoke('shell:open', 'https://github.com/mauricekleindienst/mailplane'));
+  content.querySelector('#aboutIssueBtn').addEventListener('click', () =>
+    _invoke('shell:open', 'https://github.com/mauricekleindienst/mailplane/issues'));
+}
+
 function renderSettingsShortcuts() {
   const content = document.getElementById('settingsPanelContent');
   const shortcuts = [
@@ -3038,6 +3132,7 @@ const SETUP_KNOWN_DOMAINS = {
   'zoho.com': 'Zoho',          'zohomail.com': 'Zoho',
   'yandex.com': 'Yandex',      'yandex.ru': 'Yandex',
   'mail.com': 'Mail.com',
+  't-online.de': 'T-Online',
   'protonmail.com': 'Proton Mail', 'proton.me': 'Proton Mail', 'pm.me': 'Proton Mail',
 };
 

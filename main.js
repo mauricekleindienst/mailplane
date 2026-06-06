@@ -71,17 +71,38 @@ if (app.isPackaged) {
     _autoUpdater = autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.on('update-downloaded', (info) => {
+
+    const sendStatus = (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update:status', payload);
+      }
+    };
+    autoUpdater.on('checking-for-update',  ()     => sendStatus({ state: 'checking' }));
+    autoUpdater.on('update-available',     (info) => sendStatus({ state: 'available', version: info.version }));
+    autoUpdater.on('update-not-available', ()     => sendStatus({ state: 'upToDate' }));
+    autoUpdater.on('download-progress',    (p)    => sendStatus({ state: 'downloading', percent: Math.round(p.percent) }));
+    autoUpdater.on('error',                (err)  => sendStatus({ state: 'error', message: err.message }));
+    autoUpdater.on('update-downloaded',    (info) => {
+      sendStatus({ state: 'ready', version: info.version });
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update-ready', { version: info.version });
       }
     });
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   } catch {}
 }
 
 ipcMain.handle('update:install', () => {
   if (_autoUpdater) _autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle('update:check', async () => {
+  if (!_autoUpdater) return { state: 'unavailable' };
+  try {
+    await _autoUpdater.checkForUpdates();
+    return { state: 'ok' };
+  } catch (err) {
+    return { state: 'error', message: err.message };
+  }
 });
 
 function buildAppMenu() {
@@ -149,7 +170,7 @@ function buildAppMenu() {
 }
 
 // Notification preferences set by the renderer (via prefs:notify IPC)
-let _notifyPrefs = { enabled: true, sound: true, sender: true, subject: true };
+const _notifyPrefs = { enabled: true, sound: true, sender: true, subject: true };
 
 ipcMain.on('prefs:notify', (_, prefs) => { Object.assign(_notifyPrefs, prefs); });
 
@@ -711,6 +732,8 @@ app.whenReady().then(() => {
     console.error('[Mailplane] CalDAV loadStoredAccounts failed:', err.message);
   }
   emailCache.pruneOldEntries(30);
+  // Check after window is ready so status events reach the renderer
+  if (_autoUpdater) _autoUpdater.checkForUpdatesAndNotify().catch(() => {});
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

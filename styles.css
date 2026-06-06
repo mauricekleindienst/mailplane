@@ -1413,6 +1413,23 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
 }
 .btn-ghost:hover { background: var(--hover-bg); color: var(--text-primary); }
 
+.btn-secondary {
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--sidebar-bg);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-secondary:hover { background: var(--hover-bg); }
+.btn-secondary:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Toast ── */
 .toast {
   position: fixed;
@@ -1897,6 +1914,7 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
   flex-direction: column;
   gap: 1px;
   padding: 0 8px;
+  flex: 1;
 }
 
 .settings-nav-item {
@@ -2676,9 +2694,12 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
 }
 .settings-pref-row:last-child { border-bottom: none; }
 .settings-pref-info { flex: 1; min-width: 0; }
-.settings-pref-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.settings-pref-label { flex: 1; min-width: 0; }
+.settings-pref-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .settings-pref-desc { font-size: 11.5px; color: var(--text-tertiary); margin-top: 1px; line-height: 1.3; }
 .settings-pref-control { flex-shrink: 0; }
+.settings-update-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.settings-update-status { font-size: 11.5px; color: var(--text-tertiary); text-align: right; max-width: 240px; }
 
 /* Toggle switch (iOS-style) */
 .toggle-sw {
@@ -2916,3 +2937,178 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
   transition: background 0.1s, color 0.1s;
 }
 .sob-cancel:hover { background: rgba(255,59,48,0.1); color: #ff3b30; }
+
+/* ── About panel ─────────────────────────────────────────────────────────────── */
+
+/* Push About to bottom of sidebar nav */
+.settings-nav-about {
+  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* Outer container — escape the 16px/20px panel padding so the hero is full-bleed */
+.about-panel {
+  margin: -16px -20px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Hero ── */
+.about-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 24px 28px;
+  overflow: hidden;
+  background: linear-gradient(160deg, #0d1a33 0%, #112040 55%, #0a1628 100%);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+/* Ambient orbs */
+.about-orb {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: orbDrift 9s ease-in-out infinite;
+}
+.about-orb-1 {
+  width: 220px; height: 220px;
+  background: radial-gradient(circle, #2e86ff 0%, transparent 70%);
+  opacity: 0.25;
+  top: -80px; left: -60px;
+  animation-delay: 0s;
+}
+.about-orb-2 {
+  width: 180px; height: 180px;
+  background: radial-gradient(circle, #bf5af2 0%, transparent 70%);
+  opacity: 0.2;
+  top: -40px; right: -40px;
+  animation-delay: -3.5s;
+}
+.about-orb-3 {
+  width: 140px; height: 140px;
+  background: radial-gradient(circle, #30d158 0%, transparent 70%);
+  opacity: 0.15;
+  bottom: -50px; left: 45%;
+  animation-delay: -6s;
+}
+@keyframes orbDrift {
+  0%, 100% { transform: translate(0, 0); }
+  40%       { transform: translate(14px, -18px); }
+  70%       { transform: translate(-10px, 8px); }
+}
+
+/* Floating icon */
+.about-icon-wrap {
+  position: relative;
+  z-index: 1;
+  animation: iconFloat 4.5s ease-in-out infinite;
+  filter: drop-shadow(0 10px 28px rgba(46,134,255,0.5));
+}
+.about-icon { width: 64px; height: 64px; border-radius: 16px; display: block; }
+@keyframes iconFloat {
+  0%, 100% { transform: translateY(0) rotate(-1.5deg); }
+  50%       { transform: translateY(-10px) rotate(1.5deg); }
+}
+
+/* Name + tagline */
+.about-name {
+  position: relative;
+  z-index: 1;
+  margin-top: 14px;
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #fff;
+}
+.about-tagline {
+  position: relative;
+  z-index: 1;
+  margin-top: 5px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.45);
+  letter-spacing: 0.1px;
+}
+
+/* ── Body ── */
+.about-body {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px 24px;
+  gap: 0;
+}
+
+/* Update row */
+.about-update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--hover-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.about-row-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.about-update-status {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+  min-height: 15px;
+}
+
+/* Separator */
+.about-sep {
+  height: 1px;
+  background: var(--border);
+  margin: 16px 0;
+}
+
+/* Tech pills */
+.about-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.about-pill {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--sidebar-bg);
+  white-space: nowrap;
+}
+
+/* Footer row */
+.about-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 18px;
+}
+.about-copyright { font-size: 11.5px; color: var(--text-tertiary); }
+.about-links { display: flex; align-items: center; gap: 5px; }
+.about-link-sep { font-size: 11.5px; color: var(--text-tertiary); }
+.about-link-btn {
+  border: none;
+  background: none;
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+.about-link-btn:hover { text-decoration: underline; }
+
+/* Light mode: soften the hero slightly */
+:root:not(.dark) .about-hero {
+  background: linear-gradient(160deg, #1a2a4a 0%, #1e3560 55%, #152040 100%);
+}

@@ -16,7 +16,7 @@ const INVOKE_CHANNELS = new Set([
   'email:scheduled:list', 'email:scheduled:cancel',
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
-  'update:install',
+  'update:install', 'update:check',
   'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:list', 'caldav:calendars', 'caldav:events',
 ]);
 
@@ -35,6 +35,7 @@ const RECEIVE_CHANNELS = new Set([
   'context-menu:action', 'context-menu:folder-action', 'context-menu:account-action',
   'fullscreen-change',
   'emails:refreshed',
+  'update:status',
 ]);
 
 contextBridge.exposeInMainWorld('electronAPI', {

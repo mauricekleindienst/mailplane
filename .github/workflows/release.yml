@@ -1,18 +1,22 @@
-name: Release
+name: Build and Release
 
-# Run via Actions → Release → Run workflow
-# Choose patch / minor / major — it bumps package.json, commits, tags, builds
-# DMG + ZIP for arm64 + x64, uploads them to a new GitHub Release, and
-# publishes the latest-mac.yml manifest that electron-updater fetches.
+# Two ways to trigger a release:
 #
-# ⚠ Before this works you must update package.json:
-#   "publish": { "owner": "<your-github-username>", "repo": "mailplane" }
+#   1. Push a version tag from your machine:
+#        npm run release:patch   # or :minor / :major
+#      That bumps package.json, commits, tags, and pushes — this workflow picks it up.
+#
+#   2. GitHub UI: Actions → Build and Release → Run workflow → choose patch/minor/major.
+#      Useful when you can't push locally.
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Version bump'
+        description: 'Version bump type'
         required: true
         default: patch
         type: choice
@@ -22,17 +26,17 @@ on:
           - major
 
 permissions:
-  contents: write   # needed to push the version commit/tag and create a release
+  contents: write   # push version commit + tag; create/edit GitHub Release
 
 jobs:
   release:
-    runs-on: macos-latest   # arm64 runner; electron-builder cross-compiles x64
+    runs-on: macos-latest   # required for macOS DMG builds
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # full history so generate-notes spans all commits
 
       - name: Set up Node 20
         uses: actions/setup-node@v4
@@ -40,34 +44,40 @@ jobs:
           node-version: '20'
           cache: npm
 
-      - name: Configure git identity
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      # npm version creates a commit + annotated tag automatically
-      - name: Bump version
+      # Resolve which version we're releasing and normalise package.json.
+      # • workflow_dispatch: bump via npm version, push the new commit + tag.
+      #   (GITHUB_TOKEN pushes don't re-trigger workflows, so no infinite loop.)
+      # • tag push: version is already in the tag; just sync package.json.
+      - name: Resolve version
         id: ver
         run: |
-          RAW=$(npm version ${{ inputs.bump }})
-          VERSION=${RAW#v}
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Bumped to v$VERSION"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            RAW=$(npm version ${{ inputs.bump }})
+            VERSION="${RAW#v}"
+            git push origin HEAD --follow-tags
+          else
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+            # Sync package.json without creating a new commit/tag
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+          fi
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"      >> "$GITHUB_OUTPUT"
 
-      - name: Push commit and tag
-        run: git push origin HEAD --follow-tags
-
-      # npm ci triggers postinstall → electron-rebuild for better-sqlite3
+      # npm ci runs postinstall → electron-rebuild for better-sqlite3
       - name: Install dependencies
         run: npm ci
 
-      # electron-builder publishes DMG + ZIP + latest-mac.yml to a new GitHub Release
+      # electron-builder creates DMG + ZIP (arm64 + x64) and uploads them plus
+      # latest-mac.yml to a new GitHub Release.  The yml file is what
+      # electron-updater fetches on every app launch to detect new versions.
       - name: Build and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable ad-hoc signing discovery so unsigned CI builds don't fail.
-          # Add the secrets below for a properly signed + notarized release:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CSC_IDENTITY_AUTO_DISCOVERY: false   # skip ad-hoc signing on unsigned CI builds
+          # Uncomment once you have an Apple Developer ID cert in repo secrets:
           # CSC_LINK:                     ${{ secrets.CSC_LINK }}
           # CSC_KEY_PASSWORD:             ${{ secrets.CSC_KEY_PASSWORD }}
           # APPLE_ID:                     ${{ secrets.APPLE_ID }}
@@ -75,8 +85,22 @@ jobs:
           # APPLE_TEAM_ID:                ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --publish always
 
-      - name: Summary
+      # Rename the release and attach auto-generated changelog from GitHub
+      - name: Set release title and changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "### Released v${{ steps.ver.outputs.version }} 🚀" >> "$GITHUB_STEP_SUMMARY"
-          echo "GitHub Release created with DMG + ZIP for arm64 + x64." >> "$GITHUB_STEP_SUMMARY"
-          echo "electron-updater will serve this via \`latest-mac.yml\`." >> "$GITHUB_STEP_SUMMARY"
+          TAG="${{ steps.ver.outputs.tag }}"
+          TITLE="Mailplane $TAG"
+          BODY=$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            --jq '.body')
+          gh release edit "$TAG" --title "$TITLE" --notes "$BODY" --draft=false
+
+      - name: Job summary
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          echo "### Mailplane v$V released 🚀"                                   >> "$GITHUB_STEP_SUMMARY"
+          echo ""                                                                  >> "$GITHUB_STEP_SUMMARY"
+          echo "- DMG + ZIP for arm64 + x64 uploaded to GitHub Releases"          >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`latest-mac.yml\` published — electron-updater will pick it up" >> "$GITHUB_STEP_SUMMARY"
