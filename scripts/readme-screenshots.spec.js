@@ -79,7 +79,7 @@ test('readme screenshots', async () => {
   await page.locator('#sidebarToggle').click();
   await emailItem(page, 'Design Weekly').click();
   await shot('focus-mode');
-  await page.locator('#sidebarToggle').click();
+  await page.locator('#sidebarShowBtn').click();
   await ctx.close();
 
   // First-run onboarding

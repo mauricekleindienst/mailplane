@@ -31,7 +31,7 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "screenshots": "playwright test --config playwright.config.js scripts/readme-screenshots.spec.js"
+    "screenshots": "playwright test --config scripts/screenshots.config.js"
   },
   "dependencies": {
     "@sentry/electron": "^7.13.0",
