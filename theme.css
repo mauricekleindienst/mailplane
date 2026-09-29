@@ -734,8 +734,12 @@ body {
 /* ══ Brand mark (neutral, follows the accent) ════════════════════════════ */
 .brand-mark { display: block; width: 32px; height: 32px; flex-shrink: 0; }
 .brand-mark .bm-tile { fill: var(--text-primary); }
-.brand-mark .bm-line { fill: none; stroke: var(--surface-solid); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.brand-mark .bm-dot { fill: var(--lime); stroke: var(--text-primary); stroke-width: 2; }
+.brand-mark .bm-env { fill: var(--surface-solid); }
+.brand-mark .bm-flap { fill: none; stroke: var(--text-tertiary); stroke-width: 18; stroke-linecap: round; stroke-linejoin: round; }
+.brand-mark .bm-plane { fill: var(--lime); }
+.brand-mark .bm-fold { fill: var(--lime-deep); }
+.brand-mark-lg { width: 46px; height: 46px; }
+.setup-modal .modal-header > .brand-mark { flex-shrink: 0; }
 
 /* ══ Settings ════════════════════════════════════════════════════════════ */
 .settings-modal { width: 800px; height: 620px; max-width: 94vw; max-height: 90vh; }

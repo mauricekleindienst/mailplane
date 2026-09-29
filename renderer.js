@@ -1888,13 +1888,8 @@ function renderDetailShell(email) {
   panel.appendChild(view);
 }
 
-// Neutral brand mark (ink tile + accent fold) — replaces the blue app icon inside the UI
-const BRAND_MARK_SVG = `<svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
-  <rect width="48" height="48" rx="13" class="bm-tile"/>
-  <path d="M12 17.5 24 26l12-8.5" class="bm-line"/>
-  <rect x="12" y="15" width="24" height="18" rx="3.5" class="bm-line"/>
-  <circle cx="35.5" cy="14.5" r="4.5" class="bm-dot"/>
-</svg>`;
+// Same geometry as assets/icon.svg (minus the trail), coloured by theme + accent
+const BRAND_MARK_SVG = `<svg class="brand-mark" viewBox="100 100 824 824" aria-hidden="true"><rect x="100" y="100" width="824" height="824" rx="186" class="bm-tile"/><path d="M236 500 L512 676 L788 500 V736 a56 56 0 0 1 -56 56 H292 a56 56 0 0 1 -56 -56 Z" class="bm-env"/><path d="M236 500 L512 676 L788 500" class="bm-flap"/><g transform="translate(560 206) rotate(-6)"><path d="M232 0 L0 104 L96 142 Z" class="bm-plane"/><path d="M232 0 L96 142 L126 236 Z" class="bm-fold"/></g></svg>`;
 
 // ── Full detail view ──────────────────────────────────────────────────────────
 const PLACEHOLDER_HTML = `<div class="detail-placeholder">

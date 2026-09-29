@@ -26,6 +26,7 @@ index.html              — app shell + modals (setup, compose)
 renderer.js             — all UI logic, state, IPC calls
 styles.css              — layout + component structure
 theme.css               — "Frost" visual theme (tokens, colours, radius, elevation, dark mode); loaded after styles.css
+assets/icon.svg         — app logo (source of truth); `npm run build:icons` renders icon.png + icon.icns
 ```
 
 ## IPC channels (main ↔ renderer)

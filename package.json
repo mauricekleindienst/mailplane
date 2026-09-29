@@ -9,6 +9,7 @@
     "build": "electron-builder",
     "build:mac": "electron-builder --mac",
     "build:dmg": "electron-builder --mac dmg",
+    "build:icons": "node scripts/build-icons.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{js,json,css,html}\" --ignore-path .prettierignore",
