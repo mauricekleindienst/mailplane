@@ -211,3 +211,30 @@ test('typing right after clicking Reply lands in the message, not in shortcuts',
   await expect(page.locator('#composeBody')).toContainText('Sure, see you');
   expect(await fake(s => s.mailboxes['acc-a'].INBOX.find(m => m.subject === 'Lunch?').flagged)).toBe(false);
 });
+
+test('send later survives a restart: overdue mail goes out on launch, future mail stays queued', async () => {
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const past = new Date(Date.now() - 3_600_000).toISOString();
+  ctx = await launchApp({
+    userFiles: {
+      'scheduled.json': {
+        items: {
+          sched_old: { accountId: 'acc-a', scheduledAt: past, emailData: { to: 'zoe@test.dev', subject: 'Came due overnight', text: 'x', html: '' } },
+          sched_new: { accountId: 'acc-a', scheduledAt: future, emailData: { to: 'zoe@test.dev', subject: 'Tomorrow morning', text: 'y', html: '' } },
+        },
+      },
+    },
+  });
+  const { page, fake } = ctx;
+  await expect.poll(() => fake(s => s.sent.map(m => m.subject)), { timeout: 15_000 }).toEqual(['Came due overnight']);
+  await page.reload();
+  await expect(page.locator('#scheduledOutbox')).toContainText('Tomorrow morning');
+  await expect(page.locator('#scheduledOutbox')).not.toContainText('Came due overnight');
+
+  // Cancelling puts the message back into compose instead of throwing it away
+  await page.locator('#scheduledOutbox .sob-cancel').click();
+  await expect(page.locator('#scheduledOutbox')).toHaveCount(0);
+  await expect(page.locator('#composeSubject')).toHaveValue('Tomorrow morning');
+  const stored = JSON.parse(require('fs').readFileSync(require('path').join(ctx.tmp, 'config', 'Mailplane', 'scheduled.json'), 'utf8'));
+  expect(Object.keys(stored.items)).toEqual([]);
+});

@@ -232,12 +232,16 @@ async function launchApp({
   mailboxes = defaultMailboxes(),
   folders = FOLDERS,
   prefs = {},
+  userFiles = {},   // extra JSON stores in userData, e.g. { 'scheduled.json': {...} }
 } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mailplane-e2e-'));
   const configDir = path.join(tmp, 'config');
   const userData = path.join(configDir, 'Mailplane');
   fs.mkdirSync(userData, { recursive: true });
   fs.writeFileSync(path.join(userData, 'accounts.json'), JSON.stringify({ accounts, apps: [] }));
+  for (const [name, data] of Object.entries(userFiles)) {
+    fs.writeFileSync(path.join(userData, name), JSON.stringify(data));
+  }
 
   const app = await electron.launch({
     args: [ROOT, '--no-sandbox', '--disable-gpu'],

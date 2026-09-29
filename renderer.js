@@ -86,10 +86,11 @@ _on('emails:refreshed', async ({ accountId, folder }) => {
 });
 
 // ── Scheduled send: fired notification ───────────────────────────────────────
-_on('email:scheduled:fired', ({ id, success, subject, error }) => {
-  S.scheduledSends = S.scheduledSends.filter(s => s.id !== id);
+_on('email:scheduled:fired', ({ id, success, subject, error, retrying }) => {
+  if (!retrying) S.scheduledSends = S.scheduledSends.filter(s => s.id !== id);
   renderScheduledOutbox();
-  toast(success ? `Sent: ${subject}` : `Scheduled send failed: ${error || 'Unknown error'}`, !success, 5000);
+  toast(success ? `Sent: ${subject}`
+    : `Scheduled send failed: ${error || 'Unknown error'}${retrying ? ' — retrying in 5 minutes' : ''}`, !success, 5000);
 });
 
 // ── Scheduled outbox bar ──────────────────────────────────────────────────────
@@ -128,6 +129,14 @@ function renderScheduledOutbox() {
       if (res.success) {
         S.scheduledSends = S.scheduledSends.filter(x => x.id !== s.id);
         renderScheduledOutbox();
+        const d = res.emailData;
+        if (d) {
+          // Back into compose, so cancelling never loses the message
+          openCompose({ to: d.to || '', cc: d.cc || '', bcc: d.bcc || '', subject: d.subject || '',
+            rawBodyHtml: d.html || escHtml(d.text || '').replace(/\n/g, '<br>'), accountId: res.accountId,
+            inReplyTo: d.inReplyTo || null, references: d.references || null, attachments: d.attachments || null,
+            title: 'Edit Message' });
+        }
         toast('Scheduled send cancelled');
       }
     });
@@ -862,8 +871,10 @@ function initials(name) {
 
 function gravatarUrl(email, size = 80) {
   const hash = md5((email || '').toLowerCase().trim());
-  // d=blank returns a 1×1 transparent PNG instead of 404 — avoids console errors
-  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=blank`;
+  // d=404: no Gravatar → the image errors and the placeholder stays. (d=blank
+  // returns a transparent image at full size, which looked like a real photo
+  // and left an empty circle.)
+  return `https://www.gravatar.com/avatar/${hash}?s=${size}&d=404`;
 }
 
 // Free / personal email providers — skip Clearbit for these (would show Gmail/MS logo, not the person)
@@ -1703,6 +1714,11 @@ function showEmpty(on, text = 'No emails') {
     icon = EMPTY_ICONS.search; title = 'No results';
     sub = q ? `Nothing matches “${escHtml(q)}” in ${escHtml(folder)}.` : 'Try a different search term.';
     actions = [['Clear search', () => document.getElementById('searchClear').click()]];
+  } else if (text === 'No smart results') {
+    const cat = SMART_CATS.find(([k]) => k === S.smartCat)?.[1] || 'All';
+    icon = EMPTY_ICONS.done; title = 'Nothing here';
+    sub = S.unreadOnly ? `No unread messages${S.smartCat === 'all' ? '' : ` in ${cat}`}.` : `No messages in ${cat}.`;
+    actions = [['Show everything', () => { S.smartCat = 'all'; S.unreadOnly = false; renderEmailList(); }]];
   } else if (text === 'Error loading emails') {
     icon = EMPTY_ICONS.error; title = 'Something went wrong'; sub = 'Check your connection and try again.';
     actions = [['Try again', () => document.getElementById('refreshBtn').click()]];
@@ -2053,13 +2069,122 @@ function makeEmailItem(email, showAccountBadge) {
   return item;
 }
 
+// ── Smart inbox ───────────────────────────────────────────────────────────────
+// People / Updates / Newsletters from the sender address alone (no body needed),
+// plus bundles: 3+ automated messages from one sender collapse into one row.
+const SMART_CATS = [['all', 'All'], ['people', 'People'], ['updates', 'Updates'], ['newsletters', 'Newsletters']];
+const NEWSLETTER_LOCAL = /(news|digest|weekly|newsletter|marketing|promo|offers?|deals?|community|magazine)/;
+const AUTOMATED_LOCAL = /(no-?reply|donotreply|notif|alert|jobs?|mention|info|hello|team|update|mailer|service|support|billing|receipt|order|invoice|account|security|verify|feedback|survey|events?|recommend|bounce|system|robot|bot|calendar|reminder)/;
+function mailCategory(email) {
+  const kind = senderKind(email.fromEmail)?.kind;
+  if (kind === 'news') return 'newsletters';
+  if (kind) return 'updates';
+  const local = String(email.fromEmail || '').split('@')[0].toLowerCase();
+  if (NEWSLETTER_LOCAL.test(local)) return 'newsletters';
+  if (AUTOMATED_LOCAL.test(local)) return 'updates';
+  return 'people';
+}
+S.smartCat = 'all';
+S.unreadOnly = false;
+S.expandedBundles = new Set();
+
+function smartActive(isSearch) {
+  if (isSearch || getSetting('smart-inbox', 'true') !== 'true') return false;
+  const role = accountFolders.get(S.activeAccountId)?.find(f => f.key === S.activeFolder)?.role || S.activeFolder;
+  return S.activeAccountId === null || role === 'inbox';
+}
+
+// What the list shows right now (also used by ↑/↓ navigation)
+function visibleEmails() {
+  if (!smartActive(S.isSearching)) return S.emails;
+  return S.emails.filter(e => (S.smartCat === 'all' || mailCategory(e) === S.smartCat) && (!S.unreadOnly || !e.read));
+}
+
+function renderSmartBar(isSearch) {
+  const bar = document.getElementById('smartBar');
+  const on = smartActive(isSearch);
+  bar.classList.toggle('hidden', !on);
+  if (!on) return;
+  const unread = { all: 0, people: 0, updates: 0, newsletters: 0 };
+  S.emails.forEach(e => { if (!e.read) { unread.all++; unread[mailCategory(e)]++; } });
+  bar.querySelectorAll('.smart-tab').forEach(b => {
+    const cat = b.dataset.cat;
+    b.classList.toggle('active', cat === S.smartCat);
+    b.setAttribute('aria-selected', String(cat === S.smartCat));
+    b.querySelector('.smart-n').textContent = unread[cat] ? String(unread[cat] > 99 ? '99+' : unread[cat]) : '';
+  });
+  document.getElementById('unreadOnlyBtn').setAttribute('aria-pressed', String(S.unreadOnly));
+}
+
+document.querySelectorAll('#smartBar .smart-tab').forEach(b => b.addEventListener('click', () => {
+  S.smartCat = b.dataset.cat;
+  renderEmailList(S.isSearching);
+}));
+document.getElementById('unreadOnlyBtn').addEventListener('click', () => {
+  S.unreadOnly = !S.unreadOnly;
+  renderEmailList(S.isSearching);
+});
+
+function makeBundle(key, members, showAccountBadge) {
+  const first = members[0];
+  const unread = members.filter(m => !m.read).length;
+  const open = S.expandedBundles.has(key);
+  const wrap = document.createElement('div');
+  wrap.className = 'bundle' + (open ? ' open' : '') + (unread ? ' is-unread' : '');
+  wrap.dataset.bundle = key;
+  const row = document.createElement('div');
+  row.className = 'bundle-row';
+  row.setAttribute('role', 'button');
+  row.tabIndex = 0;
+  row.setAttribute('aria-expanded', String(open));
+  const av = avatarEl(first.fromName, first.fromEmail, 36);
+  const text = document.createElement('div');
+  text.className = 'bundle-text';
+  text.innerHTML = `<div class="bundle-top"><span class="bundle-name"></span><span class="bundle-count">${members.length}</span>
+    ${unread ? `<span class="bundle-unread">${unread} new</span>` : ''}<span class="bundle-time">${escHtml(fmtListTime(first.date))}</span></div>
+    <div class="bundle-subject"></div>`;
+  text.querySelector('.bundle-name').textContent = first.fromName || first.fromEmail;
+  text.querySelector('.bundle-subject').textContent = first.subject || '(no subject)';
+  const acts = document.createElement('div');
+  acts.className = 'bundle-actions';
+  const mk = (label, cls, fn) => {
+    const b = document.createElement('button');
+    b.className = 'bundle-act ' + cls;
+    b.textContent = label;
+    b.addEventListener('click', async e => {
+      e.stopPropagation();
+      b.disabled = true;
+      const ok = await runBulk(members, fn);
+      renderEmailList(S.isSearching);
+      toast(ok ? (fn === 'archive' ? `Archived ${members.length} messages` : `Marked ${members.length} as read`) : 'Action failed', !ok);
+    });
+    return b;
+  };
+  if (unread) acts.appendChild(mk('Mark all read', 'bundle-read', 'read'));
+  acts.appendChild(mk('Archive all', 'bundle-archive', 'archive'));
+  row.append(av, text, acts);
+  const toggle = () => {
+    if (S.expandedBundles.has(key)) S.expandedBundles.delete(key); else S.expandedBundles.add(key);
+    renderEmailList(S.isSearching);
+  };
+  row.addEventListener('click', toggle);
+  row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+  wrap.appendChild(row);
+  if (open) members.forEach(m => { const it = makeEmailItem(m, showAccountBadge); it.classList.add('in-bundle'); wrap.appendChild(it); });
+  return wrap;
+}
+
 function renderEmailList(isSearch = false) {
   const list = document.getElementById('emailList');
   Array.from(list.children).forEach(c => {
     if (!c.classList.contains('list-empty') && !c.classList.contains('list-loading')) c.remove();
   });
+  renderSmartBar(isSearch);
 
   if (S.emails.length === 0 && !S.loading) { showEmpty(true, isSearch ? 'No results' : 'No emails'); return; }
+  const smart = smartActive(isSearch);
+  const shown = smart ? visibleEmails() : S.emails;
+  if (smart && shown.length === 0 && !S.loading) { showEmpty(true, 'No smart results'); return; }
   showEmpty(false);
 
   const showAccountBadge = S.activeAccountId === null;
@@ -2078,7 +2203,7 @@ function renderEmailList(isSearch = false) {
   };
 
   if (S.threadGrouping && !isSearch) {
-    const groups = groupEmails(S.emails);
+    const groups = groupEmails(shown);
     groups.forEach(({ key, messages, latest }) => {
       dayHeader(latest);
       frag.appendChild(makeEmailItem(latest, showAccountBadge));
@@ -2117,6 +2242,29 @@ function renderEmailList(isSearch = false) {
           });
         }
       }
+    });
+  } else if (smart) {
+    // Bundle 3+ automated messages per sender (in place of the newest one)
+    const bySender = new Map();
+    shown.forEach(e => {
+      if (mailCategory(e) === 'people') return;
+      const k = `${e.accountId}:${(e.fromEmail || '').toLowerCase()}`;
+      if (!bySender.has(k)) bySender.set(k, []);
+      bySender.get(k).push(e);
+    });
+    const done = new Set();
+    shown.forEach(email => {
+      const k = `${email.accountId}:${(email.fromEmail || '').toLowerCase()}`;
+      const members = bySender.get(k);
+      if (members && members.length >= 3) {
+        if (done.has(k)) return;
+        done.add(k);
+        dayHeader(email);
+        frag.appendChild(makeBundle(k, members, showAccountBadge));
+        return;
+      }
+      dayHeader(email);
+      frag.appendChild(makeEmailItem(email, showAccountBadge));
     });
   } else {
     S.emails.forEach(email => { dayHeader(email); frag.appendChild(makeEmailItem(email, showAccountBadge)); });
@@ -2388,14 +2536,22 @@ function sendWithUndo(accountId, emailData, onSent, delay, onRestore) {
 // ── Bulk actions ──────────────────────────────────────────────────────────────
 async function doBulkAction(action) {
   if (!S.selectedUids.size) return;
-
-  // Collect selected email objects, then group by accountId+folder so bulk
-  // calls across accounts/folders (e.g. All Mail mode) are handled correctly.
   const selectedEmails = S.emails.filter(e => S.selectedUids.has(selKey(e)));
   if (!selectedEmails.length) return;
+  const ok = await runBulk(selectedEmails, action);
+  S.selectedUids.clear();
+  renderEmailList();
+  renderBulkBar();
+  if (ok) toast(action === 'delete' ? 'Deleted' : action === 'archive' ? 'Archived' : 'Done');
+  else toast('Action failed', true);
+}
 
+// Runs a bulk action on any set of messages (multi-select, a sender bundle, …).
+// Calls are grouped by account + folder, so mixed lists (All Mail, Starred) work.
+async function runBulk(emails, action) {
+  const keys = new Set(emails.map(selKey));
   const groups = new Map();
-  for (const e of selectedEmails) {
+  for (const e of emails) {
     const key = `${e.accountId}:${e.folder}`;
     if (!groups.has(key)) groups.set(key, { accountId: e.accountId, folder: e.folder, uids: [] });
     groups.get(key).uids.push(e.uid);
@@ -2405,20 +2561,22 @@ async function doBulkAction(action) {
     [...groups.values()].map(g => ipc('email:bulk', { accountId: g.accountId, folder: g.folder, uids: g.uids, action }))
   );
 
-  if (results.every(r => r.success)) {
-    if (action === 'delete' || action === 'archive') {
-      S.emails = S.emails.filter(e => !S.selectedUids.has(selKey(e)));
-      if (S.selectedEmail && S.selectedUids.has(selKey(S.selectedEmail))) {
-        S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
-      }
-    } else if (action === 'read' || action === 'unread') {
-      S.emails.forEach(e => { if (S.selectedUids.has(selKey(e))) e.read = action === 'read'; });
+  if (!results.every(r => r.success)) return false;
+  if (action === 'delete' || action === 'archive') {
+    emails.filter(e => !e.read).forEach(e => adjustUnread(e, -1));
+    S.emails = S.emails.filter(e => !keys.has(selKey(e)));
+    if (S.selectedEmail && keys.has(selKey(S.selectedEmail))) {
+      S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
     }
-    S.selectedUids.clear();
-    renderEmailList();
-    renderBulkBar();
-    toast(action === 'delete' ? 'Deleted' : action === 'archive' ? 'Archived' : 'Done');
-  } else toast('Action failed', true);
+  } else if (action === 'read' || action === 'unread') {
+    S.emails.forEach(e => {
+      if (!keys.has(selKey(e))) return;
+      const nowRead = action === 'read';
+      if (e.read !== nowRead) adjustUnread(e, nowRead ? -1 : 1);
+      e.read = nowRead;
+    });
+  }
+  return true;
 }
 
 function renderBulkBar() {
@@ -3930,7 +4088,7 @@ function applyPrefChange(key, value) {
     updateDockBadge();
   } else if (key.startsWith('notifications-')) {
     syncNotifyPrefs();
-  } else if (key === 'sender-pictures') {
+  } else if (key === 'sender-pictures' || key === 'smart-inbox') {
     renderEmailList(S.isSearching);
     if (S.selectedEmail) refreshDetailIfSelected(S.selectedEmail);
   } else if (key === 'window-background') {
@@ -4070,6 +4228,9 @@ function renderSettingsReading() {
           makeSelect('preview-lines', '2', [
             ['0','None'],['1','1 line'],['2','2 lines'],['3','3 lines'],
           ])
+        )}
+        ${makePrefRow('Smart inbox', 'People / Updates / Newsletters tabs and bundles for busy senders',
+          makeToggle('smart-inbox', 'true')
         )}
         ${makePrefRow('Group by conversation', 'Bundle replies with the same subject',
           makeToggle('thread-grouping', String(S.threadGrouping))
@@ -5180,14 +5341,15 @@ document.addEventListener('keydown', e => {
 
   if (inInput || anyModalOpen || e.altKey) return;
 
-  const idx = S.emails.findIndex(m => m.uid === S.selectedUid && m.accountId === S.selectedEmail?.accountId);
+  const nav = visibleEmails();
+  const idx = nav.findIndex(m => m.uid === S.selectedUid && m.accountId === S.selectedEmail?.accountId);
 
   if (key === 'ArrowDown' || key === 'j') {
     e.preventDefault();
-    if (S.emails.length > 0 && idx < S.emails.length - 1) { selectEmail(S.emails[idx + 1]); scrollSelectedIntoView(); }
+    if (nav.length > 0 && idx < nav.length - 1) { selectEmail(nav[idx + 1]); scrollSelectedIntoView(); }
   } else if (key === 'ArrowUp' || key === 'k') {
     e.preventDefault();
-    if (S.emails.length > 0 && idx !== 0) { selectEmail(S.emails[Math.max(idx - 1, 0)]); scrollSelectedIntoView(); }
+    if (nav.length > 0 && idx !== 0) { selectEmail(nav[Math.max(idx - 1, 0)]); scrollSelectedIntoView(); }
   } else if ((key === 'Delete' || key === 'Backspace') && S.selectedEmail) {
     e.preventDefault();
     doDelete(S.selectedEmail);

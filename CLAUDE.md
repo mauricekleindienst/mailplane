@@ -104,6 +104,8 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 - **OS integration** (main.js): Mailplane never claims mailto: on its own — Settings → General → System has "Make default" (Windows opens ms-settings:defaultapps; installers register the protocol via `build.protocols`), "Open at login" (macOS/Windows, starts with `--hidden`), "Keep running when closed" (Windows/Linux tray; `runInBackground` in the `window` store). Jump list (Windows) / Dock menu (macOS) launch actions `--new-message`, `--search`, `--check-mail` (also via second-instance argv). Windows taskbar unread overlay drawn by `taskbarBadge()`; `setAppUserModelId('com.mailplane.app')`. Notification click → `notification-open` → that account's inbox. Window position is dropped when off-screen; maximized state persists.
 - **Search palette** (`#palette`, ⌘K or click on the title-bar search): server search row, matching loaded messages, contacts, folders/accounts/actions, recent searches (`localStorage['mailplane-recent-searches']`). Typing directly into `#searchInput` still runs the inline search.
 - **Sender pictures**: Gravatar → site icon (DuckDuckGo, ≥32px) → BIMI; without one, `senderKind()` picks a placeholder icon (billing, security, support, news, notify) else initials. Off via `sender-pictures`.
+- **Smart inbox** (Inbox / All Mail, setting `smart-inbox`): `#smartBar` tabs All/People/Updates/Newsletters from `mailCategory()` (sender address only), Unread-only filter, and 3+ automated mails from one sender collapse into a `.bundle` (Mark all read / Archive all via `runBulk`). ↑/↓ follow `visibleEmails()`.
+- **Send later** persists in `scheduled.json` (main.js `scheduledQueue`): restored on launch, overdue mail goes out right away, failures retry every 5 min; cancelling reopens the message in compose.
 - **Starred** is a virtual folder (`key: 'starred'`, `emails:starred`); selection keys include the folder because UIDs are per folder.
 - **Settings only show options that work** — don't add placebo toggles.
 - **Account setup** (renderer.js "Account setup", `#setupModal` sections by `data-step`): welcome (first run only) → email (live preset detection, autodiscover on continue, guess `imap.<domain>` as last resort) → password (`PROVIDER_HELP` gives app-password steps + link per provider family) → optional server form (security select switches default ports; "None" warns) → checking (`accounts:test` for IMAP then SMTP, live status, `parseSetupError` explains failures per server) → personalise (name derived from address, colour) → `accounts:add` with `verified: true`.
@@ -199,7 +201,8 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] Undo send (8-second cancellable window before SMTP fires)
 - [x] Inline images in compose (paste or drag image files)
 - [x] Empty state screens (no accounts, empty folder, no search results)
-- [x] Send Later / scheduled send (stores in queue, fires at scheduled time)
+- [x] Send Later / scheduled send (persistent queue, catches up after restart)
+- [x] Smart inbox (categories, sender bundles, unread filter)
 - [x] Local SQLite cache for offline reading (better-sqlite3, WAL mode, messages + bodies)
 - [x] CalDAV / calendar integration (PROPFIND discovery, REPORT fetch, monthly grid view)
 - [x] Auto-update with persistent restart banner (electron-updater, Restart Now button)

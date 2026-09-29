@@ -777,8 +777,25 @@ ipcMain.handle('email:body', async (_, { accountId, folder, uid }) => {
   }
 });
 
-// ── Scheduled send queue (in-memory; survives until app quit) ─────────────────
-const scheduledQueue = new Map(); // id → { timer, accountId, subject, scheduledAt }
+// ── Scheduled send queue ──────────────────────────────────────────────────────
+// Persisted in scheduled.json so "Send later" survives a quit or restart: on
+// launch every entry is re-armed, and anything that came due while Mailplane
+// was closed goes out right away. A failed send stays queued and retries.
+const scheduledQueue = new Map(); // id → { timer, accountId, subject, scheduledAt, emailData }
+const SCHEDULE_RETRY_MS = 5 * 60_000;
+const MAX_TIMER_MS = 2 ** 31 - 1;   // setTimeout fires immediately above ~24.8 days
+let _schedStore;
+function scheduledStore() {
+  if (!_schedStore) _schedStore = new (require('electron-store'))({ name: 'scheduled', defaults: { items: {} } });
+  return _schedStore;
+}
+function persistScheduled() {
+  const items = {};
+  for (const [id, e] of scheduledQueue) {
+    items[id] = { accountId: e.accountId, scheduledAt: e.scheduledAt, emailData: e.emailData };
+  }
+  scheduledStore().set('items', items);
+}
 
 async function dispatchSend(accountId, emailData) {
   const account = accountStore.getAccounts().find(a => a.id === accountId);
@@ -787,25 +804,60 @@ async function dispatchSend(accountId, emailData) {
   return await smtpManager.sendEmail(account, emailData);
 }
 
+function armScheduled(id, entry, delay) {
+  clearTimeout(entry.timer);
+  const wait = Math.max(0, delay);
+  entry.timer = setTimeout(() => {
+    if (wait > MAX_TIMER_MS - 1) { armScheduled(id, entry, new Date(entry.scheduledAt) - Date.now()); return; }
+    fireScheduled(id);
+  }, Math.min(wait, MAX_TIMER_MS - 1));
+}
+
+async function fireScheduled(id) {
+  const entry = scheduledQueue.get(id);
+  if (!entry || entry.sending) return;
+  entry.sending = true;
+  let result;
+  try { result = await dispatchSend(entry.accountId, entry.emailData); }
+  catch (err) { result = { success: false, error: err.message }; }
+  entry.sending = false;
+  if (!scheduledQueue.has(id)) return;            // cancelled while sending
+  const accountGone = result.error === 'Account not found';
+  if (result.success || accountGone) {
+    scheduledQueue.delete(id);
+  } else {
+    armScheduled(id, entry, SCHEDULE_RETRY_MS);   // offline etc. — keep it and try again
+  }
+  persistScheduled();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('email:scheduled:fired', {
+      id, success: result.success, subject: entry.subject, error: result.error,
+      retrying: !result.success && !accountGone,
+    });
+  }
+}
+
+function restoreScheduled() {
+  const items = scheduledStore().get('items') || {};
+  for (const [id, it] of Object.entries(items)) {
+    if (!it?.emailData || !it.accountId) continue;
+    const entry = { accountId: it.accountId, scheduledAt: it.scheduledAt, emailData: it.emailData,
+      subject: it.emailData.subject || '(no subject)' };
+    scheduledQueue.set(id, entry);
+    // Overdue mail (Mailplane was closed) goes out a few seconds after launch
+    armScheduled(id, entry, Math.max(new Date(it.scheduledAt) - Date.now(), 3000));
+  }
+}
+
 ipcMain.handle('email:send', async (_, { accountId, scheduledAt, ...emailData }) => {
   if (scheduledAt) {
     const delay = new Date(scheduledAt) - Date.now();
     if (delay > 500) {
       const id = `sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const timer = setTimeout(async () => {
-        scheduledQueue.delete(id);
-        let result;
-        try { result = await dispatchSend(accountId, emailData); }
-        catch (err) { result = { success: false, error: err.message }; }
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('email:scheduled:fired', {
-            id, success: result.success,
-            subject: emailData.subject,
-            error: result.error,
-          });
-        }
-      }, delay);
-      scheduledQueue.set(id, { timer, accountId, subject: emailData.subject || '(no subject)', scheduledAt });
+      const entry = { accountId, subject: emailData.subject || '(no subject)', scheduledAt, emailData };
+      scheduledQueue.set(id, entry);
+      armScheduled(id, entry, delay);
+      persistScheduled();
       return { success: true, scheduledId: id };
     }
     // Scheduled time is in the past / immediate — fall through to regular send
@@ -828,7 +880,8 @@ ipcMain.handle('email:scheduled:cancel', (_, { id }) => {
   if (!entry) return { success: false, error: 'Not found' };
   clearTimeout(entry.timer);
   scheduledQueue.delete(id);
-  return { success: true };
+  persistScheduled();
+  return { success: true, emailData: entry.emailData, accountId: entry.accountId };
 });
 
 ipcMain.handle('email:delete', async (_, { accountId, folder, uid }) => {
@@ -1202,6 +1255,7 @@ app.whenReady().then(() => {
     console.error('[Mailplane] CalDAV loadStoredAccounts failed:', err.message);
   }
   emailCache.pruneOldEntries(30);
+  restoreScheduled();
   // Update checks start once the renderer sends 'update:config'
   _updaterReady = setupUpdater();
   setupAppIconMenu();

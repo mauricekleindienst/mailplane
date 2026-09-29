@@ -161,3 +161,59 @@ test('clicking a new-mail notification opens that account', async () => {
   await expect(page.locator('.acc-tab.active')).toContainText('Bob Work');
   await expect(emailItem(page, 'Standup notes')).toBeVisible();
 });
+
+test('smart inbox: category tabs, unread filter and bundles for busy senders', async () => {
+  const boxes = defaultMailboxes();
+  for (let i = 1; i <= 4; i++) {
+    boxes['acc-a'].INBOX.push(msg({ subject: `PR #${i} review requested`, fromName: 'GitHub',
+      fromEmail: 'notifications@github.test', minutesAgo: 40 + i, read: i > 2 }));
+  }
+  boxes['acc-a'].INBOX.push(msg({ subject: 'This week in design', fromName: 'Design Weekly',
+    fromEmail: 'newsletter@design.test', minutesAgo: 120 }));
+  ctx = await launchApp({ mailboxes: boxes });
+  const { page, fake } = ctx;
+  await page.locator('.acc-tab', { hasText: 'Alice Example' }).click();
+  await expect(page.locator('#smartBar')).toBeVisible();
+
+  // Four GitHub notifications collapse into one bundle row
+  const bundle = page.locator('#emailList .bundle');
+  await expect(bundle).toHaveCount(1);
+  await expect(bundle.locator('.bundle-count')).toHaveText('4');
+  await expect(bundle.locator('.bundle-unread')).toHaveText('2 new');
+  await expect(emailItem(page, 'PR #1')).toHaveCount(0);
+  await bundle.locator('.bundle-name').click();
+  await expect(bundle.locator('.email-item.in-bundle')).toHaveCount(4);
+
+  // Categories
+  await page.locator('.smart-tab[data-cat="people"]').click();
+  await expect(emailItem(page, 'Quarterly report')).toHaveCount(1);
+  await expect(emailItem(page, 'Lunch?')).toHaveCount(1);
+  await expect(page.locator('#emailList .bundle')).toHaveCount(0);
+  await expect(emailItem(page, 'Invoice #42')).toHaveCount(0);
+  await page.locator('.smart-tab[data-cat="newsletters"]').click();
+  await expect(emailItems(page)).toHaveCount(1);
+  await expect(emailItem(page, 'This week in design')).toHaveCount(1);
+
+  // Unread only (Lunch? is read) — and the empty state offers a way back
+  await page.locator('.smart-tab[data-cat="people"]').click();
+  await page.locator('#unreadOnlyBtn').click();
+  await expect(page.locator('#unreadOnlyBtn')).toHaveAttribute('aria-pressed', 'true');
+  await expect(emailItem(page, 'Lunch?')).toHaveCount(0);
+  await expect(emailItem(page, 'Quarterly report')).toHaveCount(1);
+  await page.locator('.smart-tab[data-cat="newsletters"]').click();
+  await emailItem(page, 'This week in design').click();
+  await page.locator('.smart-tab[data-cat="all"]').click();
+  await page.locator('#unreadOnlyBtn').click();
+
+  // Archive the whole bundle in one go
+  await page.locator('#emailList .bundle .bundle-row').hover();
+  await page.locator('#emailList .bundle .bundle-archive').click();
+  await expect(page.locator('#emailList .bundle')).toHaveCount(0);
+  await expect.poll(() => fake(s => s.mailboxes['acc-a'].Archive.length)).toBe(4);
+
+  // Turning it off in Settings brings back the plain list
+  await page.evaluate(() => localStorage.setItem('mailplane-pref-smart-inbox', 'false'));
+  await page.locator('.folder-btn[data-folder="sent"]').click();
+  await page.locator('.folder-btn[data-folder="inbox"]').click();
+  await expect(page.locator('#smartBar')).toBeHidden();
+});
