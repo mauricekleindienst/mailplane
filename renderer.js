@@ -579,6 +579,7 @@ const togglePane = id => setPaneCollapsed(id, !layout[id].collapsed);
   }
 
   document.getElementById('sidebarToggle').addEventListener('click', () => togglePane('sidebar'));
+  document.getElementById('sidebarShowBtn').addEventListener('click', () => togglePane('sidebar'));
   window.addEventListener('resize', applyLayout);
   applyLayout();
   // Enable width transitions only once the restored layout has been painted,

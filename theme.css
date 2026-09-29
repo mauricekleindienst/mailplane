@@ -14,6 +14,8 @@
   --surface-raised: rgba(255, 255, 255, 0.72); /* hover / active rows */
   --tile: #e3e7e4;                            /* small grey tiles, pills, inputs */
   --tile-active: #d5dad6;
+  --seg-active: #fbfcfb;
+  --seg-shadow: 0 1px 2px rgba(38, 42, 40, 0.08), 0 0 0 0.5px rgba(38, 42, 40, 0.06);
   --sidebar-bg: var(--tile);
   --detail-bg: var(--surface-solid);
   --modal-bg: #f1f3f2;
@@ -65,6 +67,8 @@
   --surface-raised: rgba(255, 255, 255, 0.07);
   --tile: #272a28;
   --tile-active: #323633;
+  --seg-active: #3a3e3b;
+  --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   --modal-bg: #1e211f;
   --compose-bg: #1e211f;
   --avatar-bg: #333735;
@@ -94,6 +98,8 @@
     --surface-raised: rgba(255, 255, 255, 0.07);
     --tile: #272a28;
     --tile-active: #323633;
+    --seg-active: #3a3e3b;
+    --seg-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
     --modal-bg: #1e211f;
     --compose-bg: #1e211f;
     --avatar-bg: #333735;
@@ -139,12 +145,12 @@ body {
   color: var(--text-primary) !important;
 }
 
-/* ── Top bar: brand · account pills (centre) · actions ─────────────────── */
+/* ── Top bar: account switcher (centre) · actions ──────────────────────── */
 .account-bar {
-  height: 58px;
+  height: 52px;
   background: transparent;
   border-bottom: none;
-  padding-right: 16px;
+  padding-right: 14px;
   position: relative;
 }
 .account-bar-brand {
@@ -154,76 +160,88 @@ body {
 }
 .account-bar-brand img { border-radius: 7px; opacity: 0.85; filter: grayscale(1) contrast(1.1); }
 
+/* One quiet segmented track; the active account sits on a raised chip */
 .account-tabs {
   position: absolute;
   left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100% - 480px);
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: calc(100% - 440px);
   display: flex;
-  gap: 6px;
-  padding: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--tile);
   overflow-x: auto;
 }
 .acc-tab {
-  height: 32px;
-  padding: 0 14px;
-  border-radius: 10px;
-  gap: 8px;
-  background: var(--tile);
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 9px;
+  gap: 7px;
+  background: transparent;
   color: var(--text-secondary);
-  font-size: 12.5px;
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 450;
+  letter-spacing: -0.005em;
   box-shadow: none;
 }
-.acc-tab:hover { background: var(--tile-active); color: var(--text-primary); }
+.acc-tab:hover { background: transparent; color: var(--text-primary); }
 .acc-tab.active {
-  background: var(--tile-active);
+  background: var(--seg-active);
   color: var(--text-primary);
   font-weight: 500;
-  box-shadow: none;
+  box-shadow: var(--seg-shadow);
 }
-.acc-tab-all { font-weight: 400; }
+.acc-tab-all { font-weight: 450; }
+.acc-tab-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
 .acc-tab-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   box-shadow: none;
-  opacity: 0.85;
+  opacity: 0.9;
 }
 .acc-tab-badge, :root.dark .acc-tab-badge {
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   padding: 0;
   min-width: 0;
   height: auto;
 }
 .acc-tab.active .acc-tab-badge { color: var(--text-secondary); }
 .acc-add-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text-tertiary);
-  border: 1px dashed var(--tile-active);
+  border: none;
 }
-.acc-add-btn:hover { background: var(--tile); color: var(--text-primary); }
+.acc-add-btn:hover { background: var(--tile-active); color: var(--text-primary); }
 
-.account-bar-right { gap: 8px; }
+.account-bar-right { gap: 6px; padding-right: 0; }
 .compose-btn {
-  height: 34px;
-  padding: 0 14px 0 16px;
+  height: 32px;
+  padding: 0 14px 0 12px;
   border-radius: 10px;
   background: var(--lime);
   color: var(--lime-ink);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
-  gap: 10px;
+  letter-spacing: -0.005em;
+  gap: 7px;
   box-shadow: none;
 }
 .compose-btn:hover { background: var(--lime-deep); }
-.ab-icon-btn { width: 34px; height: 34px; border-radius: 10px; }
+.ab-icon-btn { width: 32px; height: 32px; border-radius: 10px; }
+/* Title-bar icons are ghosts — no tile until hovered */
+.account-bar .ab-icon-btn { background: transparent !important; }
+.account-bar .ab-icon-btn:hover { background: var(--tile) !important; }
 
 /* ── Layout: frosted panels on the canvas ──────────────────────────────── */
 .main-panels { padding: 0 14px 14px 0; background: transparent; }
@@ -244,9 +262,10 @@ body {
 }
 .sidebar-section-label {
   font-size: 11px;
-  font-weight: 400;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--text-tertiary);
-  padding: 8px 22px 8px;
+  padding: 6px 22px 8px;
 }
 .folder-nav { padding: 0 10px; gap: 4px; }
 .folder-btn {
@@ -1008,9 +1027,22 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
   background: var(--tile-active);
 }
 
-/* Title-bar toggle */
-.sidebar-toggle { margin-right: 8px; flex-shrink: 0; -webkit-app-region: no-drag; }
-.sidebar-toggle.active { color: var(--text-primary) !important; }
+/* Sidebar toggle: bottom-left of the rail; a twin appears in the title bar
+   only while the rail is hidden, so it can always be brought back */
+.folder-sidebar { display: flex; flex-direction: column; }
+.sidebar-foot {
+  position: sticky;
+  bottom: 0;
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px 0;
+  background: transparent;
+}
+.sidebar-toggle { background: transparent !important; flex-shrink: 0; }
+.sidebar-toggle:hover { background: var(--tile) !important; }
+.sidebar-show-btn { display: none; flex-shrink: 0; -webkit-app-region: no-drag; }
+#app.sidebar-collapsed .sidebar-show-btn { display: flex; }
 
 /* Overlays and expanded compose follow the sidebar width */
 .app-view { left: calc(var(--sidebar-w, 196px) + 10px) !important; }

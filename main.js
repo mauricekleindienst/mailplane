@@ -242,6 +242,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 18, y: 20 },   // centred in the 52px title bar
     vibrancy: nativeTheme.shouldUseDarkColors ? 'under-window' : 'sidebar',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff',
     title: 'Mailplane',

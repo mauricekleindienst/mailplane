@@ -23,15 +23,27 @@ async function drag(page, handleSel, dx) {
   await page.waitForTimeout(300); // width transition
 }
 
-test('sidebar toggles via title-bar button and ⌘\\, and stays collapsed after reload', async () => {
+test('sidebar hides from its footer button, returns via the title bar and ⌘\\, and stays collapsed after reload', async () => {
   ctx = await launchApp();
   const { page } = ctx;
   expect(await width(page, '.folder-sidebar')).toBe(196);
+  await expect(page.locator('#sidebarShowBtn')).toBeHidden();
+
+  // The hide button sits at the bottom-left of the rail
+  const rail = await page.locator('.folder-sidebar').boundingBox();
+  const btn = await page.locator('#sidebarToggle').boundingBox();
+  expect(btn.x - rail.x).toBeLessThan(30);
+  expect(rail.y + rail.height - (btn.y + btn.height)).toBeLessThan(30);
 
   await page.locator('#sidebarToggle').click();
   await expect(page.locator('#app')).toHaveClass(/sidebar-collapsed/);
   await expect.poll(() => width(page, '.folder-sidebar')).toBe(0);
   await expect(page.locator('#folderNav')).toBeHidden();
+  await page.locator('#sidebarShowBtn').click();
+  await expect(page.locator('#app')).not.toHaveClass(/sidebar-collapsed/);
+  await expect(page.locator('#sidebarShowBtn')).toBeHidden();
+  await page.locator('#sidebarToggle').click();
+  await expect(page.locator('#app')).toHaveClass(/sidebar-collapsed/);
   await page.screenshot({ path: 'test-results/layout-collapsed.png' });
 
   await page.reload();
