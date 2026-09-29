@@ -74,7 +74,10 @@ styles.css              — design tokens + all component styles
 - **Body cache**: `S.bodyCache` (Map uid→body) — clear on refresh, never persist to disk.
 - **safeStorage passwords**: `safeStorage.encryptString` / `decryptString` — OS-level encryption, no native rebuild needed.
 - **HTML email in iframe**: rendered with `<base target="_blank">` + remote images blocked by default; "Load Images" button reveals them.
-- **Undo send**: 8-second window — SMTP call is deferred; a toast with countdown lets user cancel. Queue lives in memory only.
+- **Undo send**: 8-second window — SMTP call is deferred; a toast with countdown lets user cancel (the draft is reopened). Queue lives in memory only.
+- **HTML email iframe is sandboxed** (`allow-same-origin` without `allow-scripts`) — mail scripts/handlers never run; links are intercepted and opened externally.
+- **Single-key shortcuts (⌫ / E / U / S / j / k) live only in the renderer** — never as menu accelerators, which would swallow keystrokes in text fields.
+- **Delete moves to Trash** (permanent only when already in Trash); the SQLite cache is updated on delete/move/flag/read so removed mail doesn't reappear.
 - **Multi-select**: `S.selectedUids` Set tracks checked emails; bulk action bar appears when non-empty.
 - **Electron 30 required**: imapflow → pino v10 requires `diagnostics_channel.tracingChannel` (Node ≥ 18.19).
 
@@ -89,6 +92,19 @@ styles.css              — design tokens + all component styles
 npm start          # launch
 npm start -- --inspect  # DevTools (Cmd+Option+I also works)
 ```
+
+## Testing
+```bash
+npm run lint             # eslint
+npm test                 # unit tests (node:test, test/*.test.js)
+npm run test:e2e         # E2E + UI tests (Playwright driving the real Electron app)
+npm run test:e2e:linux   # same, under xvfb on headless Linux
+```
+E2E tests (`test/e2e/*.spec.js`) launch Electron with `MAILPLANE_E2E=1` and an isolated
+`XDG_CONFIG_HOME`/`HOME`. `test/e2e/helpers.js` swaps the network-facing functions of
+`imap-manager` / `smtp-manager` for an in-memory fake mailbox (exposed via
+`global.__mailplaneModules`, only set when `MAILPLANE_E2E=1`), so the real IPC handlers,
+SQLite cache and renderer run end-to-end without a mail server. Screenshots land in `test-results/`.
 
 ## Building & distribution
 ```bash

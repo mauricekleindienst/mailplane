@@ -15,17 +15,21 @@ function buildTransport(account) {
   });
 }
 
-async function sendEmail(account, { to, cc, bcc, subject, text, html, attachments }) {
+async function sendEmail(account, { to, cc, bcc, subject, text, html, attachments, inReplyTo, references }) {
   const transport = buildTransport(account);
   try {
     const mailOptions = {
-      from: `${account.name} <${account.email}>`,
+      // Object form lets nodemailer quote/encode names containing commas, umlauts, etc.
+      from: { name: account.name || '', address: account.email },
       to,
       cc: cc || undefined,
       bcc: bcc || undefined,
       subject,
       text: text || '',
-      html: html || text || '',
+      // Plain-text mode sends no HTML part (wrapping text as HTML would collapse line breaks)
+      html: html || undefined,
+      inReplyTo: inReplyTo || undefined,
+      references: references || undefined,
     };
 
     if (attachments?.length) {

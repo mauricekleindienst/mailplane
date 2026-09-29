@@ -42,19 +42,42 @@ const caldavManager = require('./src/caldav-manager');
 // Expose safeStorage helpers to the store (called only from main process)
 accountStore.setSafeStorage(safeStorage);
 
+// E2E tests (test/e2e) swap the network-facing managers for an in-memory fake.
+// Only exposed when explicitly requested via env — never in normal runs.
+if (process.env.MAILPLANE_E2E === '1') {
+  global.__mailplaneModules = { accountStore, imapManager, jmapManager, smtpManager, emailCache, caldavManager };
+}
+
 function mgr(account) {
   return account.protocol === 'jmap' ? jmapManager : imapManager;
 }
 
 let mainWindow;
+let _pendingMailto = null; // mailto: URL received before the renderer finished loading
 
 // Handle mailto: URLs received while app is already running
 function handleMailto(url) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.send('mailto', url);
+  } else {
+    _pendingMailto = url;
   }
+}
+
+// Windows / Linux deliver mailto: links via argv of a second instance
+const _gotLock = app.requestSingleInstanceLock();
+if (!_gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = argv.find(a => a.startsWith('mailto:'));
+    if (url) handleMailto(url);
+    else if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
+  });
+  const argvMailto = process.argv.find(a => a.startsWith('mailto:'));
+  if (argvMailto) _pendingMailto = argvMailto;
 }
 
 app.on('open-url', (event, url) => {
@@ -142,19 +165,24 @@ function buildAppMenu() {
         { label: 'Reply All', accelerator: 'Shift+CmdOrCtrl+R', click: () => send('reply-all') },
         { label: 'Forward', accelerator: 'CmdOrCtrl+F', click: () => send('forward') },
         { type: 'separator' },
-        { label: 'Refresh', accelerator: 'CmdOrCtrl+Shift+R', click: () => send('refresh') },
+        { label: 'Refresh', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('refresh') },
         { type: 'separator' },
         { label: 'Archive', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('archive-email') },
-        { label: 'Delete Message', accelerator: 'Backspace', click: () => send('delete-email') },
-        { label: 'Mark as Read', accelerator: 'U', click: () => send('mark-read') },
-        { label: 'Star', accelerator: 'S', click: () => send('toggle-star') },
+        // No accelerators on the single-key actions below: menu accelerators
+        // swallow keystrokes app-wide (typing "s" in compose would star the
+        // selected email, Backspace would delete it). The renderer's keydown
+        // handler implements ⌫ / U / S when no text field is focused.
+        { label: 'Delete Message  ⌫', click: () => send('delete-email') },
+        { label: 'Mark as Read / Unread  U', click: () => send('mark-read') },
+        { label: 'Star / Unstar  S', click: () => send('toggle-star') },
       ],
     },
     { role: 'editMenu' },
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
+        // Default ⌘R would collide with Mail → Reply
+        { role: 'reload', accelerator: 'CmdOrCtrl+Alt+R' },
         { role: 'toggleDevTools' },
         { type: 'separator' },
         { role: 'resetZoom' },
@@ -221,7 +249,25 @@ function createWindow() {
       spellcheck: true,
     },
   });
+  // Never let the app window navigate away or spawn Electron popups (e.g. a
+  // file dropped onto the window, or target=_blank links in HTML mail).
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // about:blank is the renderer's own print window
+    if (!url || url === 'about:blank') return { action: 'allow' };
+    if (/^https?:|^mailto:/i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) event.preventDefault();
+  });
   mainWindow.loadFile('index.html');
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (_pendingMailto) {
+      const url = _pendingMailto;
+      _pendingMailto = null;
+      mainWindow.webContents.send('mailto', url);
+    }
+  });
 
   // Persist window bounds on every resize/move (debounced)
   let _saveBoundsTimer;
@@ -237,7 +283,7 @@ function createWindow() {
   mainWindow.on('move', saveBounds);
 
   // Notify renderer so it can shift the account bar
-  const sendFs = (v) => mainWindow.webContents.send('fullscreen-change', v);
+  const sendFs = (v) => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('fullscreen-change', v); };
   mainWindow.on('enter-full-screen', () => sendFs(true));
   mainWindow.on('leave-full-screen', () => sendFs(false));
 }
@@ -325,9 +371,11 @@ ipcMain.handle('accounts:add', async (_, data) => {
     return { success: false, error: err.message };
   }
 });
-ipcMain.handle('accounts:remove', (_, id) => {
+ipcMain.handle('accounts:remove', async (_, id) => {
   accountStore.removeAccount(id);
   imapManager.stopIdle(id);
+  await imapManager.disconnect(id).catch(() => {});
+  try { emailCache.evictAccount(id); } catch {}
   return { success: true };
 });
 ipcMain.handle('accounts:update', (_, { id, changes }) => {
@@ -377,8 +425,9 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
     if (cached.length > 0 && cacheAge > CACHE_STALE_MS) {
       // Kick off a background refresh — don't await
       mgr(account).fetchEmails(account, folder, lim, off).then(result => {
-        if (result.messages?.length) {
-          emailCache.cacheMessages(accountId, folder, result.messages);
+        if (result.messages) {
+          // Replace (not merge) so messages removed on the server vanish from the cache
+          emailCache.replaceMessages(accountId, folder, result.messages);
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('emails:refreshed', { accountId, folder });
           }
@@ -389,12 +438,24 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
     }
 
     const result = await mgr(account).fetchEmails(account, folder, lim, off);
-    if (result.messages?.length) emailCache.cacheMessages(accountId, folder, result.messages);
+    if (result.messages) {
+      if (off === 0) emailCache.replaceMessages(accountId, folder, result.messages);
+      else emailCache.cacheMessages(accountId, folder, result.messages);
+    }
     return { success: true, ...result };
   } catch (err) {
     // Offline fallback: serve cache even on error
-    const cached = emailCache.getCachedMessages(accountId, folder, limit || 60, offset || 0);
-    if (cached.length > 0) return { success: true, messages: cached, total: cached.length, unseen: 0, fromCache: true, offline: true };
+    try {
+      const cached = emailCache.getCachedMessages(accountId, folder, limit || 60, offset || 0);
+      if (cached.length > 0) {
+        return {
+          success: true, messages: cached,
+          total: emailCache.countCachedMessages(accountId, folder),
+          unseen: cached.filter(m => !m.read).length,
+          fromCache: true, offline: true,
+        };
+      }
+    } catch {}
     return { success: false, error: err.message };
   }
 });
@@ -442,7 +503,7 @@ ipcMain.handle('email:send', async (_, { accountId, scheduledAt, ...emailData })
   if (scheduledAt) {
     const delay = new Date(scheduledAt) - Date.now();
     if (delay > 500) {
-      const id = `sched_${Date.now()}`;
+      const id = `sched_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const timer = setTimeout(async () => {
         scheduledQueue.delete(id);
         let result;
@@ -487,6 +548,7 @@ ipcMain.handle('email:delete', async (_, { accountId, folder, uid }) => {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     await mgr(account).deleteEmail(account, folder, uid);
+    emailCache.removeMessage(accountId, folder, uid);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -497,7 +559,9 @@ ipcMain.handle('email:archive', async (_, { accountId, folder, uid }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
+    if (!mgr(account).archiveEmail) return { success: false, error: 'Archive is not supported for this account' };
     await mgr(account).archiveEmail(account, folder, uid);
+    emailCache.removeMessage(accountId, folder, uid);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -509,14 +573,22 @@ ipcMain.handle('email:bulk', async (_, { accountId, folder, uids, action, dest }
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     const m = mgr(account);
-    await Promise.all(uids.map(uid => {
-      if (action === 'delete') return m.deleteEmail(account, folder, uid);
-      if (action === 'archive') return m.archiveEmail(account, folder, uid);
-      if (action === 'read') return m.setRead(account, folder, uid, true);
-      if (action === 'unread') return m.setRead(account, folder, uid, false);
-      if (action === 'move' && dest) return m.moveEmail(account, folder, uid, dest);
-      return Promise.resolve();
-    }));
+    const ops = {
+      delete:  uid => m.deleteEmail(account, folder, uid),
+      archive: m.archiveEmail && (uid => m.archiveEmail(account, folder, uid)),
+      read:    uid => m.setRead(account, folder, uid, true),
+      unread:  uid => m.setRead(account, folder, uid, false),
+      move:    dest && m.moveEmail && (uid => m.moveEmail(account, folder, uid, dest)),
+    };
+    const op = ops[action];
+    if (!op) return { success: false, error: `Action "${action}" is not supported for this account` };
+    // Sequential: every op locks the same mailbox anyway, and this avoids
+    // hammering the server with dozens of parallel commands.
+    for (const uid of uids) {
+      await op(uid);
+      if (action === 'read' || action === 'unread') emailCache.updateFlags(accountId, folder, uid, { read: action === 'read' });
+      else emailCache.removeMessage(accountId, folder, uid);
+    }
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -527,7 +599,9 @@ ipcMain.handle('email:move', async (_, { accountId, folder, uid, dest }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
-    if (mgr(account).moveEmail) await mgr(account).moveEmail(account, folder, uid, dest);
+    if (!mgr(account).moveEmail) return { success: false, error: 'Moving is not supported for this account' };
+    await mgr(account).moveEmail(account, folder, uid, dest);
+    emailCache.removeMessage(accountId, folder, uid);
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -539,6 +613,7 @@ ipcMain.handle('email:flag', async (_, { accountId, folder, uid, flagged }) => {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     await mgr(account).setFlag(account, folder, uid, flagged);
+    emailCache.updateFlags(accountId, folder, uid, { flagged });
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -550,6 +625,7 @@ ipcMain.handle('email:markread', async (_, { accountId, folder, uid, read }) => 
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     await mgr(account).setRead(account, folder, uid, read);
+    emailCache.updateFlags(accountId, folder, uid, { read });
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
@@ -562,9 +638,9 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
     if (!account) return { success: false, error: 'Account not found' };
     const data = await mgr(account).fetchAttachment(account, folder, uid, filename, blobId, contentType);
     if (!data) return { success: false, error: 'Attachment not found' };
-    const downloadsDir = path.join(os.homedir(), 'Downloads');
-    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const dest = path.join(downloadsDir, safeName);
+    const downloadsDir = app.getPath('downloads') || path.join(os.homedir(), 'Downloads');
+    const dest = uniqueDownloadPath(downloadsDir, sanitizeFilename(filename));
+    await fs.promises.mkdir(downloadsDir, { recursive: true });
     await fs.promises.writeFile(dest, data);
     shell.showItemInFolder(dest);
     return { success: true, path: dest };
@@ -572,6 +648,26 @@ ipcMain.handle('email:attachment', async (_, { accountId, folder, uid, filename,
     return { success: false, error: err.message };
   }
 });
+
+// Strip path separators / control chars but keep unicode (e.g. "Rechnung März.pdf")
+function sanitizeFilename(name) {
+  const cleaned = String(name || 'attachment')
+    .replace(/[/\\?%*:|"<>\x00-\x1f]/g, '_')
+    .replace(/^\.+/, '_')
+    .trim();
+  return cleaned.slice(0, 200) || 'attachment';
+}
+
+// Never overwrite an existing download: "file.pdf" → "file (1).pdf"
+function uniqueDownloadPath(dir, name) {
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  let candidate = path.join(dir, name);
+  for (let i = 1; fs.existsSync(candidate) && i < 1000; i++) {
+    candidate = path.join(dir, `${base} (${i})${ext}`);
+  }
+  return candidate;
+}
 
 // ── BIMI (Brand Indicators for Message Identification) ────────────────────────
 
@@ -608,6 +704,7 @@ ipcMain.handle('folder:create', async (_, { accountId, name }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
+    if (!mgr(account).createFolder) return { success: false, error: 'Folder management is not supported for this account' };
     await mgr(account).createFolder(account, name);
     return { success: true };
   } catch (err) { return { success: false, error: err.message }; }
@@ -618,6 +715,7 @@ ipcMain.handle('folder:rename', async (_, { accountId, path, newName }) => {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     const newPath = path.includes('/') ? path.split('/').slice(0, -1).join('/') + '/' + newName : newName;
+    if (!mgr(account).renameFolder) return { success: false, error: 'Folder management is not supported for this account' };
     await mgr(account).renameFolder(account, path, newPath);
     return { success: true, newPath };
   } catch (err) { return { success: false, error: err.message }; }
@@ -627,6 +725,7 @@ ipcMain.handle('folder:delete', async (_, { accountId, path }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
+    if (!mgr(account).deleteFolder) return { success: false, error: 'Folder management is not supported for this account' };
     await mgr(account).deleteFolder(account, path);
     return { success: true };
   } catch (err) { return { success: false, error: err.message }; }
@@ -723,6 +822,7 @@ ipcMain.on('context-menu:show', (event, _payload) => {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  if (!_gotLock) return;
   buildAppMenu();
   createWindow();
   accountStore.getAccounts().forEach(startIdleForAccount);
@@ -739,12 +839,29 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', async () => {
+// On macOS the app stays alive after the last window closes (and 'activate'
+// re-creates it), so connections and the cache DB must only be torn down
+// when the app actually quits.
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+let _cleanedUp = false;
+app.on('will-quit', (event) => {
+  if (_cleanedUp) return;
+  event.preventDefault();
+  _cleanedUp = true;
   imapManager.stopAllIdle();
-  await Promise.allSettled([
+  for (const { timer } of scheduledQueue.values()) clearTimeout(timer);
+  const done = Promise.allSettled([
     imapManager.disconnectAll(),
     jmapManager.disconnectAll(),
   ]);
-  emailCache.close();
-  if (process.platform !== 'darwin') app.quit();
+  // Don't let a hung IMAP logout block quitting
+  Promise.race([done, new Promise(r => setTimeout(r, 2000))]).finally(() => {
+    try { emailCache.close(); } catch {}
+    // Windows are already gone at this point; a second app.quit() would not
+    // re-run the quit sequence once will-quit has been prevented.
+    app.exit(0);
+  });
 });

@@ -13,6 +13,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{js,json,css,html}\" --ignore-path .prettierignore",
     "test": "node --test test/**/*.test.js",
+    "test:e2e": "playwright test",
+    "test:e2e:linux": "xvfb-run -a playwright test",
     "release:patch": "npm version patch && git push --follow-tags",
     "release:minor": "npm version minor && git push --follow-tags",
     "release:major": "npm version major && git push --follow-tags",
@@ -30,6 +32,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@playwright/test": "^1.63.0",
     "electron-builder": "^24.13.3",
     "eslint": "^8.57.1",
     "prettier": "^3.8.3"

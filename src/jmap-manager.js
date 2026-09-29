@@ -45,6 +45,21 @@ function accountId(session) {
   return session.primaryAccounts['urn:ietf:params:jmap:mail'];
 }
 
+// Folder keys from the renderer are either a role ('inbox') or a raw mailbox id
+function resolveMailboxId(mbs, folderKey) {
+  if (!folderKey) return mbs.inbox;
+  return mbs[folderKey] !== undefined ? mbs[folderKey] : folderKey;
+}
+
+// "Name <a@b.c>, d@e.f" → [{ name, email }]
+function parseAddressList(str) {
+  return String(str || '').split(',').map(s => s.trim()).filter(Boolean).map(s => {
+    const m = s.match(/^(.*)<([^>]+)>\s*$/);
+    if (m) return { name: m[1].trim().replace(/^"|"$/g, '') || undefined, email: m[2].trim() };
+    return { email: s };
+  });
+}
+
 async function getMailboxes(account) {
   if (mailboxes.has(account.id)) return mailboxes.get(account.id);
   const session = await getSession(account);
@@ -88,7 +103,7 @@ async function fetchEmails(account, folderKey, limit = 60, offset = 0) {
   const aid = accountId(session);
   const mbs = await getMailboxes(account);
   // folderKey may be a role name ('inbox') or a direct JMAP mailbox ID
-  const mailboxId = mbs[folderKey] !== undefined ? mbs[folderKey] : (folderKey || mbs.inbox);
+  const mailboxId = resolveMailboxId(mbs, folderKey);
 
   const filter = mailboxId ? { inMailbox: mailboxId } : {};
 
@@ -106,9 +121,11 @@ async function fetchEmails(account, folderKey, limit = 60, offset = 0) {
       '#ids': { resultOf: 'q0', name: 'Email/query', path: '/ids' },
       properties: ['id', 'from', 'to', 'subject', 'receivedAt', 'hasAttachment', 'keywords', 'size'],
     }, 'g0'],
+    ...(mailboxId ? [['Mailbox/get', { accountId: aid, ids: [mailboxId], properties: ['unreadEmails'] }, 'm0']] : []),
   ]);
 
   const queryResult = resp['q0'].result;
+  const unseen = resp['m0']?.result?.list?.[0]?.unreadEmails || 0;
   const emailList = resp['g0'].result.list || [];
   const total = queryResult.total || 0;
 
@@ -122,7 +139,7 @@ async function fetchEmails(account, folderKey, limit = 60, offset = 0) {
       toEmail: (e.to || []).map(a => a.email).join(', '),
       subject: e.subject || '(no subject)',
       date: e.receivedAt ? new Date(e.receivedAt) : new Date(),
-      read: !e.keywords?.['$seen'] === false || !!e.keywords?.['$seen'],
+      read: !!e.keywords?.['$seen'],
       flagged: !!e.keywords?.['$flagged'],
       folder: folderKey,
       accountId: account.id,
@@ -131,14 +148,14 @@ async function fetchEmails(account, folderKey, limit = 60, offset = 0) {
     };
   });
 
-  return { messages, total, unseen: 0 };
+  return { messages, total, unseen };
 }
 
 async function searchEmails(account, folderKey, query) {
   const session = await getSession(account);
   const aid = accountId(session);
   const mbs = await getMailboxes(account);
-  const mailboxId = mbs[folderKey] || mbs.inbox;
+  const mailboxId = resolveMailboxId(mbs, folderKey);
 
   const resp = await jmapRequest(account, session, [
     ['Email/query', {
@@ -190,19 +207,15 @@ async function fetchEmailBody(account, folderKey, uid) {
     ['Email/get', {
       accountId: aid,
       ids: [uid],
-      properties: ['id', 'from', 'to', 'cc', 'subject', 'receivedAt',
+      properties: ['id', 'from', 'to', 'cc', 'subject', 'receivedAt', 'messageId', 'references',
         'htmlBody', 'textBody', 'attachments', 'bodyValues'],
       bodyProperties: ['partId', 'blobId', 'size', 'type', 'name', 'disposition'],
       fetchHTMLBodyValues: true,
       fetchTextBodyValues: true,
       maxBodyValueBytes: 0,
     }, 'g0'],
-    // Mark as read
-    ['Email/set', {
-      accountId: aid,
-      update: { [uid]: { 'keywords/$seen': true } },
-    }, 's0'],
   ]);
+  // Read state is handled by the renderer (respects the "Mark as read" preference)
 
   const email = resp['g0'].result.list?.[0];
   if (!email) return null;
@@ -229,6 +242,8 @@ async function fetchEmailBody(account, folderKey, uid) {
     to: (email.to || []).map(a => ({ name: a.name, address: a.email })),
     cc: (email.cc || []).map(a => ({ name: a.name, address: a.email })),
     date: email.receivedAt ? new Date(email.receivedAt) : null,
+    messageId: email.messageId?.[0] ? `<${email.messageId[0]}>` : null,
+    references: (email.references || []).map(r => `<${r}>`).join(' ') || null,
     attachments: (email.attachments || []).filter(a => a.disposition === 'attachment').map(a => ({
       filename: a.name || 'attachment',
       contentType: a.type || '',
@@ -238,10 +253,18 @@ async function fetchEmailBody(account, folderKey, uid) {
   };
 }
 
-async function sendEmail(account, { to, cc, subject, text, html }) {
+async function sendEmail(account, { to, cc, bcc, subject, text, html, inReplyTo, references }) {
   const session = await getSession(account);
   const aid = accountId(session);
   const mbs = await getMailboxes(account);
+  const toList = parseAddressList(to);
+  const ccList = parseAddressList(cc);
+  const bccList = parseAddressList(bcc);
+  const stripBrackets = v => String(v).replace(/[<>]/g, '');
+  const bodyParts = html
+    ? { bodyValues: { '1': { value: text || '' }, '2': { value: html } },
+        textBody: [{ partId: '1', type: 'text/plain' }], htmlBody: [{ partId: '2', type: 'text/html' }] }
+    : { bodyValues: { '1': { value: text || '' } }, textBody: [{ partId: '1', type: 'text/plain' }] };
 
   // Create email draft then submit
   const createResp = await jmapRequest(account, session, [
@@ -251,15 +274,14 @@ async function sendEmail(account, { to, cc, subject, text, html }) {
         draft: {
           mailboxIds: mbs.sent ? { [mbs.sent]: true } : {},
           from: [{ name: account.name, email: account.email }],
-          to: to.split(',').map(a => ({ email: a.trim() })),
-          cc: cc ? cc.split(',').map(a => ({ email: a.trim() })) : undefined,
+          to: toList,
+          cc: ccList.length ? ccList : undefined,
+          bcc: bccList.length ? bccList : undefined,
           subject,
           keywords: { '$seen': true },
-          bodyValues: {
-            '1': { value: html || text || '' },
-          },
-          htmlBody: [{ partId: '1', type: 'text/html' }],
-          textBody: [{ partId: '1', type: 'text/plain' }],
+          inReplyTo: inReplyTo ? [stripBrackets(inReplyTo)] : undefined,
+          references: references ? references.split(/\s+/).filter(Boolean).map(stripBrackets) : undefined,
+          ...bodyParts,
         },
       },
     }, 'c0'],
@@ -270,7 +292,8 @@ async function sendEmail(account, { to, cc, subject, text, html }) {
           '#emailId': { resultOf: 'c0', name: 'Email/set', path: '/created/draft/id' },
           envelope: {
             mailFrom: { email: account.email },
-            rcptTo: to.split(',').map(a => ({ email: a.trim() })),
+            // Envelope must include Cc and Bcc — otherwise they never receive the mail
+            rcptTo: [...toList, ...ccList, ...bccList].map(a => ({ email: a.email })),
           },
         },
       },
@@ -309,10 +332,9 @@ async function deleteEmail(account, folderKey, uid) {
   const aid = accountId(session);
   const mbs = await getMailboxes(account);
 
-  if (mbs.trash && folderKey !== 'trash') {
+  const currentMbId = resolveMailboxId(mbs, folderKey);
+  if (mbs.trash && currentMbId !== mbs.trash) {
     // Move to trash
-    const mbs2 = await getMailboxes(account);
-    const currentMbId = mbs2[folderKey] || mbs2.inbox;
     await jmapRequest(account, session, [
       ['Email/set', {
         accountId: aid,
@@ -330,6 +352,52 @@ async function deleteEmail(account, folderKey, uid) {
       ['Email/set', { accountId: aid, destroy: [uid] }, 's0'],
     ]);
   }
+}
+
+async function moveEmail(account, folderKey, uid, destKey) {
+  const session = await getSession(account);
+  const aid = accountId(session);
+  const mbs = await getMailboxes(account);
+  const from = resolveMailboxId(mbs, folderKey);
+  const to = resolveMailboxId(mbs, destKey);
+  if (!to) throw new Error('Destination folder not found');
+  if (from === to) return;
+  const resp = await jmapRequest(account, session, [
+    ['Email/set', {
+      accountId: aid,
+      update: { [uid]: { [`mailboxIds/${to}`]: true, ...(from ? { [`mailboxIds/${from}`]: null } : {}) } },
+    }, 's0'],
+  ]);
+  const err = resp['s0']?.result?.notUpdated?.[uid];
+  if (err) throw new Error(err.description || err.type || 'Move failed');
+}
+
+async function archiveEmail(account, folderKey, uid) {
+  const mbs = await getMailboxes(account);
+  if (!mbs.archive) throw new Error('No archive folder found on this server');
+  return moveEmail(account, folderKey, uid, mbs.archive);
+}
+
+async function mailboxSet(account, args) {
+  const session = await getSession(account);
+  const aid = accountId(session);
+  const resp = await jmapRequest(account, session, [['Mailbox/set', { accountId: aid, ...args }, 'b0']]);
+  const r = resp['b0']?.result || {};
+  const err = Object.values(r.notCreated || r.notUpdated || r.notDestroyed || {})[0];
+  if (err) throw new Error(err.description || err.type || 'Folder operation failed');
+  mailboxes.delete(account.id); // role map may have changed
+}
+
+async function createFolder(account, name) {
+  await mailboxSet(account, { create: { f: { name, parentId: null } } });
+}
+
+async function renameFolder(account, id, newPath) {
+  await mailboxSet(account, { update: { [id]: { name: String(newPath).split('/').pop() } } });
+}
+
+async function deleteFolder(account, id) {
+  await mailboxSet(account, { destroy: [id], onDestroyRemoveEmails: false });
 }
 
 async function listFolders(account) {
@@ -399,5 +467,6 @@ async function fetchAttachment(account, folderKey, uid, filename, blobId, conten
 
 module.exports = {
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
-  sendEmail, setFlag, setRead, deleteEmail, listFolders, disconnectAll,
+  sendEmail, setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders,
+  createFolder, renameFolder, deleteFolder, disconnectAll,
 };

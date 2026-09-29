@@ -36,19 +36,27 @@ const S = {
   pendingAttachments: [],    // { name, type, path, size } — cleared on open/close compose
   scheduledSends: [],        // { id, subject, scheduledAt, accountId }
   updateStatus: null,        // { state, version?, percent?, message? }
+  unseen: 0,                 // unread count of the active folder (server-reported)
 };
 
 // ── Push notifications from IDLE ──────────────────────────────────────────────
 _on('new-emails', (accountId) => {
+  if (S.isSearching) return; // don't replace search results under the user
   if (accountId === S.activeAccountId || S.activeAccountId === null) {
-    loadEmails();
+    loadEmails(false, { silent: true });
   }
 });
 
 // ── Background cache refresh completed ────────────────────────────────────────
-_on('emails:refreshed', ({ accountId, folder }) => {
-  if (folder === S.activeFolder && (accountId === S.activeAccountId || S.activeAccountId === null)) {
-    loadEmails();
+_on('emails:refreshed', async ({ accountId, folder }) => {
+  if (S.isSearching) return;
+  if (S.activeAccountId === null) {
+    if (folder === 'INBOX') loadEmails(false, { silent: true });
+    return;
+  }
+  // `folder` is the server path; S.activeFolder is a key — compare resolved paths
+  if (accountId === S.activeAccountId && folder === await getFolderPath(S.activeFolder)) {
+    loadEmails(false, { silent: true });
   }
 });
 
@@ -107,16 +115,25 @@ function renderScheduledOutbox() {
 // ── Mailto protocol handler ───────────────────────────────────────────────────
 _on('mailto', (url) => {
   try {
-    const u = new URL(url);
-    const to = u.pathname || '';
-    const params = u.searchParams;
-    openCompose({
-      to: to + (params.get('to') ? (to ? ',' : '') + params.get('to') : ''),
-      subject: params.get('subject') || '',
-      body: params.get('body') || '',
-    });
+    openCompose(parseMailto(url));
   } catch { openCompose(); }
 });
+
+// mailto:a@b.c,d@e.f?cc=x@y.z&subject=Hi&body=Line%201 → compose fields (RFC 6068)
+function parseMailto(url) {
+  const u = new URL(url);
+  const params = u.searchParams;
+  const join = (...parts) => parts.filter(Boolean).join(', ');
+  let path = '';
+  try { path = decodeURIComponent(u.pathname || ''); } catch { path = u.pathname || ''; }
+  return {
+    to: join(path, params.get('to')),
+    cc: join(params.get('cc')),
+    bcc: join(params.get('bcc')),
+    subject: params.get('subject') || '',
+    bodyText: params.get('body') || '',
+  };
+}
 
 // ── Update status (feeds into Settings → General) ─────────────────────────────
 _on('update:status', (status = {}) => {
@@ -144,16 +161,21 @@ _on('update-ready', ({ version } = {}) => {
 });
 
 // ── Context menu actions ──────────────────────────────────────────────────────
-_on('context-menu:action', (action) => {
-  const b = S.bodyCache.get(bodyCacheKey(S.selectedEmail));
-  if (action === 'reply' && S.selectedEmail) openReply(S.selectedEmail, b);
-  else if (action === 'reply-all' && S.selectedEmail) openReplyAll(S.selectedEmail, b);
-  else if (action === 'forward' && S.selectedEmail) openForward(S.selectedEmail, b);
-  else if (action === 'archive' && S.selectedEmail) doArchive(S.selectedEmail);
-  else if (action === 'delete' && S.selectedEmail) doDelete(S.selectedEmail);
-  else if (action === 'mark-read' && S.selectedEmail) setReadState(S.selectedEmail, true);
-  else if (action === 'mark-unread' && S.selectedEmail) setReadState(S.selectedEmail, false);
-  else if (action === 'toggle-star' && S.selectedEmail) toggleFlag(S.selectedEmail);
+_on('context-menu:action', async (action) => {
+  // Act on the email that was right-clicked, not whichever one happens to be open
+  const email = _contextEmail || S.selectedEmail;
+  _contextEmail = null;
+  if (!email) return;
+  const needsBody = action === 'reply' || action === 'reply-all' || action === 'forward';
+  const b = needsBody ? await getEmailBody(email) : null;
+  if (action === 'reply') openReply(email, b);
+  else if (action === 'reply-all') openReplyAll(email, b);
+  else if (action === 'forward') openForward(email, b);
+  else if (action === 'archive') doArchive(email);
+  else if (action === 'delete') doDelete(email);
+  else if (action === 'mark-read') setReadState(email, true);
+  else if (action === 'mark-unread') setReadState(email, false);
+  else if (action === 'toggle-star') toggleFlag(email);
 });
 
 // ── Folder context menu actions ───────────────────────────────────────────────
@@ -209,15 +231,41 @@ _on('context-menu:account-action', async ({ action, accountId }) => {
   } else if (action === 'remove') {
     const acc = S.accounts.find(a => a.id === accountId);
     if (!acc || !confirm(`Remove ${acc.email}?`)) return;
-    await ipc('accounts:remove', accountId);
-    S.accounts = S.accounts.filter(a => a.id !== accountId);
-    folderMaps.delete(accountId);
-    accountFolders.delete(accountId);
-    if (S.activeAccountId === accountId) S.activeAccountId = S.accounts[0]?.id || null;
-    renderAccountTabs();
-    loadEmails();
+    await removeAccount(accountId);
   }
 });
+
+async function removeAccount(accountId) {
+  await ipc('accounts:remove', accountId);
+  S.accounts = S.accounts.filter(a => a.id !== accountId);
+  folderMaps.delete(accountId);
+  accountFolders.delete(accountId);
+  _inboxUnread.delete(accountId);
+  updateDockBadge();
+  S.selectedUids.clear();
+  renderBulkBar();
+  for (const key of [...S.bodyCache.keys()]) if (key.startsWith(accountId + ':')) S.bodyCache.delete(key);
+
+  if (S.accounts.length === 0) {
+    S.activeAccountId = null;
+    S.emails = [];
+    S.selectedUid = null; S.selectedEmail = null;
+    _renderedFolderAccount = null;
+    renderAccountTabs();
+    renderFolderNav();
+    renderDetail(null);
+    renderEmailList();
+    setUnreadBadge(0);
+    showSetupModal(false);
+  } else if (S.activeAccountId === accountId) {
+    await switchAccount(S.accounts[0].id);
+  } else {
+    // Still on another account / All Mail — drop the removed account's messages
+    renderAccountTabs();
+    if (S.selectedEmail?.accountId === accountId) { S.selectedUid = null; S.selectedEmail = null; renderDetail(null); }
+    if (S.activeAccountId === null) loadEmails();
+  }
+}
 
 function showFolderNameModal(title, initialValue, confirmLabel) {
   return new Promise(resolve => {
@@ -225,21 +273,28 @@ function showFolderNameModal(title, initialValue, confirmLabel) {
     overlay.className = 'modal-overlay folder-name-overlay';
     overlay.innerHTML = `
       <div class="modal folder-name-modal">
-        <div class="folder-name-modal-title">${title}</div>
-        <input class="folder-name-input" type="text" value="${initialValue.replace(/"/g, '&quot;')}" placeholder="Folder name" spellcheck="false" />
+        <div class="folder-name-modal-title">${escHtml(title)}</div>
+        <input class="folder-name-input" type="text" value="${escHtml(initialValue)}" placeholder="Folder name" spellcheck="false" />
         <div class="folder-name-modal-footer">
           <button class="btn-ghost folder-name-cancel">Cancel</button>
-          <button class="btn-primary folder-name-confirm">${confirmLabel}</button>
+          <button class="btn-primary folder-name-confirm">${escHtml(confirmLabel)}</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
     const input = overlay.querySelector('.folder-name-input');
     input.focus();
     input.select();
-    const done = (val) => { document.body.removeChild(overlay); resolve(val); };
+    let settled = false;
+    const done = (val) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(val);
+    };
     overlay.querySelector('.folder-name-cancel').addEventListener('click', () => done(null));
     overlay.querySelector('.folder-name-confirm').addEventListener('click', () => done(input.value.trim() || null));
     input.addEventListener('keydown', e => {
+      e.stopPropagation(); // keep global shortcuts (Escape closes compose, etc.) out of this dialog
       if (e.key === 'Enter') done(input.value.trim() || null);
       if (e.key === 'Escape') done(null);
     });
@@ -253,7 +308,7 @@ function showFolderDeleteConfirm(folderName) {
     overlay.className = 'modal-overlay folder-name-overlay';
     overlay.innerHTML = `
       <div class="modal folder-name-modal">
-        <div class="folder-name-modal-title">Delete "${folderName}"?</div>
+        <div class="folder-name-modal-title">Delete "${escHtml(folderName)}"?</div>
         <div class="folder-delete-msg">This folder and all emails inside it will be permanently deleted. This cannot be undone.</div>
         <div class="folder-name-modal-footer">
           <button class="btn-ghost folder-name-cancel">Cancel</button>
@@ -261,11 +316,19 @@ function showFolderDeleteConfirm(folderName) {
         </div>
       </div>`;
     document.body.appendChild(overlay);
-    const done = (val) => { document.body.removeChild(overlay); resolve(val); };
+    // The overlay itself never has focus, so listen on the document for Escape
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } };
+    const done = (val) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(val);
+    };
+    document.addEventListener('keydown', onKey, true);
     overlay.querySelector('.folder-name-cancel').addEventListener('click', () => done(false));
-    overlay.querySelector('.folder-name-confirm').addEventListener('click', () => done(true));
+    const confirmBtn = overlay.querySelector('.folder-name-confirm');
+    confirmBtn.addEventListener('click', () => done(true));
+    confirmBtn.focus();
     overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
-    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
   });
 }
 
@@ -752,10 +815,14 @@ function makeFolderBtn(folder) {
     if (!draggedEmail) return;
     const email = draggedEmail;
     draggedEmail = null;
-    if (folder.key === (email.folderKey || email.folder)) return;
+    if (email.accountId !== S.activeAccountId) { toast('Emails can only be moved within the same account', true); return; }
     const srcFolder = await getFolderPath(email.folderKey || email.folder, email.accountId);
+    if (folder.path === srcFolder || folder.key === (email.folderKey || email.folder)) return;
     const res = await ipc('email:move', { accountId: email.accountId, folder: srcFolder, uid: email.uid, dest: folder.path });
     if (res.success) {
+      if (!email.read) adjustUnread(email, -1);
+      S.selectedUids.delete(selKey(email));
+      renderBulkBar();
       S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
       S.bodyCache.delete(bodyCacheKey(email));
       if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
@@ -908,7 +975,7 @@ function showAddAppModal() {
   document.getElementById('appUrl').value = '';
   document.getElementById('addAppError').classList.add('hidden');
   document.getElementById('addAppModal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('appName').focus(), 50);
+  focusSoon('addAppModal', 'appName');
 }
 
 document.getElementById('addAppCancelBtn').addEventListener('click', () => {
@@ -921,6 +988,11 @@ document.getElementById('addAppSaveBtn').addEventListener('click', async () => {
   if (!name) { document.getElementById('addAppError').textContent = 'Enter an app name'; document.getElementById('addAppError').classList.remove('hidden'); return; }
   if (!url) { document.getElementById('addAppError').textContent = 'Enter a URL'; document.getElementById('addAppError').classList.remove('hidden'); return; }
   if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+  try { new URL(url); } catch {
+    document.getElementById('addAppError').textContent = 'Enter a valid URL';
+    document.getElementById('addAppError').classList.remove('hidden');
+    return;
+  }
   const res = await ipc('apps:add', { name, url });
   if (res.success) {
     S.apps.push(res.app);
@@ -931,16 +1003,24 @@ document.getElementById('addAppSaveBtn').addEventListener('click', async () => {
 });
 
 // ── Load emails ───────────────────────────────────────────────────────────────
-async function loadEmails(append = false) {
-  if (!append) {
+let _loadSeq = 0; // increments per non-append load; lets stale responses be discarded
+
+// silent: background refresh — keep the current list on screen (no spinner,
+// no flicker, scroll position preserved) and swap in the new data when it lands.
+async function loadEmails(append = false, { silent = false } = {}) {
+  if (append && (S.loading || S.isSearching)) return;
+  const seq = append ? _loadSeq : ++_loadSeq;
+  clearTimeout(refreshTimer);
+  if (!append && !silent) {
     S.loading = true;
     S.emails = [];
     showLoading(true);
     renderEmailList();
   }
+  if (append) setLoadMoreBusy(true);
 
   if (S.activeAccountId === null) {
-    await loadUnified();
+    await loadUnified(seq);
     return;
   }
 
@@ -948,18 +1028,36 @@ async function loadEmails(append = false) {
   const snapshotFolder = S.activeFolder;
   const folder = await getFolderPath(S.activeFolder);
   const offset = append ? S.emails.length : 0;
-  const res = await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+  let res;
+  try {
+    res = await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+  } catch (err) {
+    res = { success: false, error: err.message };
+  }
 
-  // Discard stale results if the user switched accounts or folders while fetching
-  if (S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
+  // Discard stale results if the user switched accounts/folders (or a newer load started) while fetching
+  if (seq !== _loadSeq || S.activeAccountId !== snapshotAccountId || S.activeFolder !== snapshotFolder) return;
+  if (S.isSearching && !append) return;
 
   showLoading(false);
   S.loading = false;
+  if (append) setLoadMoreBusy(false);
 
-  if (!res.success) { toast('Failed: ' + res.error, true); showEmpty(true, 'Error loading emails'); return; }
+  if (!res.success) {
+    if (!silent) { toast('Failed: ' + res.error, true); showEmpty(true, 'Error loading emails'); }
+    scheduleRefresh();
+    return;
+  }
 
-  if (append) S.emails.push(...res.messages);
-  else { S.emails = res.messages; S.totalOnServer = res.total || 0; }
+  if (append) {
+    // Skip duplicates (new mail arriving shifts the sequence window)
+    const seen = new Set(S.emails.map(selKey));
+    S.emails.push(...res.messages.filter(m => !seen.has(selKey(m))));
+  } else {
+    S.emails = res.messages;
+    S.totalOnServer = res.total || 0;
+  }
+  resyncSelection();
 
   setUnreadBadge(res.unseen || 0);
   collectContacts(res.messages);
@@ -968,19 +1066,55 @@ async function loadEmails(append = false) {
   scheduleRefresh();
 }
 
-async function loadUnified() {
-  const promises = S.accounts.map(acc =>
+// After the list is replaced, point S.selectedEmail at the fresh object so
+// flag/read toggles on the open message act on what's rendered.
+function resyncSelection() {
+  if (S.selectedEmail) {
+    const fresh = S.emails.find(e => e.uid === S.selectedEmail.uid && e.accountId === S.selectedEmail.accountId);
+    if (fresh) S.selectedEmail = fresh;
+  }
+  // Drop multi-select entries for messages that are gone
+  const present = new Set(S.emails.map(selKey));
+  let changed = false;
+  for (const k of [...S.selectedUids]) if (!present.has(k)) { S.selectedUids.delete(k); changed = true; }
+  if (changed) renderBulkBar();
+}
+
+function setLoadMoreBusy(busy) {
+  const btn = document.getElementById('loadMoreBtn');
+  if (!btn) return;
+  btn.disabled = busy;
+  if (busy) btn.textContent = 'Loading…';
+}
+
+async function loadUnified(seq) {
+  const results = await Promise.all(S.accounts.map(acc =>
     ipc('emails:fetch', { accountId: acc.id, folder: 'INBOX', limit: 30, offset: 0 })
-      .then(r => { if (r.success) { collectContacts(r.messages); return r.messages; } return []; })
-      .catch(() => [])
-  );
-  const results = await Promise.all(promises);
-  const merged = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
+      .then(r => (r.success ? r : null))
+      .catch(() => null)
+  ));
+  // User switched to an account (or a newer load started) while we were fetching
+  if (seq !== _loadSeq || S.activeAccountId !== null || S.isSearching) return;
+
+  const merged = [];
+  let unread = 0;
+  results.forEach((r, i) => {
+    if (!r) return;
+    collectContacts(r.messages);
+    merged.push(...r.messages);
+    const accUnread = r.unseen ?? r.messages.filter(m => !m.read).length;
+    unread += accUnread;
+    _inboxUnread.set(S.accounts[i].id, accUnread);
+  });
+  merged.sort((a, b) => new Date(b.date) - new Date(a.date));
   showLoading(false);
   S.loading = false;
   S.emails = merged;
   S.totalOnServer = merged.length;
+  resyncSelection();
   document.getElementById('loadMoreWrap').classList.add('hidden');
+  document.getElementById('unreadTotal').textContent = unread > 0 ? `${unread} unread` : '';
+  updateDockBadge();
   renderEmailList();
   scheduleRefresh();
 }
@@ -988,7 +1122,7 @@ async function loadUnified() {
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
   const ms = parseInt(getSetting('refresh-interval', '120000'));
-  if (ms > 0 && !S.isSearching) refreshTimer = setTimeout(() => loadEmails(), ms);
+  if (ms > 0 && !S.isSearching) refreshTimer = setTimeout(() => loadEmails(false, { silent: true }), ms);
 }
 
 function showLoading(on) {
@@ -1011,6 +1145,7 @@ function showEmpty(on, text = 'No emails') {
 }
 
 function setUnreadBadge(count) {
+  S.unseen = count;
   const folders = accountFolders.get(S.activeAccountId);
   const activeRole = folders?.find(f => f.key === S.activeFolder)?.role || S.activeFolder;
   const badge = document.getElementById(`badge-${activeRole}`);
@@ -1031,10 +1166,12 @@ function setUnreadBadge(count) {
 
 function updateLoadMore() {
   const wrap = document.getElementById('loadMoreWrap');
-  if (S.emails.length < S.totalOnServer && S.activeAccountId !== null) {
+  if (S.emails.length < S.totalOnServer && S.activeAccountId !== null && !S.isSearching) {
     wrap.classList.remove('hidden');
     const rem = S.totalOnServer - S.emails.length;
-    document.getElementById('loadMoreBtn').textContent = `Load ${Math.min(rem, 60)} more`;
+    const btn = document.getElementById('loadMoreBtn');
+    btn.disabled = false;
+    btn.textContent = `Load ${Math.min(rem, 60)} more`;
   } else {
     wrap.classList.add('hidden');
   }
@@ -1070,6 +1207,10 @@ document.getElementById('searchClear').addEventListener('click', () => {
 
 async function runSearch(query) {
   S.isSearching = true;
+  clearTimeout(refreshTimer);
+  ++_loadSeq; // invalidate any in-flight list load
+  S.emails = [];
+  renderEmailList(true);
   showLoading(true);
   const snapshotAccountId = S.activeAccountId;
   const snapshotFolder = S.activeFolder;
@@ -1093,8 +1234,10 @@ async function runSearch(query) {
     messages = results.flat().sort((a, b) => new Date(b.date) - new Date(a.date));
   }
 
-  showLoading(false);
+  // Search was cleared / changed while the request was in flight
+  if (!S.isSearching || document.getElementById('searchInput').value.trim() !== query) return;
   S.emails = messages;
+  resyncSelection();
   document.getElementById('loadMoreWrap').classList.add('hidden');
   document.getElementById('unreadTotal').textContent = `${messages.length} result${messages.length !== 1 ? 's' : ''}`;
   renderEmailList(true);
@@ -1331,26 +1474,65 @@ async function toggleFlag(email) {
     toast('Could not update flag', true);
     return;
   }
-  if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
-    renderDetail(email, S.bodyCache.get(bodyCacheKey(email)));
-  }
+  refreshDetailIfSelected(email);
 }
 
 async function setReadState(email, read) {
   const prev = email.read;
+  if (prev === read) return;
   email.read = read;
+  adjustUnread(email, read ? -1 : 1);
   renderEmailList();
+  refreshDetailIfSelected(email);
   const res = await ipc('email:markread', { accountId: email.accountId, folder: email.folder, uid: email.uid, read });
   if (!res?.success) {
     email.read = prev; // revert optimistic update
+    adjustUnread(email, read ? 1 : -1);
     renderEmailList();
+    refreshDetailIfSelected(email);
     toast('Could not update read state', true);
   }
 }
 
+// Keep folder badge / "N unread" / dock badge in step with local read changes
+function adjustUnread(email, delta) {
+  if (S.isSearching) return;
+  if (S.activeAccountId === null) {
+    const n = Math.max(0, (_inboxUnread.get(email.accountId) || 0) + delta);
+    _inboxUnread.set(email.accountId, n);
+    const total = [..._inboxUnread.values()].reduce((a, b) => a + b, 0);
+    document.getElementById('unreadTotal').textContent = total > 0 ? `${total} unread` : '';
+    updateDockBadge();
+  } else if (email.accountId === S.activeAccountId) {
+    setUnreadBadge(Math.max(0, (S.unseen || 0) + delta));
+  }
+}
+
+// Re-render the open message's toolbar (Mark Read/Unread label, flag state)
+function refreshDetailIfSelected(email) {
+  if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
+    const body = S.bodyCache.get(bodyCacheKey(email));
+    if (body) renderDetail(email, body);
+  }
+}
+
 // ── Context menu ──────────────────────────────────────────────────────────────
+let _contextEmail = null; // email that was right-clicked; consumed by 'context-menu:action'
+
 function showContextMenu(e, email) {
+  _contextEmail = email;
   _send('context-menu:show', { hasSelection: !!email });
+}
+
+// Cached body for an email, fetching it if needed (reply/forward from the context menu)
+async function getEmailBody(email) {
+  const key = bodyCacheKey(email);
+  if (S.bodyCache.has(key)) return S.bodyCache.get(key);
+  try {
+    const res = await ipc('email:body', { accountId: email.accountId, folder: email.folder, uid: email.uid });
+    if (res.success && res.body) { S.bodyCache.set(key, res.body); return res.body; }
+  } catch {}
+  return null;
 }
 
 // ── Select email ──────────────────────────────────────────────────────────────
@@ -1384,8 +1566,19 @@ async function selectEmail(email) {
 
   renderDetailShell(email);
 
-  const res = await ipc('email:body', { accountId: email.accountId, folder: email.folder, uid: email.uid });
-  if (!res.success) { toast('Load failed: ' + res.error, true); return; }
+  let res;
+  try {
+    res = await ipc('email:body', { accountId: email.accountId, folder: email.folder, uid: email.uid });
+  } catch (err) {
+    res = { success: false, error: err.message };
+  }
+  // User moved on to another message while this one was loading
+  if (S.selectedEmail?.uid !== email.uid || S.selectedEmail?.accountId !== email.accountId) return;
+  if (!res.success || !res.body) {
+    toast('Load failed: ' + (res.error || 'Message not found'), true);
+    renderDetail(email, { text: '(This message could not be loaded)' });
+    return;
+  }
 
   if (res.body?.from) {
     const addr = res.body.from.address || res.body.from.email;
@@ -1397,6 +1590,12 @@ async function selectEmail(email) {
   S.bodyCache.set(cacheKey, res.body);
   renderDetail(email, res.body);
   scheduleMarkRead(email);
+}
+
+// Scroll the selected list row into view (keyboard navigation)
+function scrollSelectedIntoView() {
+  document.querySelector('#emailList .email-item.selected, #emailList .thread-member.selected')
+    ?.scrollIntoView({ block: 'nearest' });
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────────
@@ -1411,91 +1610,93 @@ function advanceSelectionAfterRemove(email) {
   }
 }
 
-async function doDelete(email) {
-  const res = await ipc('email:delete', { accountId: email.accountId, folder: email.folder, uid: email.uid });
-  if (res.success) {
-    advanceSelectionAfterRemove(email);
-    S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
-    S.bodyCache.delete(bodyCacheKey(email));
-    renderEmailList();
-    toast('Deleted');
-  } else toast('Delete failed: ' + res.error, true);
+const _removing = new Set(); // selKeys with a delete/archive in flight (prevents double-fire)
+
+async function removeEmail(email, channel, doneMsg, failMsg) {
+  const key = selKey(email);
+  if (_removing.has(key)) return;
+  _removing.add(key);
+  try {
+    const res = await ipc(channel, { accountId: email.accountId, folder: email.folder, uid: email.uid });
+    if (res.success) {
+      advanceSelectionAfterRemove(email);
+      if (!email.read) adjustUnread(email, -1);
+      S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+      S.totalOnServer = Math.max(0, S.totalOnServer - 1);
+      S.selectedUids.delete(key);
+      renderBulkBar();
+      S.bodyCache.delete(bodyCacheKey(email));
+      renderEmailList();
+      updateLoadMore();
+      toast(doneMsg);
+    } else toast(failMsg + ': ' + res.error, true);
+  } finally {
+    _removing.delete(key);
+  }
 }
 
-async function doArchive(email) {
-  const res = await ipc('email:archive', { accountId: email.accountId, folder: email.folder, uid: email.uid });
-  if (res.success) {
-    advanceSelectionAfterRemove(email);
-    S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
-    S.bodyCache.delete(bodyCacheKey(email));
-    renderEmailList();
-    toast('Archived');
-  } else toast('Archive failed: ' + res.error, true);
-}
+function doDelete(email) { return removeEmail(email, 'email:delete', 'Deleted', 'Delete failed'); }
+function doArchive(email) { return removeEmail(email, 'email:archive', 'Archived', 'Archive failed'); }
 
 // ── Undo send queue ───────────────────────────────────────────────────────────
 let _undoSendTimer = null;
+let _undoCountdown = null;
 let _undoSendFlush = null; // fires the pending send immediately if another send starts
 
-function sendWithUndo(accountId, emailData, onSent, delay) {
-  const DELAY = delay !== undefined ? delay : parseInt(getSetting('undo-delay', '8000'));
+// onFail(draft) lets the caller restore the compose window when sending fails or is undone
+function sendWithUndo(accountId, emailData, onSent, delay, onRestore) {
+  const DELAY = delay !== undefined && !isNaN(delay) ? delay : parseInt(getSetting('undo-delay', '8000'));
+
+  const dispatch = () => ipc('email:send', { accountId, ...emailData }).then(res => {
+    if (res.success) { toast('Sent'); onSent?.(); }
+    else { toast('Send failed: ' + (res.error || 'Unknown error'), true); onRestore?.(); }
+  }).catch(err => { toast('Send failed: ' + err.message, true); onRestore?.(); });
 
   // If a countdown is already running, fire that email immediately before starting the new one
   if (_undoSendFlush) {
-    clearTimeout(_undoSendTimer);
-    _undoSendTimer = null;
-    _undoSendFlush();
+    const flush = _undoSendFlush;
     _undoSendFlush = null;
+    clearTimeout(_undoSendTimer);
+    clearInterval(_undoCountdown);
+    flush();
   }
 
-  if (DELAY === 0) {
-    ipc('email:send', { accountId, ...emailData }).then(res => {
-      if (res.success) { toast('Sent'); onSent?.(); }
-      else toast('Send failed: ' + (res.error || 'Unknown error'), true);
-    });
-    return;
-  }
-
-  let cancelled = false;
-  _undoSendFlush = () => {
-    if (cancelled) return;
-    ipc('email:send', { accountId, ...emailData }).then(res => {
-      if (res.success) { toast('Sent'); onSent?.(); }
-      else toast('Send failed: ' + (res.error || 'Unknown error'), true);
-    });
-  };
+  if (!DELAY) { dispatch(); return; }
 
   let remaining = Math.ceil(DELAY / 1000);
   const toastEl = document.getElementById('toast');
+  const finish = () => {
+    clearTimeout(_undoSendTimer);
+    clearInterval(_undoCountdown);
+    _undoSendTimer = null;
+    _undoCountdown = null;
+    _undoSendFlush = null;
+  };
   const renderUndo = () => {
-    toastEl.innerHTML = `Sending in ${remaining}s… <button class="undo-send-btn" id="undoSendBtn">Undo</button>`;
+    clearTimeout(toastTimer); // a regular toast must not hide the countdown
+    // Only update the counter text when possible — re-creating the button every
+    // second would swallow clicks that straddle a re-render.
+    const counter = document.getElementById('undoSendCount');
+    if (counter && toastEl.classList.contains('undo')) { counter.textContent = remaining; return; }
+    toastEl.innerHTML = `Sending in <span id="undoSendCount">${remaining}</span>s… <button class="undo-send-btn" id="undoSendBtn">Undo</button>`;
     toastEl.className = 'toast show undo';
-    document.getElementById('undoSendBtn')?.addEventListener('click', () => {
-      cancelled = true;
-      _undoSendFlush = null;
-      clearTimeout(_undoSendTimer);
-      clearInterval(_undoCountdown);
-      toastEl.className = 'toast';
-      toast('Send cancelled');
+    document.getElementById('undoSendBtn').addEventListener('click', () => {
+      finish();
+      toast('Send cancelled — draft restored');
+      onRestore?.();
     });
   };
   renderUndo();
 
-  const _undoCountdown = setInterval(() => {
+  _undoSendFlush = () => { finish(); dispatch(); };
+  _undoCountdown = setInterval(() => {
     remaining--;
-    if (remaining > 0 && !cancelled) renderUndo();
-    else clearInterval(_undoCountdown);
+    if (remaining > 0) renderUndo();
   }, 1000);
-
-  _undoSendTimer = setTimeout(async () => {
-    clearInterval(_undoCountdown);
-    _undoSendFlush = null;
-    _undoSendTimer = null;
-    if (cancelled) return;
+  _undoSendTimer = setTimeout(() => {
+    finish();
     toastEl.className = 'toast';
-    const res = await ipc('email:send', { accountId, ...emailData });
-    if (res.success) { toast('Sent'); onSent?.(); }
-    else toast('Send failed: ' + (res.error || 'Unknown error'), true);
+    dispatch();
   }, DELAY);
 }
 
@@ -1779,6 +1980,8 @@ function renderDetail(email, body) {
         try {
           iframe.contentDocument.querySelectorAll('img[data-src]').forEach(img => {
             img.src = img.dataset.src;
+            // Drop the marker too — the blocking stylesheet hides every img[data-src]
+            img.removeAttribute('data-src');
             img.style.display = '';
           });
           // Re-measure after images start loading
@@ -1792,6 +1995,10 @@ function renderDetail(email, body) {
       bodyWrap.appendChild(loadBar);
     }
     iframe.className = 'email-iframe';
+    // No allow-scripts: email HTML must never run code (the iframe shares the
+    // app's origin, so a script could otherwise reach window.parent.electronAPI).
+    // allow-same-origin lets us measure the height and intercept link clicks.
+    iframe.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox');
     const imgBlockCss = S.imagesBlocked ? 'img[data-src]{display:none!important;}' : '';
     const isDark = document.documentElement.classList.contains('dark');
     const iframeColors = isDark
@@ -1834,13 +2041,18 @@ function renderDetail(email, body) {
       iframe.classList.add('loaded');
       // ResizeObserver catches late-loading images and dynamic content reflows
       try {
-        const ro = new iframe.contentWindow.ResizeObserver(fitHeight);
+        const ro = new ResizeObserver(fitHeight);
         ro.observe(iframe.contentDocument.body);
       } catch { setTimeout(fitHeight, 800); }
       try {
         iframe.contentDocument.addEventListener('click', ev => {
-          const link = ev.target.closest('a');
-          if (link?.href) { ev.preventDefault(); ipc('shell:open', link.href); }
+          const link = ev.target.closest?.('a');
+          if (!link) return;
+          ev.preventDefault();
+          const href = link.getAttribute('href') || '';
+          if (href.startsWith('#')) return;
+          if (/^mailto:/i.test(href)) { try { openCompose(parseMailto(href)); } catch {} return; }
+          if (link.href) ipc('shell:open', link.href);
         });
       } catch {}
     });
@@ -1951,27 +2163,42 @@ function renderAttachmentChips() {
   });
 }
 
-function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message' } = {}) {
-  S.pendingAttachments = [];
+// Threading headers for the reply currently being composed
+let _composeThread = { inReplyTo: null, references: null };
+
+function openCompose({
+  to = '', cc = '', bcc = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message',
+  accountId = null, inReplyTo = null, references = null, rawBodyHtml = null, attachments = null,
+} = {}) {
+  if (!S.accounts.length) { toast('Add an account before composing', true); return; }
+  // Reset plain-text mode left over from a previous draft
+  if (_composePlainText) document.getElementById('tbPlainToggle').click();
+  S.pendingAttachments = attachments ? [...attachments] : [];
   renderAttachmentChips();
   setScheduledAt(null);
+  _composeThread = { inReplyTo, references };
 
   const fromSel = document.getElementById('composeFrom');
   fromSel.innerHTML = S.accounts.map(a =>
-    `<option value="${a.id}">${escHtml(a.name || a.email)} &lt;${escHtml(a.email)}&gt;</option>`
+    `<option value="${escHtml(a.id)}">${escHtml(a.name || a.email)} &lt;${escHtml(a.email)}&gt;</option>`
   ).join('');
-  const activeAcc = S.activeAccountId || S.accounts[0]?.id;
+  const activeAcc = (accountId && S.accounts.some(a => a.id === accountId) ? accountId : null)
+    || S.activeAccountId || S.accounts[0]?.id;
   if (activeAcc) fromSel.value = activeAcc;
 
   document.getElementById('composeTo').value = to;
-  document.getElementById('composeCc').value = '';
+  document.getElementById('composeCc').value = cc;
   document.getElementById('composeSubject').value = subject;
 
   const bodyEl = document.getElementById('composeBody');
   const sig = getAccountSignature(activeAcc);
   const sigHtml = sig ? `<p><br></p><div class="compose-signature">${sanitizeHtml(sig)}</div>` : '';
-  if (bodyHtml) {
-    bodyEl.innerHTML = bodyHtml + sigHtml;
+  if (rawBodyHtml !== null) {
+    // Restoring an undone / failed draft exactly as it was (signature included)
+    bodyEl.innerHTML = rawBodyHtml;
+  } else if (bodyHtml) {
+    // Signature goes above the quoted text, like every other mail client
+    bodyEl.innerHTML = `<p><br></p>${sigHtml}${bodyHtml}`;
   } else if (bodyText) {
     bodyEl.innerText = bodyText;
     if (sig) bodyEl.innerHTML += sigHtml;
@@ -1987,11 +2214,14 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
   S.composeMinimized = false;
   S.composeExpanded = false;
 
+  S.ccVisible = !!cc;
+  S.bccVisible = !!bcc;
   document.getElementById('composeCcRow').classList.toggle('hidden', !S.ccVisible);
-  document.getElementById('composeBccRow').classList.add('hidden');
-  document.getElementById('composeBcc').value = '';
-  document.getElementById('composeBccToggle').textContent = 'Bcc';
-  S.bccVisible = false;
+  document.getElementById('composeCcToggle').textContent = S.ccVisible ? '− Cc' : 'Cc';
+  document.getElementById('composeBccRow').classList.toggle('hidden', !S.bccVisible);
+  document.getElementById('composeBcc').value = bcc;
+  document.getElementById('composeBccToggle').textContent = S.bccVisible ? '− Bcc' : 'Bcc';
+  document.getElementById('sendLaterPicker').classList.add('hidden');
 
   // Update signature when account changes (skip in plain-text mode)
   fromSel.onchange = () => {
@@ -2011,7 +2241,20 @@ function openCompose({ to = '', subject = '', bodyHtml = '', bodyText = '', titl
     }
   };
 
-  setTimeout(() => (to ? document.getElementById('composeSubject') : document.getElementById('composeTo')).focus(), 60);
+  setTimeout(() => {
+    // Don't steal focus if the user already clicked/typed into the compose window
+    if (panel.contains(document.activeElement)) return;
+    if (!to) { document.getElementById('composeTo').focus(); return; }
+    if (!subject) { document.getElementById('composeSubject').focus(); return; }
+    // Reply / mailto with subject: put the caret at the top of the body
+    bodyEl.focus();
+    const range = document.createRange();
+    range.setStart(bodyEl.firstChild || bodyEl, 0);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }, 60);
 }
 
 function closeCompose(skipConfirm = false) {
@@ -2039,6 +2282,8 @@ function closeCompose(skipConfirm = false) {
   bodyEl.innerHTML = '';
   S.pendingAttachments = [];
   renderAttachmentChips();
+  removeAutocomplete();
+  _composeThread = { inReplyTo: null, references: null };
 }
 
 // Toolbar buttons
@@ -2150,7 +2395,7 @@ document.getElementById('composeFloatHeader').addEventListener('click', () => {
 });
 
 document.getElementById('composeClose').addEventListener('click', e => { e.stopPropagation(); closeCompose(); });
-document.getElementById('composeCancelBtn').addEventListener('click', closeCompose);
+document.getElementById('composeCancelBtn').addEventListener('click', () => closeCompose());
 
 document.getElementById('composeCcToggle').addEventListener('click', () => {
   S.ccVisible = !S.ccVisible;
@@ -2252,13 +2497,15 @@ function collectComposeData() {
     attachments: S.pendingAttachments.length
       ? S.pendingAttachments.map(a => ({ name: a.name, type: a.type, path: a.path }))
       : undefined,
+    inReplyTo: _composeThread.inReplyTo || undefined,
+    references: _composeThread.references || undefined,
   };
 }
 
 // Extract bare email addresses from a comma-separated recipients string.
 // Handles both "Name <addr>" and plain "addr" forms.
 function parseAddresses(str) {
-  return str.split(',').map(s => {
+  return str.split(/[,;]/).map(s => {
     const m = s.match(/<([^>]+)>/);
     return (m ? m[1] : s).trim();
   }).filter(Boolean);
@@ -2275,32 +2522,68 @@ function validateRecipients(str, label) {
   return null;
 }
 
+// Snapshot of the compose window so an undone / failed send can be reopened as-is
+function snapshotDraft() {
+  const data = collectComposeData();
+  return {
+    accountId: data.accountId, to: data.to, cc: data.cc, bcc: data.bcc, subject: data.subject,
+    rawBodyHtml: document.getElementById('composeBody').innerHTML,
+    plainText: _composePlainText,
+    attachments: [...S.pendingAttachments],
+    inReplyTo: _composeThread.inReplyTo, references: _composeThread.references,
+  };
+}
+
+function restoreDraft(draft) {
+  const composeOpen = !document.getElementById('composeFloat').classList.contains('hidden');
+  if (composeOpen) return; // never clobber a message the user started meanwhile
+  openCompose({ ...draft, title: draft.subject || 'New Message' });
+  if (draft.plainText) document.getElementById('tbPlainToggle').click();
+}
+
 document.getElementById('composeSendBtn').addEventListener('click', () => {
-  const { accountId, to, cc, bcc, subject, text, html, attachments } = collectComposeData();
+  const data = collectComposeData();
+  const { accountId, to, cc, bcc, subject } = data;
+  if (!accountId) { showComposeError('Add an account to send from'); return; }
   const toErr = validateRecipients(to, 'recipient');
   if (toErr) { showComposeError(toErr); return; }
   if (cc) { const e = validateRecipients(cc, 'Cc'); if (e) { showComposeError(e); return; } }
   if (bcc) { const e = validateRecipients(bcc, 'Bcc'); if (e) { showComposeError(e); return; } }
-  if (!subject) { showComposeError('Enter a subject'); return; }
+  if (!subject && !confirm('Send this message without a subject?')) return;
   document.getElementById('composeError').classList.add('hidden');
   const scheduledAt = _scheduledAt;
+  if (scheduledAt && new Date(scheduledAt) <= new Date()) {
+    showComposeError('The scheduled time is in the past — pick a later time');
+    return;
+  }
+  const draft = snapshotDraft();
+  const emailData = { ...data };
+  delete emailData.accountId;
   closeCompose(true);
   if (scheduledAt) {
-    ipc('email:send', { accountId, to, cc, bcc, subject, text, html, attachments, scheduledAt })
+    ipc('email:send', { accountId, ...emailData, scheduledAt })
       .then(r => {
         if (r.success && r.scheduledId) {
-          S.scheduledSends.push({ id: r.scheduledId, subject, scheduledAt, accountId });
+          S.scheduledSends.push({ id: r.scheduledId, subject: subject || '(no subject)', scheduledAt, accountId });
           renderScheduledOutbox();
           const time = new Date(scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           toast('Scheduled for ' + time);
+        } else if (r.success) {
+          // Main process sent it right away (time already reached)
+          toast('Sent');
         } else {
           toast('Send failed: ' + (r.error || 'Unknown error'), true);
+          restoreDraft(draft);
         }
-      });
+      })
+      .catch(err => { toast('Send failed: ' + err.message, true); restoreDraft(draft); });
   } else {
-    sendWithUndo(accountId, { to, cc, bcc, subject, text, html, attachments }, null, parseInt(getSetting('undo-delay', '8000')));
+    sendWithUndo(accountId, emailData, null, parseInt(getSetting('undo-delay', '8000')), () => restoreDraft(draft));
   }
 });
+
+// Don't lose a message that is still inside its undo window when the window closes
+window.addEventListener('beforeunload', () => { if (_undoSendFlush) _undoSendFlush(); });
 
 // ── Send Later picker ─────────────────────────────────────────────────────────
 document.getElementById('composeSendLaterBtn').addEventListener('click', e => {
@@ -2310,7 +2593,8 @@ document.getElementById('composeSendLaterBtn').addEventListener('click', e => {
   if (!picker.classList.contains('hidden')) {
     // Pre-fill datetime-local with "tomorrow 8am"
     const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0);
-    document.getElementById('sendLaterCustom').value = d.toISOString().slice(0, 16);
+    document.getElementById('sendLaterCustom').value = toLocalInputValue(d);
+    document.getElementById('sendLaterCustom').min = toLocalInputValue(new Date());
   }
 });
 
@@ -2333,10 +2617,19 @@ document.getElementById('sendLaterPicker').addEventListener('click', e => {
   document.getElementById('sendLaterPicker').classList.add('hidden');
 });
 
+// <input type="datetime-local"> works in local time: "YYYY-MM-DDTHH:MM"
+function toLocalInputValue(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 document.getElementById('sendLaterConfirm').addEventListener('click', () => {
   const val = document.getElementById('sendLaterCustom').value;
   if (!val) return;
-  setScheduledAt(new Date(val).toISOString());
+  const d = new Date(val);
+  if (isNaN(d) || d <= new Date()) { showComposeError('Pick a time in the future'); return; }
+  document.getElementById('composeError').classList.add('hidden');
+  setScheduledAt(d.toISOString());
   document.getElementById('sendLaterPicker').classList.add('hidden');
 });
 
@@ -2388,44 +2681,72 @@ function showComposeError(msg) {
 }
 
 // ── Reply / Forward ───────────────────────────────────────────────────────────
+// "Re: Re: AW: Hello" → "Re: Hello"
+function prefixSubject(subject, prefix) {
+  const base = String(subject || '').replace(/^((re|fwd?|aw|wg|sv|tr|vb)\s*:\s*)+/i, '').trim();
+  return `${prefix}: ${base}`;
+}
+
+// Account a reply should be sent from: the one that received the message
+function replyAccountId(email) {
+  return getSetting('reply-same-account', 'true') === 'true' ? email.accountId : null;
+}
+
+function threadHeaders(body) {
+  if (!body?.messageId) return {};
+  const refs = [body.references, body.messageId].filter(Boolean).join(' ').trim();
+  return { inReplyTo: body.messageId, references: refs };
+}
+
 function openReply(email, body) {
   const replyTo = body?.from?.address || body?.from?.email || email.fromEmail;
-  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body) : '';
+  const quote = getSetting('quote-reply', 'true') === 'true' ? buildQuoteHtml(email, body) : '';
   openCompose({
     to: replyTo,
-    subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
+    subject: prefixSubject(email.subject, 'Re'),
     bodyHtml: quote,
     title: 'Reply',
+    accountId: replyAccountId(email),
+    ...threadHeaders(body),
   });
 }
 
 function openReplyAll(email, body) {
-  const myEmail = S.accounts.find(a => a.id === (S.activeAccountId || email.accountId))?.email;
+  const myEmail = (S.accounts.find(a => a.id === email.accountId)?.email || '').toLowerCase();
+  const seen = new Set(myEmail ? [myEmail] : []);
+  const uniq = addr => {
+    const k = (addr || '').toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  };
   const toList = [body?.from?.address || body?.from?.email || email.fromEmail,
-    ...(body?.to || []).map(a => a.address)].filter(a => a && a !== myEmail).join(', ');
-  const ccVal = (body?.cc || []).map(a => a.address).join(', ');
-  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body) : '';
+    ...(body?.to || []).map(a => a.address)].filter(uniq).join(', ');
+  const ccVal = (body?.cc || []).map(a => a.address).filter(uniq).join(', ');
+  const quote = getSetting('quote-reply', 'true') === 'true' ? buildQuoteHtml(email, body) : '';
   openCompose({
     to: toList,
-    subject: email.subject?.startsWith('Re:') ? email.subject : 'Re: ' + email.subject,
+    cc: ccVal,
+    subject: prefixSubject(email.subject, 'Re'),
     bodyHtml: quote,
     title: 'Reply All',
+    accountId: replyAccountId(email),
+    ...threadHeaders(body),
   });
-  document.getElementById('composeCc').value = ccVal;
-  if (ccVal) { S.ccVisible = true; document.getElementById('composeCcRow').classList.remove('hidden'); }
 }
 
 function openForward(email, body) {
-  const quote = getSetting('quote-reply', 'true') === 'true' ? '<br><br>' + buildQuoteHtml(email, body, true) : '';
+  // Forwarded content is always included — a forward without it is empty
   openCompose({
-    subject: email.subject?.startsWith('Fwd:') ? email.subject : 'Fwd: ' + email.subject,
-    bodyHtml: quote,
+    subject: prefixSubject(email.subject, 'Fwd'),
+    bodyHtml: buildQuoteHtml(email, body, true),
     title: 'Forward',
+    accountId: replyAccountId(email),
   });
 }
 
 function buildQuoteHtml(email, body, isForward = false) {
-  const from = `${email.fromName || email.fromEmail} &lt;${email.fromEmail}&gt;`;
+  const from = `${escHtml(email.fromName || email.fromEmail)} &lt;${escHtml(email.fromEmail)}&gt;`;
   const header = isForward
     ? `<b>---------- Forwarded message ----------</b><br>From: ${from}<br>Date: ${fmtFull(email.date)}<br>Subject: ${escHtml(email.subject)}`
     : `On ${fmtFull(email.date)}, ${from} wrote:`;
@@ -2515,9 +2836,7 @@ function applyPrefChange(key, value) {
   if (key === 'images-blocked') {
     S.imagesBlocked = value === 'true';
   } else if (key === 'refresh-interval') {
-    clearTimeout(refreshTimer);
-    const ms = parseInt(value);
-    if (ms > 0 && !S.isSearching) refreshTimer = setTimeout(() => loadEmails(), ms);
+    scheduleRefresh();
   } else if (key === 'dock-badge') {
     updateDockBadge();
   } else if (key.startsWith('notifications-')) {
@@ -2749,7 +3068,7 @@ function renderSettingsCalendar() {
       removeBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`;
       removeBtn.addEventListener('click', async () => {
         if (!confirm(`Remove calendar account ${acc.email}?`)) return;
-        await ipc('caldav:remove', acc.id);
+        await ipc('caldav:remove', { id: acc.id });
         calendarState.accounts = calendarState.accounts.filter(a => a.id !== acc.id);
         renderCalendarNav();
         renderSettingsCalendar();
@@ -2890,7 +3209,7 @@ function renderSettingsAccounts() {
               </button>`).join('')}
             </div>
             <label class="settings-field-label" style="margin-top:12px">Signature</label>
-            <div class="signature-editor" contenteditable="true" data-field="signature" data-placeholder="Add a signature…">${acc.signature || ''}</div>
+            <div class="signature-editor" contenteditable="true" data-field="signature" data-placeholder="Add a signature…">${sanitizeHtml(acc.signature || '')}</div>
           </div>
           <div class="settings-acc-actions">
             <button class="settings-save-btn">Save Changes</button>
@@ -2929,7 +3248,7 @@ function renderSettingsAccounts() {
         e.stopPropagation();
         const nameVal = card.querySelector('[data-field="name"]').value.trim();
         const sigEl = card.querySelector('[data-field="signature"]');
-        const signature = sigEl ? sigEl.innerHTML : (acc.signature || '');
+        const signature = sigEl ? sanitizeHtml(sigEl.innerHTML) : (acc.signature || '');
         const changes = { name: nameVal || acc.email.split('@')[0], color: pendingColor, icon: pendingIcon, signature };
         const saveBtn = card.querySelector('.settings-save-btn');
         saveBtn.disabled = true;
@@ -2951,14 +3270,9 @@ function renderSettingsAccounts() {
       card.querySelector('.settings-remove-btn-text').addEventListener('click', async e => {
         e.stopPropagation();
         if (!confirm(`Remove ${acc.email}?`)) return;
-        await ipc('accounts:remove', acc.id);
-        S.accounts = S.accounts.filter(a => a.id !== acc.id);
-        folderMaps.delete(acc.id);
-        accountFolders.delete(acc.id);
-        if (S.activeAccountId === acc.id) S.activeAccountId = S.accounts[0]?.id || null;
-        renderAccountTabs();
-        renderSettingsAccounts();
-        loadEmails();
+        await removeAccount(acc.id);
+        if (S.accounts.length) renderSettingsAccounts();
+        else hideSettingsModal();
       });
 
       content.appendChild(card);
@@ -3095,10 +3409,12 @@ function renderSettingsShortcuts() {
     ['↑ / k', 'Previous email'],
     ['↓ / j', 'Next email'],
     ['⌫', 'Delete email'],
+    ['E', 'Archive email'],
     ['U', 'Mark read / unread'],
     ['S', 'Star / unstar'],
     ['/', 'Focus search'],
     ['⌘,', 'Open Settings'],
+    ['⇧⌘N', 'Refresh'],
     ['Esc', 'Close / dismiss'],
   ];
   content.innerHTML = shortcuts.map(([key, desc]) =>
@@ -3116,6 +3432,15 @@ document.getElementById('settingsModal').addEventListener('click', e => {
   const navItem = e.target.closest('.settings-nav-item');
   if (navItem?.dataset.panel) switchSettingsPanel(navItem.dataset.panel);
 });
+
+// Focus a modal's first field after it animates in — unless the user already
+// clicked into the modal (a late focus() would redirect their typing).
+function focusSoon(modalId, inputId) {
+  setTimeout(() => {
+    if (document.getElementById(modalId).contains(document.activeElement)) return;
+    document.getElementById(inputId).focus();
+  }, 50);
+}
 
 // ── Account setup modal ───────────────────────────────────────────────────────
 
@@ -3158,7 +3483,7 @@ function showSetupModal(cancellable = false) {
   setupModalReset();
   document.getElementById('setupCancelBtn').style.display = cancellable ? '' : 'none';
   document.getElementById('setupModal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('setupEmail').focus(), 50);
+  focusSoon('setupModal', 'setupEmail');
 }
 function hideSetupModal() { document.getElementById('setupModal').classList.add('hidden'); }
 
@@ -3301,6 +3626,7 @@ function parseSetupError(err) {
 }
 
 document.getElementById('setupSaveBtn').addEventListener('click', async () => {
+  if (document.getElementById('setupSaveBtn').disabled) return; // Enter while connecting
   const email = document.getElementById('setupEmail').value.trim();
   const password = document.getElementById('setupPassword').value;
   const name = document.getElementById('setupName').value.trim() || email.split('@')[0];
@@ -3309,10 +3635,13 @@ document.getElementById('setupSaveBtn').addEventListener('click', async () => {
   const smtpHostInput = document.getElementById('smtpHost').value.trim();
   const smtpPort = parseInt(document.getElementById('smtpPort').value) || 587;
 
-  if (!email || !email.includes('@') || email.split('@')[1]?.length < 2) {
+  if (!EMAIL_RE.test(email)) {
     showSetupError('Enter a valid email address'); return;
   }
   if (!password) { showSetupError('Enter your password'); return; }
+  if (S.accounts.some(a => a.email.toLowerCase() === email.toLowerCase())) {
+    showSetupError('This account has already been added'); return;
+  }
 
   document.getElementById('setupError').classList.add('hidden');
   setSetupLoading(true);
@@ -3345,19 +3674,21 @@ document.getElementById('setupSaveBtn').addEventListener('click', async () => {
     smtp: resolvedSmtp,
   };
 
-  const res = await ipc('accounts:add', accountData);
+  let res;
+  try {
+    res = await ipc('accounts:add', accountData);
+  } catch (err) {
+    res = { success: false, error: err.message };
+  }
   setSetupLoading(false);
 
   if (res.success) {
     S.accounts.push(res.account);
-    if (!S.activeAccountId) S.activeAccountId = res.account.id;
-    renderAccountTabs();
     hideSetupModal();
-    showFolderSidebar(true);
+    renderAppsNav();
     toast('Account added — ' + email);
-    await loadAndRenderFolders(res.account.id);
-    renderFolderNav();
-    loadEmails();
+    // Jump straight to the new account's inbox
+    await switchAccount(res.account.id);
   } else {
     showSetupError(parseSetupError(res.error));
   }
@@ -3391,71 +3722,102 @@ document.getElementById('threadToggleBtn').addEventListener('click', () => {
 });
 
 document.getElementById('composeTrigger').addEventListener('click', () => openCompose());
-document.getElementById('refreshBtn').addEventListener('click', () => {
+function refreshAll() {
   S.bodyCache.clear();
   S.isSearching = false;
   document.getElementById('searchInput').value = '';
   document.getElementById('searchClear').classList.add('hidden');
   loadEmails();
-});
+}
+document.getElementById('refreshBtn').addEventListener('click', refreshAll);
 document.getElementById('loadMoreBtn').addEventListener('click', () => loadEmails(true));
 
 // ── Keyboard shortcuts ────────────────────────────────────────────────────────
+const isHidden = id => document.getElementById(id).classList.contains('hidden');
+
 document.addEventListener('keydown', e => {
-  const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName) ||
-    document.activeElement.contentEditable === 'true';
-  const composeOpen = !document.getElementById('composeFloat').classList.contains('hidden');
-  const setupOpen = !document.getElementById('setupModal').classList.contains('hidden');
-  const anyModalOpen = setupOpen ||
-    !document.getElementById('settingsModal').classList.contains('hidden') ||
-    !document.getElementById('caldavModal').classList.contains('hidden') ||
-    !document.getElementById('addAppModal').classList.contains('hidden');
+  const ae = document.activeElement;
+  // isContentEditable also covers contenteditable="plaintext-only" (plain-text compose)
+  const inInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae?.tagName) || !!ae?.isContentEditable;
+  const composeOpen = !isHidden('composeFloat');
+  const setupOpen = !isHidden('setupModal');
+  const overlayOpen = !!document.querySelector('.folder-name-overlay');
+  const anyModalOpen = setupOpen || overlayOpen ||
+    !isHidden('settingsModal') || !isHidden('caldavModal') || !isHidden('addAppModal');
 
   if (e.key === 'Escape') {
+    if (overlayOpen) return; // folder dialogs handle their own Escape
+    if (autocompleteDropdown) { removeAutocomplete(); return; }
+    if (!isHidden('sendLaterPicker')) { document.getElementById('sendLaterPicker').classList.add('hidden'); return; }
+    if (!isHidden('addAppModal')) { document.getElementById('addAppModal').classList.add('hidden'); return; }
+    if (!isHidden('caldavModal')) { closeCaldavModal(); return; }
+    if (setupOpen) {
+      if (document.getElementById('setupCancelBtn').style.display !== 'none') hideSetupModal();
+      return;
+    }
+    if (!isHidden('settingsModal')) { hideSettingsModal(); return; }
     if (composeOpen && !S.composeMinimized) { closeCompose(); return; }
-    if (setupOpen && document.getElementById('setupCancelBtn').style.display !== 'none') { hideSetupModal(); return; }
-    if (!document.getElementById('settingsModal').classList.contains('hidden')) { hideSettingsModal(); return; }
+    if (!isHidden('calendarEventDetail')) { document.getElementById('calendarEventDetail').classList.add('hidden'); return; }
+    if (ae === document.getElementById('searchInput')) { ae.blur(); return; }
     return;
   }
 
-  if (inInput || anyModalOpen) return;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const cmd = e.metaKey || e.ctrlKey;
 
-  const idx = S.emails.findIndex(e => e.uid === S.selectedUid && e.accountId === S.selectedEmail?.accountId);
+  // Global ⌘ shortcuts work even while typing (but not over modal dialogs)
+  if (cmd && !anyModalOpen) {
+    const sel = S.selectedEmail;
+    if (key === 'n' && !e.shiftKey) { e.preventDefault(); openCompose(); return; }
+    if (key === ',') { e.preventDefault(); showSettingsModal(); return; }
+    if (!inInput && sel && key === 'r') {
+      e.preventDefault();
+      getEmailBody(sel).then(b => (e.shiftKey ? openReplyAll : openReply)(sel, b));
+      return;
+    }
+    if (!inInput && sel && key === 'f' && !e.shiftKey) {
+      e.preventDefault();
+      getEmailBody(sel).then(b => openForward(sel, b));
+      return;
+    }
+    return;
+  }
 
-  if (e.key === 'ArrowDown' || e.key === 'j') {
+  if (inInput || anyModalOpen || e.altKey) return;
+
+  const idx = S.emails.findIndex(m => m.uid === S.selectedUid && m.accountId === S.selectedEmail?.accountId);
+
+  if (key === 'ArrowDown' || key === 'j') {
     e.preventDefault();
-    if (S.emails.length > 0) selectEmail(S.emails[Math.min(idx + 1, S.emails.length - 1)]);
-  } else if (e.key === 'ArrowUp' || e.key === 'k') {
+    if (S.emails.length > 0 && idx < S.emails.length - 1) { selectEmail(S.emails[idx + 1]); scrollSelectedIntoView(); }
+  } else if (key === 'ArrowUp' || key === 'k') {
     e.preventDefault();
-    if (S.emails.length > 0) selectEmail(S.emails[Math.max(idx - 1, 0)]);
-  } else if ((e.key === 'Delete' || e.key === 'Backspace') && S.selectedEmail) {
+    if (S.emails.length > 0 && idx !== 0) { selectEmail(S.emails[Math.max(idx - 1, 0)]); scrollSelectedIntoView(); }
+  } else if ((key === 'Delete' || key === 'Backspace') && S.selectedEmail) {
+    e.preventDefault();
     doDelete(S.selectedEmail);
-  } else if (e.key === 'n' && e.metaKey) {
-    e.preventDefault(); openCompose();
-  } else if (e.key === 'r' && e.metaKey && !e.shiftKey && S.selectedEmail) {
-    e.preventDefault(); openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
-  } else if (e.key === 'r' && e.metaKey && e.shiftKey && S.selectedEmail) {
-    e.preventDefault(); openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
-  } else if (e.key === 'f' && e.metaKey && S.selectedEmail) {
-    e.preventDefault(); openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail)));
-  } else if (e.key === 'u' && S.selectedEmail) {
+  } else if (key === 'e' && S.selectedEmail) {
+    doArchive(S.selectedEmail);
+  } else if (key === 'u' && S.selectedEmail) {
     setReadState(S.selectedEmail, !S.selectedEmail.read);
-  } else if (e.key === 's' && S.selectedEmail) {
+  } else if (key === 's' && S.selectedEmail) {
     toggleFlag(S.selectedEmail);
-  } else if (e.key === '/' && !inInput) {
+  } else if (key === '/') {
     e.preventDefault(); document.getElementById('searchInput').focus();
-  } else if (e.metaKey && e.key === ',') {
-    e.preventDefault(); showSettingsModal();
   }
 });
 
 // ── App menu IPC ──────────────────────────────────────────────────────────────
 _on('open-settings', () => showSettingsModal());
 _on('new-message', () => openCompose());
-_on('reply', () => { if (S.selectedEmail) openReply(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-_on('reply-all', () => { if (S.selectedEmail) openReplyAll(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-_on('forward', () => { if (S.selectedEmail) openForward(S.selectedEmail, S.bodyCache.get(bodyCacheKey(S.selectedEmail))); });
-_on('refresh', () => loadEmails());
+const withSelectedBody = fn => () => {
+  const sel = S.selectedEmail;
+  if (sel) getEmailBody(sel).then(b => fn(sel, b));
+};
+_on('reply', withSelectedBody(openReply));
+_on('reply-all', withSelectedBody(openReplyAll));
+_on('forward', withSelectedBody(openForward));
+_on('refresh', () => refreshAll());
 _on('delete-email', () => { if (S.selectedEmail) doDelete(S.selectedEmail); });
 _on('archive-email', () => { if (S.selectedEmail) doArchive(S.selectedEmail); });
 _on('mark-read', () => { if (S.selectedEmail) setReadState(S.selectedEmail, !S.selectedEmail.read); });
@@ -3504,8 +3866,12 @@ async function openCalendar(acc, cal) {
   document.getElementById('calendarViewTitle').textContent = cal.name;
   document.getElementById('calendarEventDetail').classList.add('hidden');
 
-  const res = await _invoke('caldav:events', { id: acc.id, calendarUrl: cal.url });
+  calendarState.events = [];
+  renderCalendarGrid();
+  const res = await _invoke('caldav:events', { id: acc.id, calendarUrl: cal.url }).catch(err => ({ success: false, error: err.message }));
+  if (calendarState.activeCalendarUrl !== cal.url) return; // switched calendars meanwhile
   calendarState.events = res.success ? res.events : [];
+  if (!res.success) toast('Could not load events: ' + (res.error || 'Unknown error'), true);
   renderCalendarGrid();
 }
 
@@ -3604,6 +3970,17 @@ document.getElementById('calendarToday').addEventListener('click', () => {
   renderCalendarGrid();
 });
 
+async function syncCalendarAccounts() {
+  await Promise.all(calendarState.accounts.map(async acc => {
+    if (acc.calendars?.length) return;
+    try {
+      const res = await ipc('caldav:calendars', { id: acc.id });
+      if (res?.success) acc.calendars = res.calendars || [];
+    } catch {}
+  }));
+  renderCalendarNav();
+}
+
 // ── CalDAV account setup ──────────────────────────────────────────────────────
 
 function closeCaldavModal() {
@@ -3619,7 +3996,7 @@ function openCaldavModal() {
   document.getElementById('caldavSpinner').classList.add('hidden');
   document.querySelectorAll('.caldav-provider-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('caldavModal').classList.remove('hidden');
-  setTimeout(() => document.getElementById('caldavEmail').focus(), 50);
+  focusSoon('caldavModal', 'caldavEmail');
 }
 
 document.getElementById('addCalendarBtn').addEventListener('click', openCaldavModal);
@@ -3673,11 +4050,15 @@ document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   }
   if (!/^https?:\/\//i.test(serverUrl)) serverUrl = 'https://' + serverUrl;
 
+  const saveBtn = document.getElementById('caldavSaveBtn');
+  if (saveBtn.disabled) return;
+  saveBtn.disabled = true;
   spinner.classList.remove('hidden');
   btnText.textContent = 'Connecting…';
   errEl.classList.add('hidden');
 
-  const res = await _invoke('caldav:test', { serverUrl, email, password });
+  const res = await _invoke('caldav:test', { serverUrl, email, password }).catch(err => ({ success: false, error: err.message }));
+  saveBtn.disabled = false;
   spinner.classList.add('hidden');
   btnText.textContent = 'Connect';
 
@@ -3688,7 +4069,12 @@ document.getElementById('caldavSaveBtn').addEventListener('click', async () => {
   }
 
   const id = String(Date.now());
-  await _invoke('caldav:add', { id, serverUrl, email, password });
+  const addRes = await _invoke('caldav:add', { id, serverUrl, email, password }).catch(err => ({ success: false, error: err.message }));
+  if (!addRes?.success) {
+    errEl.textContent = addRes?.error || 'Could not save calendar account.';
+    errEl.classList.remove('hidden');
+    return;
+  }
   const acc = { id, email, serverUrl, calendars: res.calendars || [] };
   calendarState.accounts.push(acc);
   renderCalendarNav();
@@ -3721,6 +4107,7 @@ async function init() {
   if (calRes?.success && calRes.accounts?.length > 0) {
     calendarState.accounts = calRes.accounts;
     renderCalendarNav();
+    syncCalendarAccounts(); // stored accounts come back without their calendar list
   }
 
   // Restore any pending scheduled sends (survives renderer reload within same main process)

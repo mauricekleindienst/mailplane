@@ -2,6 +2,7 @@ const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 
 const clients = new Map(); // accountId -> ImapFlow
+const connecting = new Map(); // accountId -> Promise<ImapFlow> (dedupes parallel connects)
 
 async function buildClient(account) {
   return new ImapFlow({
@@ -17,17 +18,46 @@ async function buildClient(account) {
 }
 
 async function getClient(account) {
-  let client = clients.get(account.id);
-  if (client && client.usable) return client;
-  if (client) {
-    try { await client.logout(); } catch {}
-    clients.delete(account.id);
+  const existing = clients.get(account.id);
+  if (existing && existing.usable) return existing;
+  // Several IPC calls can arrive at once (unified inbox, bulk actions) —
+  // share one pending connection instead of opening one per call.
+  if (connecting.has(account.id)) return connecting.get(account.id);
+
+  const pending = (async () => {
+    if (existing) {
+      clients.delete(account.id);
+      try { await existing.logout(); } catch {}
+    }
+    const client = await buildClient(account);
+    client.on('error', () => { if (clients.get(account.id) === client) clients.delete(account.id); });
+    client.on('close', () => { if (clients.get(account.id) === client) clients.delete(account.id); });
+    await client.connect();
+    clients.set(account.id, client);
+    return client;
+  })();
+  connecting.set(account.id, pending);
+  try {
+    return await pending;
+  } finally {
+    connecting.delete(account.id);
   }
-  client = await buildClient(account);
-  await client.connect();
-  client.on('error', () => clients.delete(account.id));
-  clients.set(account.id, client);
-  return client;
+}
+
+async function disconnect(accountId) {
+  const client = clients.get(accountId);
+  clients.delete(accountId);
+  if (client) { try { await client.logout(); } catch {} }
+}
+
+// Find a special-use mailbox (e.g. '\\Trash') with name-based fallbacks
+async function findSpecialMailbox(client, specialUses, names) {
+  const list = await client.list();
+  const su = new Set(specialUses.map(s => s.toLowerCase()));
+  const byUse = list.find(mb => su.has((mb.specialUse || '').toLowerCase()));
+  if (byUse) return byUse.path;
+  const nm = new Set(names);
+  return list.find(mb => nm.has((mb.name || mb.path).toLowerCase()))?.path || null;
 }
 
 async function testConnection(account) {
@@ -173,6 +203,8 @@ async function fetchEmailBody(account, folder, uid) {
       to: (parsed.to?.value || []).map(a => ({ name: a.name, address: a.address })),
       cc: (parsed.cc?.value || []).map(a => ({ name: a.name, address: a.address })),
       date: parsed.date,
+      messageId: parsed.messageId || null,
+      references: Array.isArray(parsed.references) ? parsed.references.join(' ') : (parsed.references || null),
       attachments: (parsed.attachments || []).map(a => ({
         filename: a.filename || 'attachment',
         contentType: a.contentType,
@@ -228,11 +260,18 @@ async function setRead(account, folder, uid, read) {
   }
 }
 
+// Moves the message to Trash; only expunges permanently when it is already
+// in Trash (or the server has no Trash folder).
 async function deleteEmail(account, folder, uid) {
   const client = await getClient(account);
+  const trashPath = await findSpecialMailbox(client, ['\\Trash'], ['trash', 'deleted items', 'deleted messages', 'bin']);
   const lock = await client.getMailboxLock(folder);
   try {
-    await client.messageDelete({ uid }, { uid: true });
+    if (trashPath && trashPath !== folder) {
+      await client.messageMove({ uid }, trashPath, { uid: true });
+    } else {
+      await client.messageDelete({ uid }, { uid: true });
+    }
   } finally {
     lock.release();
   }
@@ -250,15 +289,11 @@ async function moveEmail(account, folder, uid, destFolder) {
 
 async function archiveEmail(account, folder, uid) {
   const client = await getClient(account);
+  const archivePath = await findSpecialMailbox(client, ['\\Archive', '\\All'], ['archive', 'all mail', 'archived']);
+  if (!archivePath) throw new Error('No archive folder found on this server');
+  if (archivePath === folder) throw new Error('Message is already archived');
   const lock = await client.getMailboxLock(folder);
   try {
-    const list = await client.list();
-    const archivePath = list.find(mb => {
-      const su = (mb.specialUse || '').toLowerCase();
-      const n = (mb.name || mb.path).toLowerCase();
-      return su === '\\archive' || su === '\\all' || n === 'archive' || n === 'all mail' || n === 'archived';
-    })?.path;
-    if (!archivePath) throw new Error('No archive folder found on this server');
     await client.messageMove({ uid }, archivePath, { uid: true });
   } finally {
     lock.release();
@@ -438,5 +473,5 @@ module.exports = {
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
   setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders,
   createFolder, renameFolder, deleteFolder,
-  disconnectAll, startIdle, stopIdle, stopAllIdle,
+  disconnect, disconnectAll, startIdle, stopIdle, stopAllIdle,
 };

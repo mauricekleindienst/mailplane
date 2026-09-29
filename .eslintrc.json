@@ -41,6 +41,13 @@
       "rules": {
         "no-console": "off"
       }
+    },
+    {
+      "files": ["test/e2e/**/*.js"],
+      "env": { "node": true, "browser": true },
+      "rules": {
+        "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }]
+      }
     }
   ],
   "ignorePatterns": ["node_modules/", "dist/", "out/"]

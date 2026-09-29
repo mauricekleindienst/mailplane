@@ -770,7 +770,7 @@ body {
   flex-shrink: 0;
 }
 
-.email-item-body { padding-left: 43px; }
+.email-item-body { padding-left: 43px; padding-right: 22px; } /* right: room for the hover star */
 
 .email-subject {
   font-size: 13px;
@@ -800,6 +800,7 @@ body {
   gap: 5px;
   min-height: 14px;
 }
+.email-item-footer:empty { display: none; }
 
 .item-flag-btn {
   position: absolute;
@@ -2349,18 +2350,26 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
 .bulk-btn-clear:hover { color: var(--text-primary); background: var(--hover-bg); }
 
 /* ── Email checkbox (multi-select) ─────────────────────────────────── */
+/* Overlays the avatar (revealed on hover) instead of taking up its own line,
+   which previously added an empty ~20px row to the top of every list item. */
 .email-checkbox {
-  width: 15px;
-  height: 15px;
+  position: absolute;
+  top: 18px;
+  left: 23px;
+  z-index: 2;
+  width: 16px;
+  height: 16px;
   margin: 0;
   cursor: pointer;
   accent-color: var(--accent);
-  flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.1s;
 }
 .email-item:hover .email-checkbox,
 .email-item.multi-selected .email-checkbox { opacity: 1; }
+.email-item .sender-avatar { transition: opacity 0.1s; }
+.email-item:hover .sender-avatar,
+.email-item.multi-selected .sender-avatar { opacity: 0.2; }
 .email-item.multi-selected { background: var(--selected-bg); }
 :root.dark .email-item.multi-selected { background: var(--selected-bg); }
 
@@ -2400,7 +2409,7 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
 :root.dark .load-images-btn { color: #ff9500; }
 
 /* ── Undo send toast button ─────────────────────────────────────────── */
-.toast.undo { min-width: 220px; }
+.toast.undo { min-width: 220px; pointer-events: auto; } /* base .toast ignores clicks — Undo must be clickable */
 .undo-send-btn {
   margin-left: 10px;
   padding: 3px 10px;
