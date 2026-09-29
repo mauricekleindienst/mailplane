@@ -74,7 +74,9 @@ if (!_gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const url = argv.find(a => a.startsWith('mailto:'));
+    const action = argv.find(a => a in LAUNCH_ACTIONS);
     if (url) handleMailto(url);
+    else if (action) runLaunchAction(action);
     else if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
   });
   const argvMailto = process.argv.find(a => a.startsWith('mailto:'));
@@ -365,6 +367,11 @@ function createWindow() {
   });
   mainWindow.loadFile('index.html');
   mainWindow.webContents.on('did-finish-load', () => {
+    if (_pendingLaunchAction) {
+      const a = _pendingLaunchAction;
+      _pendingLaunchAction = null;
+      setTimeout(() => runLaunchAction(a), 600);   // after the renderer's init
+    }
     if (_pendingMailto) {
       const url = _pendingMailto;
       _pendingMailto = null;
@@ -392,9 +399,51 @@ function createWindow() {
 }
 
 // ── Dock badge ────────────────────────────────────────────────────────────────
-ipcMain.on('badge:set', (_, count) => {
-  if (process.platform === 'darwin') app.setBadgeCount(count || 0);
+// Unread count on the app icon: macOS dock badge, Linux launcher count (Unity),
+// Windows taskbar overlay (the renderer draws the little number image)
+ipcMain.on('badge:set', (_, payload) => {
+  const { count = 0, overlay = null } = typeof payload === 'object' && payload ? payload : { count: payload };
+  if (process.platform === 'win32') {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const { nativeImage } = require('electron');
+    mainWindow.setOverlayIcon(count > 0 && overlay ? nativeImage.createFromDataURL(overlay) : null,
+      count > 0 ? `${count} unread` : '');
+  } else {
+    app.setBadgeCount(count || 0);
+  }
 });
+
+// Taskbar jump list (Windows) and Dock menu (macOS): quick actions on the app icon
+const LAUNCH_ACTIONS = { '--new-message': 'new-message', '--search': 'open-search', '--check-mail': 'refresh' };
+let _pendingLaunchAction = Object.keys(LAUNCH_ACTIONS).find(a => process.argv.includes(a)) || null;
+function runLaunchAction(flag) {
+  const ch = LAUNCH_ACTIONS[flag];
+  if (!ch || !mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send(ch);
+}
+function setupAppIconMenu() {
+  if (process.platform === 'win32') {
+    const task = (flag, title, description) => ({
+      program: process.execPath,
+      arguments: app.isPackaged ? flag : `"${app.getAppPath()}" ${flag}`,
+      iconPath: process.execPath, iconIndex: 0, title, description,
+    });
+    app.setUserTasks([
+      task('--new-message', 'New message', 'Write a new email'),
+      task('--search', 'Search mail', 'Search messages, people and actions'),
+      task('--check-mail', 'Check for new mail', 'Refresh all accounts'),
+    ]);
+  } else if (process.platform === 'darwin' && app.dock) {
+    app.dock.setMenu(Menu.buildFromTemplate([
+      { label: 'New Message', click: () => runLaunchAction('--new-message') },
+      { label: 'Search Mail', click: () => runLaunchAction('--search') },
+      { label: 'Check for New Mail', click: () => runLaunchAction('--check-mail') },
+    ]));
+  }
+}
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
 
@@ -1053,6 +1102,8 @@ ipcMain.on('context-menu:show', (event, _payload) => {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // Windows ties notifications and the taskbar entry to this ID (same as the installer's)
+  if (process.platform === 'win32') app.setAppUserModelId('com.mailplane.app');
   if (!_gotLock) return;
   buildAppMenu();
   createWindow();
@@ -1065,6 +1116,7 @@ app.whenReady().then(() => {
   emailCache.pruneOldEntries(30);
   // Update checks start once the renderer sends 'update:config'
   _updaterReady = setupUpdater();
+  setupAppIconMenu();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

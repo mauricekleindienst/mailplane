@@ -40,7 +40,7 @@ const RECEIVE_CHANNELS = new Set([
   'fullscreen-change',
   'emails:refreshed',
   'update:status',
-  'toggle-sidebar', 'toggle-list',
+  'toggle-sidebar', 'toggle-list', 'open-search',
 ]);
 
 contextBridge.exposeInMainWorld('electronAPI', {

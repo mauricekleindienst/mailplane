@@ -8,6 +8,25 @@ const IS_MAC = PLATFORM === 'darwin';
 document.documentElement.classList.add(IS_MAC ? 'platform-mac' : 'platform-other');
 document.getElementById('searchKbd').textContent = IS_MAC ? '⌘K' : 'Ctrl K';
 
+// Shortcut hints are written the Mac way in the markup; spell them out elsewhere
+function platformKeys(str) {
+  if (IS_MAC) return str;
+  return String(str).replace(/⇧⌘/g, 'Ctrl+Shift+').replace(/⌘/g, 'Ctrl+').replace(/⇧/g, 'Shift+').replace(/⌥/g, 'Alt+');
+}
+if (!IS_MAC) {
+  const fixTitles = root => root.querySelectorAll('[title*="⌘"], [title*="⇧"]').forEach(el => { el.title = platformKeys(el.title); });
+  fixTitles(document);
+  document.querySelectorAll('.shortcut-hints span').forEach(el => { el.textContent = platformKeys(el.textContent).replace('⌫', 'Del'); });
+  new MutationObserver(muts => muts.forEach(m => m.addedNodes.forEach(n => {
+    if (n.nodeType !== 1) return;
+    if (n.title) n.title = platformKeys(n.title);
+    fixTitles(n);
+    n.querySelectorAll?.('.shortcut-hints span, kbd').forEach(el => {
+      if (/[⌘⇧⌥]/.test(el.textContent)) el.textContent = platformKeys(el.textContent);
+    });
+  }))).observe(document.body, { childList: true, subtree: true });
+}
+
 // ── Persistent preferences ────────────────────────────────────────────────────
 function getSetting(key, fallback = '') {
   const v = localStorage.getItem('mailplane-pref-' + key);
@@ -156,6 +175,163 @@ async function loadStorage() {
   bar.classList.toggle('storage-full', pct >= 90);
   bar.classList.remove('hidden');
 }
+
+// ── Search palette (⌘K) ───────────────────────────────────────────────────────
+// Notion-style: one field for messages in view, people, folders and actions.
+// "Search mail for …" runs the server search and shows the results in the list.
+const PAL_ICONS = {
+  search:  '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>',
+  mail:    '<rect x="3" y="5" width="18" height="14" rx="2"/><polyline points="3 7 12 13 21 7"/>',
+  person:  '<circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
+  folder:  '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  compose: '<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+  gear:    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  account: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="10" r="3"/><path d="M6.5 18.5c1.3-2 3.2-3 5.5-3s4.2 1 5.5 3"/>',
+  moon:    '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  clock:   '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+};
+const _pal = { items: [], index: 0 };
+
+function recentSearches() {
+  try { return JSON.parse(localStorage.getItem('mailplane-recent-searches') || '[]'); } catch { return []; }
+}
+function rememberSearch(q) {
+  const list = [q, ...recentSearches().filter(x => x !== q)].slice(0, 5);
+  try { localStorage.setItem('mailplane-recent-searches', JSON.stringify(list)); } catch { /* ignore */ }
+}
+
+function runMailSearch(q) {
+  const input = document.getElementById('searchInput');
+  input.value = q;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  rememberSearch(q);
+}
+
+function goToFolder(key) {
+  document.querySelector(`#folderNav .folder-btn[data-folder="${CSS.escape(key)}"]`)?.click();
+}
+
+function paletteActions() {
+  const acts = [
+    { group: 'Actions', icon: 'compose', label: 'New message', hint: '⌘N', run: () => openCompose() },
+  ];
+  const folders = accountFolders.get(S.activeAccountId) || [];
+  const acc = S.accounts.find(a => a.id === S.activeAccountId);
+  if (acc && acc.protocol !== 'jmap') acts.push({ group: 'Go to', icon: 'folder', label: 'Starred', run: () => goToFolder('starred') });
+  folders.forEach(f => acts.push({
+    group: 'Go to', icon: 'folder', label: f.role ? (FOLDER_LABELS[f.role] || f.name) : f.name, run: () => goToFolder(f.key),
+  }));
+  if (S.accounts.length > 1) {
+    acts.push({ group: 'Accounts', icon: 'account', label: 'All Mail', run: () => switchToAll() });
+    S.accounts.forEach(a => acts.push({
+      group: 'Accounts', icon: 'account', label: a.name || a.email, sub: a.email, run: () => switchAccount(a.id),
+    }));
+  }
+  acts.push(
+    { group: 'Actions', icon: 'moon', label: 'Toggle dark mode', run: () => {
+      const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
+      localStorage.setItem('mailplane-theme', next); applyTheme(next);
+    } },
+    { group: 'Actions', icon: 'gear', label: 'Settings', hint: '⌘,', run: () => showSettingsModal() },
+  );
+  return acts;
+}
+
+function paletteItems(q) {
+  const query = q.trim().toLowerCase();
+  const has = (...xs) => xs.some(x => String(x || '').toLowerCase().includes(query));
+  if (!query) {
+    const recent = recentSearches().map(r => ({ group: 'Recent searches', icon: 'clock', label: r, run: () => runMailSearch(r) }));
+    return [...recent, ...paletteActions().filter(a => a.group !== 'Go to' || ['Inbox', 'Starred', 'Sent', 'Drafts'].includes(a.label))];
+  }
+  const items = [{
+    group: 'Search', icon: 'search', label: `Search mail for “${q.trim()}”`,
+    sub: S.activeAccountId === null ? 'All inboxes' : currentFolderLabel(), run: () => runMailSearch(q.trim()),
+  }];
+  S.emails.filter(e => has(e.subject, e.fromName, e.fromEmail, e.snippet)).slice(0, 6).forEach(e => items.push({
+    group: 'Messages', icon: 'mail', label: e.subject || '(no subject)', sub: `${e.fromName || e.fromEmail} · ${fmtDate(e.date)}`,
+    run: () => { selectEmail(e); scrollSelectedIntoView(); },
+  }));
+  S.contacts.filter(c => has(c.name, c.email)).slice(0, 4).forEach(c => items.push({
+    group: 'People', icon: 'person', label: c.name || c.email, sub: c.name ? c.email : 'Write a message',
+    run: () => openCompose({ to: c.name ? `${c.name} <${c.email}>` : c.email }),
+  }));
+  paletteActions().filter(a => has(a.label, a.sub)).slice(0, 6).forEach(a => items.push(a));
+  return items;
+}
+
+function renderPalette() {
+  const q = document.getElementById('paletteInput').value;
+  const box = document.getElementById('paletteResults');
+  _pal.items = paletteItems(q);
+  _pal.index = Math.min(_pal.index, Math.max(0, _pal.items.length - 1));
+  box.innerHTML = '';
+  let group = null;
+  _pal.items.forEach((it, i) => {
+    if (it.group !== group) {
+      group = it.group;
+      const h = document.createElement('div');
+      h.className = 'pal-group';
+      h.textContent = group;
+      box.appendChild(h);
+    }
+    const row = document.createElement('div');
+    row.className = 'pal-item' + (i === _pal.index ? ' active' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === _pal.index));
+    row.innerHTML = `<span class="pal-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${PAL_ICONS[it.icon] || ''}</svg></span>
+      <span class="pal-text"><span class="pal-label"></span>${it.sub ? '<span class="pal-sub"></span>' : ''}</span>
+      ${it.hint ? `<kbd class="pal-hint">${escHtml(it.hint)}</kbd>` : ''}`;
+    row.querySelector('.pal-label').textContent = it.label;
+    if (it.sub) row.querySelector('.pal-sub').textContent = it.sub;
+    row.addEventListener('mousemove', () => { if (_pal.index !== i) { _pal.index = i; highlightPalette(); } });
+    row.addEventListener('click', () => runPaletteItem(i));
+    box.appendChild(row);
+  });
+  if (!_pal.items.length) box.innerHTML = '<div class="pal-empty">No matches</div>';
+}
+
+function highlightPalette() {
+  document.querySelectorAll('#paletteResults .pal-item').forEach((el, i) => {
+    el.classList.toggle('active', i === _pal.index);
+    el.setAttribute('aria-selected', String(i === _pal.index));
+    if (i === _pal.index) el.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function runPaletteItem(i) {
+  const it = _pal.items[i];
+  if (!it) return;
+  closePalette();
+  it.run();
+}
+
+function openPalette(prefill = '') {
+  const pal = document.getElementById('palette');
+  const input = document.getElementById('paletteInput');
+  input.value = prefill;
+  _pal.index = 0;
+  pal.classList.remove('hidden');
+  renderPalette();
+  input.focus();
+  input.select();
+}
+function closePalette() { document.getElementById('palette').classList.add('hidden'); }
+
+document.getElementById('paletteInput').addEventListener('input', () => { _pal.index = 0; renderPalette(); });
+document.getElementById('paletteInput').addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); _pal.index = Math.min(_pal.index + 1, _pal.items.length - 1); highlightPalette(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); _pal.index = Math.max(_pal.index - 1, 0); highlightPalette(); }
+  else if (e.key === 'Enter') { e.preventDefault(); runPaletteItem(_pal.index); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePalette(); }
+});
+document.getElementById('palette').addEventListener('mousedown', e => { if (e.target.id === 'palette') closePalette(); });
+// Clicking the title-bar search opens the palette (typing there directly still works)
+document.querySelector('.titlebar-search').addEventListener('mousedown', e => {
+  if (e.target.closest('#searchClear')) return;
+  e.preventDefault();
+  openPalette(document.getElementById('searchInput').value);
+});
 
 // ── Offline indicator ─────────────────────────────────────────────────────────
 function syncOnline() { document.getElementById('offlinePill').classList.toggle('hidden', navigator.onLine); }
@@ -486,8 +662,24 @@ const _inboxUnread = new Map(); // accountId → inbox unread count
 function updateDockBadge() {
   const enabled = getSetting('dock-badge', 'true') === 'true';
   const total = enabled ? [..._inboxUnread.values()].reduce((a, b) => a + b, 0) : 0;
-  _send('badge:set', total);
+  _send('badge:set', { count: total, overlay: PLATFORM === 'win32' ? taskbarBadge(total) : null });
   updateAccountBadges();
+}
+
+// Windows shows unread mail as a small overlay on the taskbar icon
+function taskbarBadge(count) {
+  if (!count) return null;
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  g.fillStyle = '#262a28';
+  g.beginPath(); g.arc(16, 16, 16, 0, Math.PI * 2); g.fill();
+  g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--lime').trim() || '#e2f47c';
+  g.font = `600 ${count > 99 ? 13 : count > 9 ? 16 : 19}px -apple-system, "Segoe UI", sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(count > 99 ? '99+' : String(count), 16, 17);
+  return c.toDataURL('image/png');
 }
 
 // Inbox unread counts next to each account in the sidebar
@@ -686,6 +878,26 @@ const PERSONAL_DOMAINS = new Set([
   'mail.com', 'yandex.com', 'yandex.ru',
 ]);
 
+// Placeholder pictures for senders without a photo or logo: what kind of
+// sender it is, not a random colour. People keep their initials.
+const SENDER_KINDS = [
+  { kind: 'billing',  re: /^(billing|invoices?|receipts?|payments?|orders?|accounts?|sales|shop|store)\b/,
+    svg: '<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/>' },
+  { kind: 'security', re: /^(security|verify|verification|auth|login|account-security)\b/,
+    svg: '<path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"/><polyline points="9 12 11 14 15 10"/>' },
+  { kind: 'support',  re: /^(support|help|care|service|feedback|contact)\b/,
+    svg: '<path d="M4 13a8 8 0 0 1 16 0"/><rect x="2" y="13" width="4" height="6" rx="1.5"/><rect x="18" y="13" width="4" height="6" rx="1.5"/><path d="M20 19c0 2-2 3-5 3"/>' },
+  { kind: 'news',     re: /^(news|newsletters?|digest|weekly|hello|hi|team|info|marketing|community|updates?)\b/,
+    svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="12" y2="16"/>' },
+  { kind: 'notify',   re: /^(no-?reply|do-?not-?reply|notifications?|notify|alerts?|mailer-daemon|postmaster|bounces?|system|automated|robot|bot)\b/,
+    svg: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>' },
+];
+function senderKind(email) {
+  const local = String(email || '').split('@')[0].toLowerCase();
+  if (/no-?reply/.test(local)) return SENDER_KINDS.find(k => k.kind === 'notify');
+  return SENDER_KINDS.find(k => k.re.test(local)) || null;
+}
+
 function avatarEl(name, email, size = 34) {
   const wrap = document.createElement('div');
   wrap.className = 'sender-avatar';
@@ -693,10 +905,18 @@ function avatarEl(name, email, size = 34) {
 
   const span = document.createElement('span');
   span.className = 'av-initials';
-  span.textContent = initials(name || email);
+  const kind = senderKind(email);
+  if (kind) {
+    wrap.dataset.kind = kind.kind;
+    const px = Math.round(size * 0.46);
+    span.innerHTML = `<svg width="${px}" height="${px}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${kind.svg}</svg>`;
+  } else {
+    span.textContent = initials(name || email);
+  }
   wrap.appendChild(span);
 
-  if (!email) return wrap;
+  // Pictures come from the web (Gravatar, the sender's site icon, BIMI) — optional
+  if (!email || getSetting('sender-pictures', 'true') !== 'true') return wrap;
 
   const domain = (email.split('@')[1] || '').toLowerCase();
   let hasRealGravatar = false;
@@ -719,19 +939,20 @@ function avatarEl(name, email, size = 34) {
   gravatarImg.src = gravatarUrl(email, size * 2);
   wrap.appendChild(gravatarImg);
 
-  // Layer 2: Clearbit company logo — for business domains only
-  // Clearbit returns 404 for unknown domains so the error handler fires cleanly
+  // Layer 2: the sender's site icon — business domains only. DuckDuckGo's icon
+  // service answers 404 for unknown domains, so the error handler fires cleanly;
+  // tiny icons (< 32px) are dropped in favour of the placeholder.
   if (domain && !PERSONAL_DOMAINS.has(domain)) {
     const logoImg = document.createElement('img');
     logoImg.className = 'av-domain-logo';
     logoImg.alt = '';
     logoImg.addEventListener('load', () => {
-      if (!wrap.isConnected || hasRealGravatar) { logoImg.remove(); return; }
+      if (!wrap.isConnected || hasRealGravatar || logoImg.naturalWidth < 32) { logoImg.remove(); return; }
       logoImg.classList.add('loaded');
       span.style.display = 'none';
     });
     logoImg.addEventListener('error', () => logoImg.remove());
-    logoImg.src = `https://logo.clearbit.com/${domain}`;
+    logoImg.src = `https://icons.duckduckgo.com/ip3/${domain}.ico`;
     wrap.appendChild(logoImg);
   }
 
@@ -3709,6 +3930,9 @@ function applyPrefChange(key, value) {
     updateDockBadge();
   } else if (key.startsWith('notifications-')) {
     syncNotifyPrefs();
+  } else if (key === 'sender-pictures') {
+    renderEmailList(S.isSearching);
+    if (S.selectedEmail) refreshDetailIfSelected(S.selectedEmail);
   } else if (key === 'window-background') {
     applyWindowBackground(value);
   } else if (key === 'list-density') {
@@ -3812,6 +4036,9 @@ function renderSettingsReading() {
     <div class="settings-section">
       <div class="settings-section-title">Message list</div>
       <div class="settings-pref-group">
+        ${makePrefRow('Sender pictures', 'Load photos and company logos from Gravatar and the sender’s website',
+          makeToggle('sender-pictures', 'true')
+        )}
         ${makePrefRow('Density', 'Compact shows more messages: one line per message, no avatars',
           makeSelect('list-density', 'comfortable', [['comfortable', 'Comfortable'], ['compact', 'Compact']])
         )}
@@ -4351,7 +4578,7 @@ function renderSettingsShortcuts() {
       [['⌘', ','], 'Settings'],
     ]],
   ];
-  const keys = ks => ks.map(k => `<kbd>${k}</kbd>`).join('');
+  const keys = ks => ks.map(k => `<kbd>${IS_MAC ? k : ({ '⌘': 'Ctrl', '⇧': 'Shift', '⌥': 'Alt' }[k] || k)}</kbd>`).join('');
   content.innerHTML = groups.map(([title, rows]) => `
     <div class="settings-section">
       <div class="settings-section-title">${title}</div>
@@ -4877,7 +5104,8 @@ document.addEventListener('keydown', e => {
   const composeOpen = !isHidden('composeFloat');
   const setupOpen = !isHidden('setupModal');
   const overlayOpen = !!document.querySelector('.folder-name-overlay');
-  const anyModalOpen = setupOpen || overlayOpen ||
+  const paletteOpen = !isHidden('palette');
+  const anyModalOpen = paletteOpen || setupOpen || overlayOpen ||
     !isHidden('settingsModal') || !isHidden('caldavModal') || !isHidden('addAppModal');
 
   if (e.key === 'Escape') {
@@ -4910,9 +5138,7 @@ document.addEventListener('keydown', e => {
     if (key === ',') { e.preventDefault(); showSettingsModal(); return; }
     if (key === 'k' && !(composeOpen && inInput)) {
       e.preventDefault();
-      const input = document.getElementById('searchInput');
-      input.focus();
-      input.select();
+      if (isHidden('palette')) openPalette(); else closePalette();
       return;
     }
     if (!inInput && sel && key === 'r') {
@@ -4956,6 +5182,7 @@ document.addEventListener('keydown', e => {
 _on('open-settings', () => showSettingsModal());
 _on('toggle-sidebar', () => togglePane('sidebar'));
 _on('toggle-list', () => togglePane('list'));
+_on('open-search', () => openPalette());
 _on('new-message', () => openCompose());
 const withSelectedBody = fn => () => {
   const sel = S.selectedEmail;

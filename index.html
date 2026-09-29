@@ -504,6 +504,20 @@
   </div>
 </div>
 
+<!-- ── Search palette (⌘K) ───────────────────────────────────────── -->
+<div class="palette-overlay hidden" id="palette">
+  <div class="palette" role="dialog" aria-label="Search">
+    <div class="palette-input-row">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+      <input type="text" id="paletteInput" placeholder="Search mail, people and actions…" autocomplete="off" spellcheck="false"
+        role="combobox" aria-expanded="true" aria-controls="paletteResults" />
+      <kbd>esc</kbd>
+    </div>
+    <div class="palette-results" id="paletteResults" role="listbox"></div>
+    <div class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>esc</kbd> close</span></div>
+  </div>
+</div>
+
 <!-- ── Add App Modal ──────────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="addAppModal">
   <div class="modal" style="padding:26px;width:400px">

@@ -96,3 +96,42 @@ test('Settings → Appearance offers the window background only where it works',
   const canTranslucent = await page.evaluate(() => window.electronAPI.canTranslucent);
   await expect(page.locator('select[data-pref="window-background"]')).toHaveCount(canTranslucent ? 1 : 0);
 });
+
+test('⌘K opens the search palette: messages, people, folders and a server search', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  await page.keyboard.press('Control+K');
+  await expect(page.locator('#palette')).toBeVisible();
+  await expect(page.locator('#paletteInput')).toBeFocused();
+  await expect(page.locator('.pal-group').first()).toHaveText(/Actions|Go to|Recent/);
+
+  await page.keyboard.type('invoice');
+  await expect(page.locator('.pal-item').first()).toContainText('Search mail for “invoice”');
+  await expect(page.locator('.pal-item', { hasText: 'Invoice #42' })).toHaveCount(1);
+
+  // Enter runs the server search and fills the list
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#palette')).toBeHidden();
+  await expect(page.locator('#searchInput')).toHaveValue('invoice');
+  await expect(emailItems(page)).toHaveCount(1);
+
+  // Recent searches come back next time; arrows + Enter pick an action
+  await page.locator('.titlebar-search').click();
+  await expect(page.locator('.pal-item', { hasText: 'invoice' }).first()).toBeVisible();
+  await page.locator('#paletteInput').fill('dave');
+  await expect(page.locator('.pal-group', { hasText: 'People' })).toHaveCount(1);
+  await page.locator('#paletteInput').fill('sent');
+  await page.locator('.pal-item').filter({ has: page.locator('.pal-label', { hasText: /^Sent$/ }) }).click();
+  await expect(page.locator('#listTitle')).toHaveText('Sent');
+  await page.keyboard.press('Control+K');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#palette')).toBeHidden();
+});
+
+test('senders without a picture get a placeholder that says what they are', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  await expect(emailItem(page, 'Invoice #42').locator('.sender-avatar')).toHaveAttribute('data-kind', 'billing');
+  await expect(emailItem(page, 'Lunch?').locator('.sender-avatar')).not.toHaveAttribute('data-kind', /./);
+  await expect(emailItem(page, 'Lunch?').locator('.av-initials')).toHaveText('DF');
+});
