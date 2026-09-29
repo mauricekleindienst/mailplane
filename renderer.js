@@ -365,6 +365,19 @@ function updateDockBadge() {
   const enabled = getSetting('dock-badge', 'true') === 'true';
   const total = enabled ? [..._inboxUnread.values()].reduce((a, b) => a + b, 0) : 0;
   _send('badge:set', total);
+  updateAccountBadges();
+}
+
+// Inbox unread counts next to each account in the sidebar
+function updateAccountBadges() {
+  document.querySelectorAll('#accountTabs .acc-tab').forEach(tab => {
+    const badge = tab.querySelector('.acc-tab-badge');
+    if (!badge) return;
+    const id = tab.dataset.accountId;
+    const n = id ? (_inboxUnread.get(id) || 0) : [..._inboxUnread.values()].reduce((a, b) => a + b, 0);
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.classList.toggle('hidden', n === 0);
+  });
 }
 
 let refreshTimer = null;
@@ -674,24 +687,42 @@ function renderAccountTabs() {
   const wrap = document.getElementById('accountTabs');
   wrap.innerHTML = '';
 
-  // "All Mail" tab
+  const mkBadge = () => {
+    const badge = document.createElement('span');
+    badge.className = 'acc-tab-badge hidden';
+    return badge;
+  };
+
+  // "All Mail" entry
   const allTab = document.createElement('button');
   allTab.className = 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : '');
-  allTab.textContent = 'All Mail';
+  const allDot = document.createElement('span');
+  allDot.className = 'acc-tab-dot acc-tab-dot-all';
+  allDot.innerHTML = accountIconSvg('layers', 13, 'white');
+  const allLabel = document.createElement('span');
+  allLabel.className = 'acc-tab-label';
+  allLabel.textContent = 'All Mail';
+  allTab.append(allDot, allLabel, mkBadge());
   allTab.addEventListener('click', () => switchToAll());
   wrap.appendChild(allTab);
 
-  // Per-account tabs
+  // One entry per account, tinted with the account colour
   S.accounts.forEach(acc => {
+    const color = acc.color || colorFor(acc.email);
     const tab = document.createElement('button');
     tab.className = 'acc-tab' + (acc.id === S.activeAccountId ? ' active' : '');
+    tab.dataset.accountId = acc.id;
+    tab.title = acc.email;
+    tab.style.setProperty('--acc-color', color);
 
     const dot = document.createElement('span');
     dot.className = 'acc-tab-dot';
-    dot.style.background = acc.color || colorFor(acc.email);
-    dot.innerHTML = accountIconSvg(acc.icon || 'mail', 13, 'rgba(255,255,255,0.92)');
-    tab.appendChild(dot);
-    tab.appendChild(document.createTextNode(acc.name || acc.email.split('@')[0]));
+    dot.style.background = color;
+    dot.innerHTML = accountIconSvg(acc.icon || 'mail', 13, 'rgba(255,255,255,0.95)');
+    const label = document.createElement('span');
+    label.className = 'acc-tab-label';
+    label.textContent = acc.name || acc.email.split('@')[0];
+    tab.append(dot, label, mkBadge());
 
     tab.addEventListener('click', () => switchAccount(acc.id));
     tab.addEventListener('contextmenu', e => {
@@ -705,9 +736,10 @@ function renderAccountTabs() {
   const addBtn = document.createElement('button');
   addBtn.className = 'acc-add-btn';
   addBtn.title = 'Add Account';
-  addBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
+  addBtn.innerHTML = `<span class="acc-add-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span><span class="acc-tab-label">Add account</span>`;
   addBtn.addEventListener('click', () => showSetupModal(true));
   wrap.appendChild(addBtn);
+  updateAccountBadges();
 }
 
 function switchToAll() {
@@ -750,6 +782,7 @@ async function switchAccount(id) {
 // ── Folder sidebar ────────────────────────────────────────────────────────────
 function showFolderSidebar(showFolders) {
   document.getElementById('folderNav').classList.toggle('hidden', !showFolders);
+  document.getElementById('folderNavLabel').classList.toggle('hidden', !showFolders);
   document.getElementById('appsNav').classList.toggle('hidden', showFolders);
   document.getElementById('calendarNav').classList.toggle('hidden', showFolders);
 }
@@ -762,8 +795,8 @@ function makeFolderBtn(folder) {
 
   const wrap = document.createElement('span');
   wrap.className = 'folder-icon-wrap';
-  wrap.style.background = meta.color;
-  wrap.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="white">${meta.icon}</svg>`;
+  btn.style.setProperty('--folder-color', meta.color);
+  wrap.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">${meta.icon}</svg>`;
   btn.appendChild(wrap);
 
   const label = document.createElement('span');
@@ -1298,9 +1331,12 @@ let draggedEmail = null;
 // ── Render email list ─────────────────────────────────────────────────────────
 function makeEmailItem(email, showAccountBadge) {
   const selected = email.uid === S.selectedUid && email.accountId === S.selectedEmail?.accountId;
+  const acc = S.accounts.find(a => a.id === email.accountId);
   const item = document.createElement('div');
-  item.className = 'email-item' + (selected ? ' selected' : '');
+  item.className = 'email-item' + (selected ? ' selected' : '') + (email.read ? '' : ' is-unread');
   item.setAttribute('draggable', 'true');
+  // Account colour drives the card's accent strip and account tag
+  item.style.setProperty('--acc-color', acc?.color || colorFor(acc?.email || email.accountId));
 
   // Drag-and-drop
   item.addEventListener('dragstart', e => {
@@ -1336,18 +1372,22 @@ function makeEmailItem(email, showAccountBadge) {
   if (!email.read) { const dot = document.createElement('span'); dot.className = 'unread-dot'; subj.appendChild(dot); }
   subj.appendChild(document.createTextNode(email.subject || '(no subject)'));
 
+  let snippetEl = null;
+  if (email.snippet && getSetting('show-snippets', 'true') === 'true') {
+    snippetEl = document.createElement('div');
+    snippetEl.className = 'email-snippet';
+    snippetEl.textContent = email.snippet;
+  }
+
   const footer = document.createElement('div');
   footer.className = 'email-item-footer';
 
-  if (showAccountBadge) {
-    const acc = S.accounts.find(a => a.id === email.accountId);
-    if (acc) {
-      const pill = document.createElement('span');
-      pill.className = 'account-pill';
-      pill.style.background = colorFor(acc.email);
-      pill.textContent = acc.email;
-      footer.appendChild(pill);
-    }
+  if (showAccountBadge && acc) {
+    const pill = document.createElement('span');
+    pill.className = 'account-pill';
+    pill.title = acc.email;
+    pill.textContent = acc.name || acc.email;
+    footer.appendChild(pill);
   }
 
   if (S.isSearching && email.folder) {
@@ -1363,11 +1403,12 @@ function makeEmailItem(email, showAccountBadge) {
   if (email.hasAttachment) {
     const att = document.createElement('span');
     att.className = 'tag-attach';
-    att.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="color:var(--text-tertiary)"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>`;
+    att.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5c0 1.38 1.12 2.5 2.5 2.5s2.5-1.12 2.5-2.5V5c0-2.21-1.79-4-4-4S7 2.79 7 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg>Attachment`;
     footer.appendChild(att);
   }
 
   body.appendChild(subj);
+  if (snippetEl) body.appendChild(snippetEl);
   body.appendChild(footer);
 
   const flagBtn = document.createElement('button');
@@ -1588,8 +1629,16 @@ async function selectEmail(email) {
 
   if (S.bodyCache.size >= 300) S.bodyCache.delete(S.bodyCache.keys().next().value); // evict oldest
   S.bodyCache.set(cacheKey, res.body);
+  if (!email.snippet) email.snippet = snippetFrom(res.body);
   renderDetail(email, res.body);
   scheduleMarkRead(email);
+}
+
+// Short one-line preview of a message body for the list cards
+function snippetFrom(body) {
+  let text = body?.text || '';
+  if (!text && body?.html) text = new DOMParser().parseFromString(body.html, 'text/html').body.textContent || '';
+  return text.replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
 // Scroll the selected list row into view (keyboard navigation)
@@ -1790,18 +1839,22 @@ function renderDetailShell(email) {
 }
 
 // ── Full detail view ──────────────────────────────────────────────────────────
+const PLACEHOLDER_HTML = `<div class="detail-placeholder">
+      <div class="placeholder-art" aria-hidden="true">
+        <span class="pa-card pa-1"></span><span class="pa-card pa-2"></span><span class="pa-card pa-3"></span>
+      </div>
+      <p class="placeholder-title">Select an email to read</p>
+      <p class="placeholder-sub">Your conversations show up here</p>
+      <div class="shortcut-hints">
+        <span>↑↓ Navigate</span><span>⌘N Compose</span><span>⌘R Reply</span><span>⌫ Delete</span>
+      </div>
+    </div>`;
 function renderDetail(email, body) {
   const panel = document.getElementById('emailDetail');
   panel.innerHTML = '';
 
   if (!email) {
-    panel.innerHTML = `<div class="detail-placeholder">
-      <img src="assets/icon.svg" width="52" height="52" style="border-radius:14px;opacity:0.18" alt="" />
-      <p>Select an email to read</p>
-      <div class="shortcut-hints">
-        <span>↑↓ Navigate</span><span>⌘N Compose</span><span>⌘R Reply</span><span>⌫ Delete</span>
-      </div>
-    </div>`;
+    panel.innerHTML = PLACEHOLDER_HTML;
     return;
   }
 
@@ -3572,6 +3625,18 @@ document.getElementById('setupEmail').addEventListener('input', () => {
       }
     }
   }, 350);
+});
+
+// Provider logos come from the network — fall back to a letter badge offline
+document.querySelectorAll('.prov-favicon').forEach(img => {
+  const fallback = () => {
+    const letter = document.createElement('span');
+    letter.className = 'prov-letter';
+    letter.textContent = (img.closest('.prov-btn')?.dataset.name || '?')[0];
+    img.replaceWith(letter);
+  };
+  if (img.complete && img.naturalWidth === 0) fallback();
+  else img.addEventListener('error', fallback, { once: true });
 });
 
 // Provider quick-pick buttons

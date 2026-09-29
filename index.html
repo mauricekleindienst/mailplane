@@ -7,6 +7,7 @@
   <title>Mailplane</title>
   <link rel="icon" type="image/svg+xml" href="assets/icon.svg" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="theme.css" />
 </head>
 <body>
 <div class="app" id="app">
@@ -14,7 +15,15 @@
   <!-- ── Account bar ─────────────────────────────────────────────── -->
   <header class="account-bar">
     <div class="account-bar-drag"></div>
-    <div class="account-tabs" id="accountTabs"></div>
+    <div class="account-bar-search">
+      <div class="search-wrap">
+        <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" class="search-input" id="searchInput" placeholder="Search mail…" />
+        <button class="search-clear hidden" id="searchClear">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+    </div>
     <div class="account-bar-right">
       <button class="compose-btn" id="composeTrigger" title="New Message (⌘N)">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -31,6 +40,10 @@
 
     <!-- Left sidebar -->
     <aside class="folder-sidebar">
+      <div class="sidebar-section-label">Accounts</div>
+      <nav class="account-tabs" id="accountTabs"></nav>
+
+      <div class="sidebar-section-label" id="folderNavLabel">Folders</div>
       <nav class="folder-nav" id="folderNav">
         <!-- dynamically populated by renderer.js -->
       </nav>
@@ -77,13 +90,6 @@
           </button>
         </div>
       </div>
-      <div class="search-wrap">
-        <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" class="search-input" id="searchInput" placeholder="Search…" />
-        <button class="search-clear hidden" id="searchClear">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
       <!-- Bulk action bar (shown when emails are multi-selected) -->
       <div class="bulk-bar hidden" id="bulkBar">
         <span class="bulk-count" id="bulkCount">0 selected</span>
@@ -116,8 +122,11 @@
     <!-- Email detail -->
     <section class="email-detail-panel" id="emailDetail">
       <div class="detail-placeholder">
-        <img src="assets/icon.svg" width="56" height="56" style="border-radius:16px;opacity:0.15" alt="" />
-        <p>Select an email to read</p>
+        <div class="placeholder-art" aria-hidden="true">
+          <span class="pa-card pa-1"></span><span class="pa-card pa-2"></span><span class="pa-card pa-3"></span>
+        </div>
+        <p class="placeholder-title">Select an email to read</p>
+        <p class="placeholder-sub">Your conversations show up here</p>
         <div class="shortcut-hints">
           <span>↑↓ Navigate</span><span>⌘N Compose</span><span>⌘R Reply</span><span>⌫ Delete</span>
         </div>

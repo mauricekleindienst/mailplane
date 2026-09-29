@@ -1,7 +1,7 @@
 # Mailplane — Project Reference
 
 ## What this is
-A native macOS desktop email client built with Electron. Design language matches the Mimestream/Mango Mail aesthetic: three-panel layout, colored category tags, clean SF Pro typography, macOS vibrancy. Supports any IMAP/SMTP provider (Gmail, Outlook, Yahoo, iCloud, custom).
+A native macOS desktop email client built with Electron. Design language: colourful card-based look (Spark/Mango-style) — accounts + folders in a tinted sidebar, emails as rounded cards with an account-colour strip, preview snippet and tags, reading pane as one large card, indigo→violet gradient accent. Supports any IMAP/SMTP provider (Gmail, Outlook, Yahoo, iCloud, custom).
 
 ## Stack
 | Layer | Tech |
@@ -24,7 +24,8 @@ src/imap-manager.js     — ImapFlow connection pool, fetch/body/delete/move/fla
 src/smtp-manager.js     — nodemailer send + verify + undo-send queue
 index.html              — app shell + modals (setup, compose)
 renderer.js             — all UI logic, state, IPC calls
-styles.css              — design tokens + all component styles
+styles.css              — layout + component structure
+theme.css               — "Cards" visual theme (tokens, colours, radius, elevation, dark mode); loaded after styles.css
 ```
 
 ## IPC channels (main ↔ renderer)
@@ -69,6 +70,8 @@ styles.css              — design tokens + all component styles
 ```
 
 ## Key design decisions
+- **Theming**: change the look in `theme.css` (tokens at the top, light + `.dark` + system dark). Per-item colours flow through CSS vars set from JS: `--acc-color` (account colour on sidebar entries and email cards), `--folder-color` (folder role colour).
+- **Snippets**: list cards show a preview only for messages whose body is cached (SQLite `bodies.snippet`); IMAP listing itself doesn't fetch body text.
 - **No framework**: state lives in a plain `S` object in renderer.js; mutations always call a render function.
 - **Connection pool**: `imap-manager.js` keeps one `ImapFlow` client per account ID alive. Each operation locks the mailbox, runs, then releases.
 - **Body cache**: `S.bodyCache` (Map uid→body) — clear on refresh, never persist to disk.

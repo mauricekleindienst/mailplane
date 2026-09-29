@@ -51,6 +51,7 @@
       "renderer.js",
       "index.html",
       "styles.css",
+      "theme.css",
       "assets/**",
       "src/**",
       "node_modules/**",

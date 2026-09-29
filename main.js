@@ -410,6 +410,15 @@ ipcMain.handle('apps:remove', (_, id) => {
 
 // ── Emails ────────────────────────────────────────────────────────────────────
 
+// Attach cached body previews to list entries (bodies are only cached once opened)
+function withSnippets(accountId, folder, messages) {
+  if (!messages?.length) return messages;
+  let snippets;
+  try { snippets = emailCache.getSnippets(accountId, folder); } catch { return messages; }
+  if (!snippets.size) return messages;
+  return messages.map(m => (m.snippet || !snippets.has(String(m.uid)) ? m : { ...m, snippet: snippets.get(String(m.uid)) }));
+}
+
 ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) => {
   try {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
@@ -434,7 +443,7 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
         }
       }).catch(() => {});
       const unseen = cached.filter(m => !m.read).length;
-      return { success: true, messages: cached, total: emailCache.countCachedMessages(accountId, folder), unseen, fromCache: true };
+      return { success: true, messages: withSnippets(accountId, folder, cached), total: emailCache.countCachedMessages(accountId, folder), unseen, fromCache: true };
     }
 
     const result = await mgr(account).fetchEmails(account, folder, lim, off);
@@ -442,14 +451,14 @@ ipcMain.handle('emails:fetch', async (_, { accountId, folder, limit, offset }) =
       if (off === 0) emailCache.replaceMessages(accountId, folder, result.messages);
       else emailCache.cacheMessages(accountId, folder, result.messages);
     }
-    return { success: true, ...result };
+    return { success: true, ...result, messages: withSnippets(accountId, folder, result.messages) };
   } catch (err) {
     // Offline fallback: serve cache even on error
     try {
       const cached = emailCache.getCachedMessages(accountId, folder, limit || 60, offset || 0);
       if (cached.length > 0) {
         return {
-          success: true, messages: cached,
+          success: true, messages: withSnippets(accountId, folder, cached),
           total: emailCache.countCachedMessages(accountId, folder),
           unseen: cached.filter(m => !m.read).length,
           fromCache: true, offline: true,
@@ -465,7 +474,7 @@ ipcMain.handle('emails:search', async (_, { accountId, folder, query }) => {
     const account = accountStore.getAccounts().find(a => a.id === accountId);
     if (!account) return { success: false, error: 'Account not found' };
     const result = await mgr(account).searchEmails(account, folder, query);
-    return { success: true, ...result };
+    return { success: true, ...result, messages: withSnippets(accountId, folder, result.messages) };
   } catch (err) {
     return { success: false, error: err.message };
   }

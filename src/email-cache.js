@@ -54,6 +54,7 @@ function getDb() {
   // Migrate bodies tables created before the meta column existed
   const bodyCols = db.prepare('PRAGMA table_info(bodies)').all().map(r => r.name);
   if (!bodyCols.includes('meta')) db.exec('ALTER TABLE bodies ADD COLUMN meta TEXT');
+  if (!bodyCols.includes('snippet')) db.exec('ALTER TABLE bodies ADD COLUMN snippet TEXT');
   return db;
 }
 
@@ -197,9 +198,9 @@ const upsertBody = (() => {
   return (accountId, folder, uid, body) => {
     stmt = stmt || getDb().prepare(`
       INSERT OR REPLACE INTO bodies
-        (account_id, folder, uid, html, text, attachments, meta, cached_at)
+        (account_id, folder, uid, html, text, attachments, meta, snippet, cached_at)
       VALUES
-        (@accountId, @folder, @uid, @html, @text, @attachments, @meta, @cachedAt)
+        (@accountId, @folder, @uid, @html, @text, @attachments, @meta, @snippet, @cachedAt)
     `);
     stmt.run({
       accountId,
@@ -214,10 +215,32 @@ const upsertBody = (() => {
         date: body.date, auth: body.auth, unsubscribeUrl: body.unsubscribeUrl,
         messageId: body.messageId, references: body.references,
       }),
+      snippet: makeSnippet(body),
       cachedAt: Date.now(),
     });
   };
 })();
+
+// One-line plain-text preview shown on the list cards
+function makeSnippet(body) {
+  let text = body.text || '';
+  if (!text && body.html) {
+    text = body.html
+      .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+      .replace(/&#39;|&apos;/gi, "'").replace(/&quot;/gi, '"');
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, 160) || null;
+}
+
+// uid → snippet for messages whose body has been cached
+function getSnippets(accountId, folder) {
+  const rows = getDb()
+    .prepare('SELECT uid, snippet FROM bodies WHERE account_id = ? AND folder = ? AND snippet IS NOT NULL')
+    .all(accountId, folder);
+  return new Map(rows.map(r => [String(r.uid), r.snippet]));
+}
 
 function getCachedBody(accountId, folder, uid) {
   const row = getDb()
@@ -264,6 +287,7 @@ module.exports = {
   evictFolder,
   getCachedBody,
   cacheBody,
+  getSnippets,
   pruneOldEntries,
   close,
 };

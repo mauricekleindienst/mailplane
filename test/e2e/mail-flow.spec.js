@@ -195,7 +195,7 @@ test('All Mail shows every account with account pills and a combined unread coun
   const { page } = ctx;
   await page.locator('.acc-tab-all').click();
   await expect(emailItems(page)).toHaveCount(4);
-  await expect(page.locator('.account-pill', { hasText: 'bob@work.test' })).toHaveCount(1);
+  await expect(page.locator('.account-pill', { hasText: 'Bob Work' })).toHaveCount(1);
   await expect(page.locator('#unreadTotal')).toHaveText('3 unread');
 });
 

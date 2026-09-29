@@ -9,15 +9,42 @@ const { launchApp, sendToRenderer, emailItem, emailItems, msg, defaultMailboxes,
 let ctx;
 test.afterEach(async () => { await ctx?.close(); ctx = null; });
 
-test('email list rows are compact (no empty checkbox row)', async () => {
+test('email list renders as separated, rounded cards with account colour strip', async () => {
   ctx = await launchApp();
   const { page } = ctx;
-  const box = await emailItem(page, 'Lunch?').boundingBox();
-  expect(box.height).toBeLessThan(80);
+  const first = await emailItem(page, 'Quarterly report').boundingBox();
+  const second = await emailItem(page, 'Lunch?').boundingBox();
+  expect(first.height).toBeLessThan(110);
+  expect(second.y - (first.y + first.height)).toBeGreaterThanOrEqual(4); // gap between cards
+  const card = emailItem(page, 'Lunch?');
+  expect(parseFloat(await card.evaluate(el => getComputedStyle(el).borderTopLeftRadius))).toBeGreaterThanOrEqual(10);
+  expect(await card.evaluate(el => el.style.getPropertyValue('--acc-color'))).toBe('#3498db');
   // Checkbox appears on hover, overlaying the avatar
-  await emailItem(page, 'Lunch?').hover();
-  await expect(emailItem(page, 'Lunch?').locator('.email-checkbox')).toHaveCSS('opacity', '1');
+  await card.hover();
+  await expect(card.locator('.email-checkbox')).toHaveCSS('opacity', '1');
   await page.screenshot({ path: 'test-results/ui-list.png' });
+});
+
+test('accounts live in the sidebar with unread badges', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  await expect(page.locator('.folder-sidebar #accountTabs .acc-tab')).toHaveCount(3);
+  await expect(page.locator('.acc-tab[data-account-id="acc-a"] .acc-tab-badge')).toHaveText('2');
+  // All Mail badge sums up all inboxes once they are loaded
+  await page.locator('.acc-tab-all').click();
+  await expect(page.locator('.acc-tab-all .acc-tab-badge')).toHaveText('3');
+  await expect(page.locator('#folderNavLabel')).toBeHidden();
+});
+
+test('opened messages get a preview snippet on their card', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  await emailItem(page, 'Quarterly report').click();
+  await expect(page.locator('.detail-text-body')).toHaveText('Please see the numbers.');
+  await page.reload();
+  await expect(emailItem(page, 'Quarterly report').locator('.email-snippet')).toHaveText('Please see the numbers.');
+  await emailItem(page, 'Quarterly report').click();
+  await page.screenshot({ path: 'test-results/ui-detail.png' });
 });
 
 test('HTML mail cannot run scripts and blocks remote images until requested', async () => {
@@ -78,6 +105,8 @@ test('settings modal opens, switches panels and closes with Escape', async () =>
   await expect(page.locator('#settingsPanelTitle')).toHaveText('Accounts');
   await expect(page.locator('.settings-acc-card')).toHaveCount(2);
 
+  await page.locator('.settings-acc-card').first().locator('.settings-acc-card-header').click();
+  await page.screenshot({ path: 'test-results/ui-settings.png' });
   for (const [panel, title] of [['general', 'General'], ['reading', 'Reading'], ['composing', 'Composing'],
     ['appearance', 'Appearance'], ['shortcuts', 'Keyboard Shortcuts'], ['about', 'About']]) {
     await page.locator(`.settings-nav-item[data-panel="${panel}"]`).click();
@@ -95,6 +124,7 @@ test('theme switch applies dark and light mode', async () => {
   await page.locator('.theme-option-btn[data-theme="dark"]').click();
   await expect(page.locator('html')).toHaveClass(/dark/);
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(400); // let colour transitions finish
   await page.screenshot({ path: 'test-results/ui-dark.png' });
 
   await page.locator('#settingsBtn').click();
@@ -140,6 +170,7 @@ test('first run without accounts shows the setup modal; adding one opens its inb
   const { page } = ctx;
   await expect(page.locator('#setupModal')).toBeVisible();
   await expect(page.locator('#setupCancelBtn')).toBeHidden();
+  await page.screenshot({ path: 'test-results/ui-setup.png' });
 
   await page.fill('#setupEmail', 'not-an-email');
   await page.fill('#setupPassword', 'secret');
@@ -196,6 +227,7 @@ test('Escape closes compose, and ⌘N / Ctrl+N opens it', async () => {
   const { page } = ctx;
   await page.keyboard.press('Control+n');
   await expect(page.locator('#composeFloat')).toBeVisible();
+  await page.screenshot({ path: 'test-results/ui-compose.png' });
   await page.keyboard.press('Escape');
   await expect(page.locator('#composeFloat')).toBeHidden();
 });
