@@ -436,45 +436,152 @@ function updateAccountBadges() {
 let refreshTimer = null;
 
 // ── Resizable panel dividers ──────────────────────────────────────────────────
-(function initResizers() {
-  const listPanel = document.getElementById('emailListPanel');
-  const sidebar = document.querySelector('.folder-sidebar');
+// ── Pane layout (Obsidian-style) ──────────────────────────────────────────────
+// Sidebar and message list are resizable by dragging the handle to their right.
+// Dragging a pane well below its minimum collapses it; dragging the handle back
+// out restores it. Double-click a handle to reset its width. Handles are
+// keyboard-focusable (←/→ resize, ⇧ for bigger steps, Enter collapses/expands).
+// ⌘\ toggles the sidebar, ⇧⌘\ the message list. Layout persists across launches.
+const PANES = {
+  sidebar: { selector: '.folder-sidebar', resizer: 'sidebarResizer', min: 150, max: 360, def: 196, label: 'sidebar' },
+  list:    { selector: '#emailListPanel', resizer: 'listResizer',    min: 260, max: 680, def: 340, label: 'message list' },
+};
+const DETAIL_MIN = 380;      // reading pane never gets narrower than this while resizing
+const COLLAPSE_AT = 0.55;    // collapse once dragged below 55 % of the pane's minimum
+const LAYOUT_KEY = 'mailplane-layout';
 
-  // Restore saved widths
-  const savedListW = localStorage.getItem('mailplane-panel-list-width');
-  if (savedListW) { listPanel.style.width = savedListW + 'px'; listPanel.style.minWidth = Math.max(220, +savedListW) + 'px'; }
-  const savedSideW = localStorage.getItem('mailplane-panel-sidebar-width');
-  if (savedSideW) { sidebar.style.width = savedSideW + 'px'; sidebar.style.minWidth = Math.max(140, +savedSideW) + 'px'; }
+const layout = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') || {}; } catch {}
+  // Migrate the widths stored by the previous resizer implementation
+  const legacy = { sidebar: 'mailplane-panel-sidebar-width', list: 'mailplane-panel-list-width' };
+  const state = {};
+  for (const [id, pane] of Object.entries(PANES)) {
+    const legacyW = parseInt(localStorage.getItem(legacy[id]), 10);
+    const w = Number(saved[id]?.w) || (legacyW > 0 ? legacyW : pane.def);
+    state[id] = { w: Math.max(pane.min, Math.min(pane.max, w)), collapsed: !!saved[id]?.collapsed };
+  }
+  return state;
+})();
 
-  function makeResizer(resizerId, panel, minW, maxW, storageKey) {
-    const resizer = document.getElementById(resizerId);
-    if (!resizer) return;
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch {}
+}
+
+// Largest width a pane may take while leaving the reading pane DETAIL_MIN wide
+function maxWidthFor(id) {
+  const panels = document.querySelector('.main-panels');
+  const gutters = [...panels.querySelectorAll('.panel-resizer')].reduce((sum, r) => sum + r.offsetWidth, 0);
+  const others = Object.entries(PANES)
+    .filter(([other]) => other !== id && !layout[other].collapsed)
+    .reduce((sum, [other]) => sum + layout[other].w, 0);
+  const pad = 14; // .main-panels right padding
+  return Math.max(PANES[id].min, Math.min(PANES[id].max, panels.clientWidth - others - gutters - pad - DETAIL_MIN));
+}
+
+function applyLayout() {
+  const app = document.getElementById('app');
+  const root = document.documentElement.style;
+  for (const [id, pane] of Object.entries(PANES)) {
+    const st = layout[id];
+    const w = st.collapsed ? 0 : Math.min(st.w, maxWidthFor(id));
+    root.setProperty(`--${id}-w`, w + 'px');
+    app.classList.toggle(`${id}-collapsed`, st.collapsed);
+    const handle = document.getElementById(pane.resizer);
+    handle.setAttribute('aria-valuenow', String(w));
+    handle.setAttribute('aria-expanded', String(!st.collapsed));
+    handle.title = st.collapsed
+      ? `Drag or press Enter to show the ${pane.label}`
+      : `Drag to resize · double-click to reset · Enter to hide the ${pane.label}`;
+  }
+  document.getElementById('sidebarToggle')?.classList.toggle('active', !layout.sidebar.collapsed);
+}
+
+function setPaneCollapsed(id, collapsed) {
+  layout[id].collapsed = collapsed;
+  applyLayout();
+  saveLayout();
+}
+const togglePane = id => setPaneCollapsed(id, !layout[id].collapsed);
+
+(function initPaneResizers() {
+  for (const [id, pane] of Object.entries(PANES)) {
+    const handle = document.getElementById(pane.resizer);
+    handle.setAttribute('role', 'separator');
+    handle.setAttribute('aria-orientation', 'vertical');
+    handle.setAttribute('aria-label', `Resize ${pane.label}`);
+    handle.setAttribute('aria-valuemin', '0');
+    handle.setAttribute('aria-valuemax', String(pane.max));
+    handle.tabIndex = 0;
+
     let drag = null;
-    resizer.addEventListener('mousedown', e => {
+    handle.addEventListener('pointerdown', e => {
+      if (e.button !== 0) return;
       e.preventDefault();
-      drag = { startX: e.clientX, startW: panel.offsetWidth };
-      resizer.classList.add('dragging');
-      document.body.style.cursor = 'col-resize';
-      document.body.style.userSelect = 'none';
+      handle.setPointerCapture(e.pointerId);
+      drag = {
+        startX: e.clientX,
+        startW: layout[id].collapsed ? 0 : Math.min(layout[id].w, maxWidthFor(id)),
+        restoreW: layout[id].w, // width to come back to if this drag ends collapsed
+      };
+      handle.classList.add('dragging');
+      document.body.classList.add('pane-resizing');
     });
-    document.addEventListener('mousemove', e => {
+    handle.addEventListener('pointermove', e => {
       if (!drag) return;
-      const w = Math.max(minW, Math.min(maxW, drag.startW + (e.clientX - drag.startX)));
-      panel.style.width = w + 'px';
-      panel.style.minWidth = w + 'px';
+      const raw = drag.startW + (e.clientX - drag.startX);
+      if (raw < pane.min * COLLAPSE_AT) {
+        // Collapse, but remember the width it had so expanding restores it
+        layout[id].collapsed = true;
+        layout[id].w = drag.restoreW;
+      } else {
+        layout[id].collapsed = false;
+        layout[id].w = Math.max(pane.min, Math.min(maxWidthFor(id), raw));
+      }
+      applyLayout();
     });
-    document.addEventListener('mouseup', () => {
+    const endDrag = () => {
       if (!drag) return;
       drag = null;
-      resizer.classList.remove('dragging');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      localStorage.setItem(storageKey, panel.offsetWidth);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('pane-resizing');
+      saveLayout();
+    };
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+    handle.addEventListener('lostpointercapture', endDrag);
+
+    handle.addEventListener('dblclick', () => {
+      layout[id] = { w: pane.def, collapsed: false };
+      applyLayout();
+      saveLayout();
+    });
+
+    handle.addEventListener('keydown', e => {
+      const step = e.shiftKey ? 48 : 16;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        e.stopPropagation();
+        const cur = layout[id].collapsed ? 0 : layout[id].w;
+        const next = cur + (e.key === 'ArrowRight' ? step : -step);
+        if (next < pane.min * COLLAPSE_AT) layout[id].collapsed = true; // keeps its width for later
+        else layout[id] = { w: Math.max(pane.min, Math.min(maxWidthFor(id), next)), collapsed: false };
+        applyLayout();
+        saveLayout();
+      } else if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePane(id);
+      }
     });
   }
 
-  makeResizer('listResizer', listPanel, 220, 600, 'mailplane-panel-list-width');
-  makeResizer('sidebarResizer', sidebar, 140, 260, 'mailplane-panel-sidebar-width');
+  document.getElementById('sidebarToggle').addEventListener('click', () => togglePane('sidebar'));
+  window.addEventListener('resize', applyLayout);
+  applyLayout();
+  // Enable width transitions only once the restored layout has been painted,
+  // so launching doesn't animate from the default widths
+  requestAnimationFrame(() => requestAnimationFrame(() => document.body.classList.add('panes-ready')));
 })();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1031,11 +1138,7 @@ function openApp(app) {
   activeAppId = app.id;
   renderAppsNav();
   const view = document.getElementById('appView');
-  // Align left edge to the current sidebar width (tracks resize)
-  const sidebar = document.querySelector('.folder-sidebar');
-  const resizer = document.getElementById('sidebarResizer');
-  view.style.left = (sidebar.offsetWidth + (resizer ? resizer.offsetWidth : 5)) + 'px';
-  view.classList.remove('hidden');
+  view.classList.remove('hidden'); // left edge follows --sidebar-w (see theme.css)
   document.getElementById('appViewTitle').textContent = app.name;
   const wv = document.getElementById('appWebview');
   wv.src = app.url;
@@ -3539,6 +3642,10 @@ function renderSettingsShortcuts() {
       [['U'], 'Mark read / unread'],
       [['S'], 'Star / unstar'],
     ]],
+    ['Layout', [
+      [['⌘', '\\'], 'Show / hide sidebar'],
+      [['⇧', '⌘', '\\'], 'Show / hide message list'],
+    ]],
     ['App', [
       [['⇧', '⌘', 'N'], 'Refresh'],
       [['⌘', ','], 'Settings'],
@@ -3913,6 +4020,7 @@ document.addEventListener('keydown', e => {
   if (cmd && !anyModalOpen) {
     const sel = S.selectedEmail;
     if (key === 'n' && !e.shiftKey) { e.preventDefault(); openCompose(); return; }
+    if (e.code === 'Backslash') { e.preventDefault(); togglePane(e.shiftKey ? 'list' : 'sidebar'); return; }
     if (key === ',') { e.preventDefault(); showSettingsModal(); return; }
     if (!inInput && sel && key === 'r') {
       e.preventDefault();
@@ -3953,6 +4061,8 @@ document.addEventListener('keydown', e => {
 
 // ── App menu IPC ──────────────────────────────────────────────────────────────
 _on('open-settings', () => showSettingsModal());
+_on('toggle-sidebar', () => togglePane('sidebar'));
+_on('toggle-list', () => togglePane('list'));
 _on('new-message', () => openCompose());
 const withSelectedBody = fn => () => {
   const sel = S.selectedEmail;

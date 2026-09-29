@@ -181,6 +181,11 @@ function buildAppMenu() {
     {
       label: 'View',
       submenu: [
+        // Handled in the renderer (keydown) so they also work while typing;
+        // registerAccelerator: false shows the shortcut without double-firing.
+        { label: 'Show / Hide Sidebar', accelerator: 'CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-sidebar') },
+        { label: 'Show / Hide Message List', accelerator: 'Shift+CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-list') },
+        { type: 'separator' },
         // Default ⌘R would collide with Mail → Reply
         { role: 'reload', accelerator: 'CmdOrCtrl+Alt+R' },
         { role: 'toggleDevTools' },

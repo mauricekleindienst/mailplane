@@ -235,20 +235,10 @@ body {
   border-radius: var(--radius-lg);
   overflow: hidden;
 }
-.email-list-panel { width: 340px; min-width: 260px; }
-.panel-resizer, .panel-resizer:hover, .panel-resizer.dragging {
-  width: 12px;
-  padding: 0 5px;
-  background: transparent;
-  background-clip: content-box;
-}
-.panel-resizer:hover, .panel-resizer.dragging { background: var(--tile-active); background-clip: content-box; }
-#sidebarResizer { width: 8px; padding: 0 3px; }
+/* Pane widths + resize handles: see "Pane layout" at the end of this file */
 
 /* ── Folder rail ───────────────────────────────────────────────────────── */
 .folder-sidebar {
-  width: 196px;
-  min-width: 160px;
   background: transparent;
   padding: 4px 0 12px;
 }
@@ -949,3 +939,81 @@ body {
 
 /* List snippet clamp follows Settings → Reading → Preview lines */
 .email-snippet { -webkit-line-clamp: var(--preview-lines, 2); }
+
+/* ══ Pane layout: resizable + collapsible (widths set by renderer.js) ════ */
+.folder-sidebar {
+  width: var(--sidebar-w, 196px);
+  min-width: 0 !important;
+  flex: none;
+  overflow-x: hidden;
+}
+.folder-sidebar > * { min-width: 150px; }   /* content doesn't reflow while animating */
+.email-list-panel {
+  width: var(--list-w, 340px);
+  min-width: 0 !important;
+  flex: none;
+}
+.email-list-panel > * { min-width: 260px; }
+body.panes-ready .folder-sidebar,
+body.panes-ready .email-list-panel { transition: width 0.2s ease, opacity 0.2s ease; }
+body.pane-resizing .folder-sidebar,
+body.pane-resizing .email-list-panel { transition: none; }
+body.pane-resizing { cursor: col-resize; user-select: none; }
+body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } /* keep drag events */
+
+#app.sidebar-collapsed .folder-sidebar,
+#app.list-collapsed .email-list-panel { opacity: 0; pointer-events: none; }
+#app.list-collapsed .email-list-panel { visibility: hidden; transition: width 0.2s ease, opacity 0.2s ease, visibility 0s 0.2s; }
+#app.sidebar-collapsed .folder-sidebar { visibility: hidden; transition: width 0.2s ease, opacity 0.2s ease, visibility 0s 0.2s; }
+
+/* Handles: invisible gutter, a thin line on hover/drag/focus */
+.panel-resizer, .panel-resizer:hover, .panel-resizer.dragging {
+  position: relative;
+  width: 12px;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+  outline: none;
+  touch-action: none;
+}
+#sidebarResizer { width: 10px; }
+.panel-resizer::before {
+  content: '';
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.panel-resizer:hover::before { background: var(--tile-active); }
+.panel-resizer.dragging::before,
+.panel-resizer:focus-visible::before { background: var(--lime-deep); }
+/* Collapsed pane: show a small grip so it's discoverable */
+#app.sidebar-collapsed #sidebarResizer,
+#app.list-collapsed #listResizer { width: 14px; }
+#app.sidebar-collapsed #sidebarResizer::after,
+#app.list-collapsed #listResizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 36px;
+  margin: -18px 0 0 -2px;
+  border-radius: 2px;
+  background: var(--tile-active);
+}
+
+/* Title-bar toggle */
+.sidebar-toggle { margin-right: 8px; flex-shrink: 0; -webkit-app-region: no-drag; }
+.sidebar-toggle.active { color: var(--text-primary) !important; }
+
+/* Overlays and expanded compose follow the sidebar width */
+.app-view { left: calc(var(--sidebar-w, 196px) + 10px) !important; }
+.compose-float.expanded { left: calc(var(--sidebar-w, 196px) + 14px); }
+#app.sidebar-collapsed .app-view { left: 14px !important; }
+#app.sidebar-collapsed .compose-float.expanded { left: 14px; }
