@@ -6,7 +6,7 @@ A native macOS desktop email client built with Electron. Design language ("Frost
 ## Stack
 | Layer | Tech |
 |---|---|
-| Shell | Electron 30 (Node 20, Chromium 124) |
+| Shell | Electron 44 (Node 24) |
 | IMAP | `imapflow` — promise-based, modern |
 | SMTP | `nodemailer` |
 | Storage | `electron-store` v8 (CommonJS, `~/Library/Application Support/mailplane/accounts.json`) |
@@ -121,7 +121,7 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 - **Single-key shortcuts (⌫ / E / U / S / j / k) live only in the renderer** — never as menu accelerators, which would swallow keystrokes in text fields.
 - **Delete moves to Trash** (permanent only when already in Trash); the SQLite cache is updated on delete/move/flag/read so removed mail doesn't reappear.
 - **Multi-select**: `S.selectedUids` Set tracks checked emails; bulk action bar appears when non-empty.
-- **Electron 30 required**: imapflow → pino v10 requires `diagnostics_channel.tracingChannel` (Node ≥ 18.19).
+- **better-sqlite3 13** is N-API with bundled prebuilds for every OS — no electron-rebuild step (`npmRebuild: false`). `File.path` is gone since Electron 32: use `window.electronAPI.pathForFile(file)`.
 
 ## Gmail setup (for users)
 1. Enable **2-Step Verification** on Google account

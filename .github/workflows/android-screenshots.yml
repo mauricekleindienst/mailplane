@@ -26,16 +26,16 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: android-screenshots
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Remove the previous screenshots
         run: gh release delete "$TAG" --cleanup-tag -y || true
       - if: inputs.action == 'publish'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
       - if: inputs.action == 'publish'
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
       - name: Render screens
         if: inputs.action == 'publish'
         working-directory: android

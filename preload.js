@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const nodeCrypto = require('crypto');
 const { version: APP_VERSION } = require('./package.json');
 
@@ -81,6 +81,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** App version from package.json — exposed so renderer can display it. */
   appVersion: APP_VERSION,
+  // File.path is gone since Electron 32 — this is its replacement
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
 
   /** OS the window chrome is laid out for ('darwin' | 'win32' | 'linux'). */
   platform: process.env.MAILPLANE_PLATFORM || process.platform,

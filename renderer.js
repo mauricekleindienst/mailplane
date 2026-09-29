@@ -3304,8 +3304,9 @@ document.getElementById('composeAttachBtn').addEventListener('click', () => {
   inp.onchange = () => {
     if (!inp.files.length) return;
     Array.from(inp.files).forEach(f => {
-      if (!S.pendingAttachments.some(a => a.path === f.path && a.name === f.name)) {
-        S.pendingAttachments.push({ name: f.name, type: f.type || 'application/octet-stream', path: f.path, size: f.size });
+      const p = window.electronAPI.pathForFile(f);
+      if (p && !S.pendingAttachments.some(a => a.path === p && a.name === f.name)) {
+        S.pendingAttachments.push({ name: f.name, type: f.type || 'application/octet-stream', path: p, size: f.size });
       }
     });
     renderAttachmentChips();

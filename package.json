@@ -28,14 +28,13 @@
     "release:patch": "npm version patch && git push --follow-tags",
     "release:minor": "npm version minor && git push --follow-tags",
     "release:major": "npm version major && git push --follow-tags",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
     "screenshots": "playwright test --config scripts/screenshots.config.js"
   },
   "dependencies": {
     "@sentry/electron": "^7.13.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.3",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",
     "imapflow": "^1.3.3",
@@ -43,10 +42,9 @@
     "nodemailer": "^6.10.1"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.4",
     "@playwright/test": "^1.63.0",
-    "electron": "^30.5.1",
-    "electron-builder": "^24.13.3",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "eslint": "^8.57.1",
     "prettier": "^3.8.3"
   },
@@ -163,6 +161,7 @@
     },
     "appImage": {
       "artifactName": "${productName}-${version}-linux-x64.${ext}"
-    }
+    },
+    "npmRebuild": false
   }
 }
