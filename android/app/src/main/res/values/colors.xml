@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="canvas">#FFE2E6E3</color>
+    <color name="ink">#FF262A28</color>
+    <color name="icon_background">#FF232725</color>
+</resources>

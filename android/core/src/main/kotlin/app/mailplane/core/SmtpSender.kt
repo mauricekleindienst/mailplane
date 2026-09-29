@@ -26,6 +26,16 @@ object SmtpSender {
         return mime.messageID
     }
 
+    /** Connects and authenticates without sending — used by account setup. */
+    fun verify(account: Account, password: String) {
+        val (session, protocol) = MailSessions.smtp(account.smtp)
+        try {
+            session.getTransport(protocol).use { it.connect(account.smtp.host, account.smtp.port, account.username, password) }
+        } catch (e: MessagingException) {
+            throw MailException(ImapMailClient.friendlyError(e), e)
+        }
+    }
+
     /** Builds the MIME message (exposed for tests and "save to Sent"). */
     fun build(session: javax.mail.Session, account: Account, message: OutgoingMessage): MimeMessage {
         val invalid = Addresses.firstInvalid(message.to)

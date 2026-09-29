@@ -218,6 +218,10 @@ class ImapMailClientTest {
         assertEquals("a.txt", parsed.attachments.single().fileName)
     }
 
+    @Test fun `smtp verify checks the login`() {
+        SmtpSender.verify(account, password)
+    }
+
     @Test fun `smtp rejects invalid recipients before connecting`() {
         val e = assertFailsWith<MailException> {
             SmtpSender.send(account, password, OutgoingMessage(to = "not-an-address", subject = "x", text = "x"))

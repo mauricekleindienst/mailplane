@@ -29,6 +29,19 @@ theme.css               — "Frost" visual theme (tokens, colours, radius, eleva
 assets/icon.svg         — app logo (source of truth); `npm run build:icons` renders icon.png + icon.icns
 ```
 
+## Android app (`android/`)
+Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
+- `:core` — plain Kotlin/JVM mail engine on the javax.mail 1.6 API (`com.sun.mail:android-mail` on device,
+  `jakarta.mail` 1.6.7 on the JVM): `ImapMailClient`, `SmtpSender`, `MimeParser`, `AutoConfig`
+  (presets → Mozilla ISPDB → domain autoconfig), `ProviderPresets` (incl. app-password help links).
+  Tested against GreenMail: `cd android && ./gradlew :core:test` (works without the Android SDK).
+- `:app` — only included when an Android SDK is configured. Onboarding (welcome → e-mail with provider
+  detection → password with app-password guidance → live IMAP/SMTP check → name/colour), inbox with account
+  pills + folder drawer + swipe archive/delete, sandboxed HTML reader (no JS, images on request), compose/reply,
+  settings (theme, accent, notifications), background sync via WorkManager, mailto: handling.
+  Passwords are AES-GCM encrypted with an Android Keystore key (`CredentialStore`).
+- Protocols: IMAP/SMTP only on Android (JMAP is desktop-only, Fastmail). No OAuth anywhere yet.
+
 ## IPC channels (main ↔ renderer)
 | Channel | Direction | Payload |
 |---|---|---|
@@ -114,8 +127,17 @@ SQLite cache and renderer run end-to-end without a mail server. Screenshots land
 
 ## Building & distribution
 ```bash
-npm run build:mac   # builds DMG + ZIP for arm64 + x64 into dist/
+npm run build:mac     # DMG + ZIP (arm64 + x64) into dist/
+npm run build:win     # NSIS installer (x64 + arm64)
+npm run build:linux   # AppImage + .deb
+cd android && ./gradlew :app:assembleDebug   # Android APK (needs ANDROID_HOME / local.properties)
 ```
+**Releases** (`.github/workflows/release.yml`): `npm run release:patch|minor|major` (or Actions → Release → Run workflow)
+tags `vX.Y.Z`; the workflow creates a draft GitHub Release, builds macOS / Windows / Linux (electron-builder,
+`releaseType: draft`) and the Android APK in parallel, uploads everything into the draft, then publishes it with
+generated notes and a download table. Signing is optional via repository secrets (listed at the top of the workflow).
+The Android versionCode/versionName come from package.json, so all platforms share one version.
+**CI** (`.github/workflows/ci.yml`) runs lint, unit, E2E and the Android engine tests + debug APK build on every push.
 Code signing requires `CSC_LINK` + `CSC_KEY_PASSWORD` env vars (Apple Developer ID cert).
 Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
 

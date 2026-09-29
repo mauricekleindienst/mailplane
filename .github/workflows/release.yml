@@ -1,106 +1,184 @@
-name: Build and Release
+name: Release
 
-# Two ways to trigger a release:
+# Publishes Mailplane for macOS, Windows, Linux and Android to one GitHub Release.
 #
-#   1. Push a version tag from your machine:
-#        npm run release:patch   # or :minor / :major
-#      That bumps package.json, commits, tags, and pushes — this workflow picks it up.
+# Two ways to release:
+#   1. Locally:  npm run release:patch   (or :minor / :major)
+#      bumps package.json, commits, tags vX.Y.Z and pushes → this workflow runs.
+#   2. GitHub:   Actions → Release → Run workflow → pick patch / minor / major.
 #
-#   2. GitHub UI: Actions → Build and Release → Run workflow → choose patch/minor/major.
-#      Useful when you can't push locally.
+# Flow: create a draft release → build all platforms in parallel and upload
+# into the draft → publish it with generated release notes once everything
+# succeeded. A failed platform leaves the draft unpublished (nothing half-released).
+#
+# Optional repository secrets:
+#   macOS signing/notarisation: CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID,
+#                               APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+#   Windows signing:            WIN_CSC_LINK, WIN_CSC_KEY_PASSWORD
+#   Android signing:            ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+#                               ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+# Without them the builds are unsigned (Android falls back to the debug key).
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       bump:
-        description: 'Version bump type'
+        description: Version bump
         required: true
         default: patch
         type: choice
-        options:
-          - patch
-          - minor
-          - major
+        options: [patch, minor, major]
 
 permissions:
-  contents: write   # push version commit + tag; create/edit GitHub Release
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-latest   # required for macOS DMG builds
-
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history so generate-notes spans all commits
-
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: npm
-
-      # Resolve which version we're releasing and normalise package.json.
-      # • workflow_dispatch: bump via npm version, push the new commit + tag.
-      #   (GITHUB_TOKEN pushes don't re-trigger workflows, so no infinite loop.)
-      # • tag push: version is already in the tag; just sync package.json.
       - name: Resolve version
         id: ver
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            RAW=$(npm version ${{ inputs.bump }})
+            RAW=$(npm version ${{ inputs.bump }} --no-git-tag-version)
             VERSION="${RAW#v}"
+            git commit -am "Release v$VERSION"
+            git tag "v$VERSION"
             git push origin HEAD --follow-tags
           else
-            VERSION="${{ github.ref_name }}"
-            VERSION="${VERSION#v}"
-            # Sync package.json without creating a new commit/tag
-            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            VERSION="${GITHUB_REF_NAME#v}"
           fi
-          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION"      >> "$GITHUB_OUTPUT"
-
-      # npm ci runs postinstall → electron-rebuild for better-sqlite3
-      - name: Install dependencies
-        run: npm ci
-
-      # electron-builder creates DMG + ZIP (arm64 + x64) and uploads them plus
-      # latest-mac.yml to a new GitHub Release.  The yml file is what
-      # electron-updater fetches on every app launch to detect new versions.
-      - name: Build and publish
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false   # skip ad-hoc signing on unsigned CI builds
-          # Uncomment once you have an Apple Developer ID cert in repo secrets:
-          # CSC_LINK:                     ${{ secrets.CSC_LINK }}
-          # CSC_KEY_PASSWORD:             ${{ secrets.CSC_KEY_PASSWORD }}
-          # APPLE_ID:                     ${{ secrets.APPLE_ID }}
-          # APPLE_APP_SPECIFIC_PASSWORD:  ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          # APPLE_TEAM_ID:                ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --publish always
-
-      # Rename the release and attach auto-generated changelog from GitHub
-      - name: Set release title and changelog
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION"    >> "$GITHUB_OUTPUT"
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.ver.outputs.tag }}"
-          TITLE="Mailplane $TAG"
-          BODY=$(gh api "repos/${{ github.repository }}/releases/generate-notes" \
-            -f tag_name="$TAG" \
-            --jq '.body')
-          gh release edit "$TAG" --title "$TITLE" --notes "$BODY" --draft=false
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --title "Mailplane $TAG" --notes "Building…" --verify-tag
 
-      - name: Job summary
+  desktop:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: --mac
+          - os: windows-latest
+            platform: --win
+          - os: ubuntu-latest
+            platform: --linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Sync version
+        shell: bash
+        run: npm version "${{ needs.prepare.outputs.version }}" --no-git-tag-version --allow-same-version
+      # postinstall rebuilds better-sqlite3 against Electron for this OS
+      - run: npm ci
+      - name: Build and upload to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npx electron-builder ${{ matrix.platform }} --publish always
+
+  android:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Decode signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          V="${{ steps.ver.outputs.version }}"
-          echo "### Mailplane v$V released 🚀"                                   >> "$GITHUB_STEP_SUMMARY"
-          echo ""                                                                  >> "$GITHUB_STEP_SUMMARY"
-          echo "- DMG + ZIP for arm64 + x64 uploaded to GitHub Releases"          >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`latest-mac.yml\` published — electron-updater will pick it up" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "MAILPLANE_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          fi
+      - name: Test engine and build release APK
+        working-directory: android
+        env:
+          MAILPLANE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          MAILPLANE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          MAILPLANE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :core:test :app:assembleRelease
+      - name: Upload APK to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK="Mailplane-${{ needs.prepare.outputs.version }}-android.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release upload "${{ needs.prepare.outputs.tag }}" "$APK" --clobber
+
+  publish:
+    needs: [prepare, desktop, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release with notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          NOTES=$(gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" --jq '.body')
+          DOWNLOADS=$(cat <<'MD'
+          ## Downloads
+
+          | Platform | File |
+          |---|---|
+          | macOS (Apple Silicon) | `Mailplane-VERSION-mac-arm64.dmg` |
+          | macOS (Intel) | `Mailplane-VERSION-mac-x64.dmg` |
+          | Windows | `Mailplane-VERSION-windows-setup.exe` |
+          | Linux | `Mailplane-VERSION-linux-x64.AppImage` or `Mailplane-VERSION-linux-amd64.deb` |
+          | Android | `Mailplane-VERSION-android.apk` |
+
+          Desktop apps update themselves once installed.
+          MD
+          )
+          DOWNLOADS="${DOWNLOADS//VERSION/${{ needs.prepare.outputs.version }}}"
+          gh release edit "$TAG" --repo "$REPO" --title "Mailplane $TAG" --notes "$DOWNLOADS
+
+          $NOTES" --draft=false
+      - name: Summary
+        run: echo "### Mailplane ${{ needs.prepare.outputs.tag }} published for macOS, Windows, Linux and Android" >> "$GITHUB_STEP_SUMMARY"

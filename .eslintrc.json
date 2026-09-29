@@ -9,21 +9,53 @@
     "sourceType": "script"
   },
   "rules": {
-    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
     "no-undef": "error",
-    "eqeqeq": ["error", "always", { "null": "ignore" }],
+    "eqeqeq": [
+      "error",
+      "always",
+      {
+        "null": "ignore"
+      }
+    ],
     "no-var": "error",
-    "prefer-const": ["warn", { "destructuring": "all" }],
-    "no-console": ["warn", { "allow": ["error", "warn"] }],
+    "prefer-const": [
+      "warn",
+      {
+        "destructuring": "all"
+      }
+    ],
+    "no-console": [
+      "warn",
+      {
+        "allow": [
+          "error",
+          "warn"
+        ]
+      }
+    ],
     "no-throw-literal": "error",
     "no-prototype-builtins": "warn",
-    "curly": ["error", "multi-line"],
+    "curly": [
+      "error",
+      "multi-line"
+    ],
     "no-duplicate-imports": "error"
   },
   "overrides": [
     {
-      "files": ["renderer.js"],
-      "env": { "browser": true, "node": false },
+      "files": [
+        "renderer.js"
+      ],
+      "env": {
+        "browser": true,
+        "node": false
+      },
       "globals": {
         "electronAPI": "readonly"
       },
@@ -32,23 +64,49 @@
       }
     },
     {
-      "files": ["preload.js"],
-      "env": { "node": true, "browser": false }
+      "files": [
+        "preload.js"
+      ],
+      "env": {
+        "node": true,
+        "browser": false
+      }
     },
     {
-      "files": ["test/**/*.js"],
-      "env": { "node": true },
+      "files": [
+        "test/**/*.js"
+      ],
+      "env": {
+        "node": true
+      },
       "rules": {
         "no-console": "off"
       }
     },
     {
-      "files": ["test/e2e/**/*.js"],
-      "env": { "node": true, "browser": true },
+      "files": [
+        "test/e2e/**/*.js"
+      ],
+      "env": {
+        "node": true,
+        "browser": true
+      },
       "rules": {
-        "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }]
+        "no-unused-vars": [
+          "warn",
+          {
+            "argsIgnorePattern": "^_",
+            "varsIgnorePattern": "^_"
+          }
+        ]
       }
     }
   ],
-  "ignorePatterns": ["node_modules/", "dist/", "out/"]
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "out/",
+    "android/",
+    "test-results/"
+  ]
 }
