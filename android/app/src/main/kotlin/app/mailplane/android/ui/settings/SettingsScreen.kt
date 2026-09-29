@@ -44,6 +44,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import app.mailplane.android.data.AiSettings
+import app.mailplane.core.AiClient
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +64,8 @@ import app.mailplane.android.data.ThemeMode
 import app.mailplane.android.data.UpdateState
 import app.mailplane.android.ui.components.AccentButton
 import app.mailplane.android.ui.MailViewModel
+import app.mailplane.android.ui.I18n
+import app.mailplane.android.ui.tr
 import app.mailplane.android.ui.components.AccountDot
 import app.mailplane.android.ui.components.BrandMark
 import app.mailplane.android.ui.components.Group
@@ -80,14 +91,14 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
         containerColor = c.canvas,
         topBar = {
             TopAppBar(
-                title = { Text("Settings", style = MaterialTheme.typography.headlineSmall, color = c.ink) },
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = c.ink) } },
+                title = { Text(tr("Settings"), style = MaterialTheme.typography.headlineSmall, color = c.ink) },
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("Back"), tint = c.ink) } },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = c.canvas),
             )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp)) {
-            SectionLabel("Accounts")
+            SectionLabel(tr("Accounts"))
             Group {
                 accounts.forEachIndexed { i, acc ->
                     if (i > 0) HorizontalDivider(color = c.tile)
@@ -98,22 +109,22 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                             Text(acc.name.ifBlank { acc.email }, style = MaterialTheme.typography.bodyMedium, color = c.ink)
                             Text("${acc.email} · ${acc.imap.host}", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
                         }
-                        IconButton(onClick = { confirmRemove = acc }) { Icon(Icons.Outlined.Delete, "Remove ${acc.email}", tint = c.inkSecondary) }
+                        IconButton(onClick = { confirmRemove = acc }) { Icon(Icons.Outlined.Delete, tr("Remove ${acc.email}"), tint = c.inkSecondary) }
                     }
                 }
                 if (accounts.isNotEmpty()) HorizontalDivider(color = c.tile)
                 Row(Modifier.fillMaxWidth().clickable(onClick = onAddAccount).padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Outlined.Add, null, tint = c.ink, modifier = Modifier.size(18.dp))
-                    Text("Add account", style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                    Text(tr("Add account"), style = MaterialTheme.typography.bodyMedium, color = c.ink)
                 }
             }
 
-            SectionLabel("Appearance")
+            SectionLabel(tr("Appearance"))
             Group {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text("Theme", style = MaterialTheme.typography.bodyMedium, color = c.ink)
-                    val modes = listOf(ThemeMode.SYSTEM to "Automatic", ThemeMode.LIGHT to "Light", ThemeMode.DARK to "Dark")
+                    Text(tr("Theme"), style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                    val modes = listOf(ThemeMode.SYSTEM to tr("Automatic"), ThemeMode.LIGHT to tr("Light"), ThemeMode.DARK to tr("Dark"))
                     SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                         modes.forEachIndexed { i, (mode, label) ->
                             SegmentedButton(
@@ -123,7 +134,7 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                             ) { Text(label) }
                         }
                     }
-                    Text("Accent colour", style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                    Text(tr("Accent colour"), style = MaterialTheme.typography.bodyMedium, color = c.ink)
                     Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                         Accents.all.forEach { a ->
                             val selected = a.hex == accent
@@ -134,63 +145,82 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                                         .border(if (selected) 2.dp else 0.dp, if (selected) c.ink else Color.Transparent, CircleShape)
                                         .padding(3.dp).clip(CircleShape).background(Color(a.hex)),
                                 )
-                                Text(a.label, style = MaterialTheme.typography.labelSmall, color = if (selected) c.ink else c.inkTertiary)
+                                Text(tr(a.label), style = MaterialTheme.typography.labelSmall, color = if (selected) c.ink else c.inkTertiary)
                             }
                         }
                     }
                 }
             }
 
-            SectionLabel("Reading")
+            SectionLabel(tr("Language"))
             Group {
-                ToggleRow("Compact list", "One line per message, no pictures — fits more on screen", compact, vm.settings::setCompact)
-                if (recent.isNotEmpty()) {
-                    HorizontalDivider(color = c.tile)
-                    Row(Modifier.fillMaxWidth().clickable { vm.settings.clearRecentSearches() }.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Clear recent searches", style = MaterialTheme.typography.bodyMedium, color = c.ink)
-                            Text("${recent.size} saved on this phone", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+                val lang by vm.settings.language.collectAsState()
+                Column(Modifier.padding(16.dp)) {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        I18n.languages.forEachIndexed { i, (code, label) ->
+                            SegmentedButton(
+                                selected = lang == code, onClick = { vm.settings.setLanguage(code) },
+                                shape = SegmentedButtonDefaults.itemShape(i, I18n.languages.size),
+                                colors = SegmentedButtonDefaults.colors(activeContainerColor = c.accent, activeContentColor = c.onAccent),
+                            ) { Text(tr(label)) }
                         }
                     }
                 }
             }
 
-            SectionLabel("Mail")
+            SectionLabel(tr("Reading"))
             Group {
-                ToggleRow("New mail notifications", "Checked about every 15 minutes", notifications, vm.settings::setNotifications)
-                HorizontalDivider(color = c.tile)
-                ToggleRow("Block remote images", "Stops senders from tracking when you open a message", blockImages, vm.settings::setBlockImages)
+                ToggleRow(tr("Compact list"), tr("One line per message, no pictures — fits more on screen"), compact, vm.settings::setCompact)
+                if (recent.isNotEmpty()) {
+                    HorizontalDivider(color = c.tile)
+                    Row(Modifier.fillMaxWidth().clickable { vm.settings.clearRecentSearches() }.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(tr("Clear recent searches"), style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                            Text(tr("${recent.size} saved on this phone"), style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+                        }
+                    }
+                }
             }
 
-            SectionLabel("Updates")
+            SectionLabel(tr("Mail"))
+            Group {
+                ToggleRow(tr("New mail notifications"), tr("Checked about every 15 minutes"), notifications, vm.settings::setNotifications)
+                HorizontalDivider(color = c.tile)
+                ToggleRow(tr("Block remote images"), tr("Stops senders from tracking when you open a message"), blockImages, vm.settings::setBlockImages)
+            }
+
+            SectionLabel(tr("AI assistant"))
+            Group { AiSection(vm) }
+
+            SectionLabel(tr("Updates"))
             Group {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     val u = update
                     Text(
                         when (u) {
-                            is UpdateState.Available -> "Mailplane ${u.release.version} is available."
-                            is UpdateState.Downloading -> "Downloading ${u.release.version}… ${u.percent}%"
+                            is UpdateState.Available -> tr("Mailplane ${u.release.version} is available.")
+                            is UpdateState.Downloading -> tr("Downloading ${u.release.version}… ${u.percent}%")
                             is UpdateState.Failed -> u.message
-                            UpdateState.Checking -> "Checking GitHub for a new version…"
-                            UpdateState.UpToDate -> "You have the latest version (${BuildConfig.VERSION_NAME})."
-                            UpdateState.Idle -> "New versions come from GitHub Releases. Android asks you to confirm each install."
+                            UpdateState.Checking -> tr("Checking GitHub for a new version…")
+                            UpdateState.UpToDate -> tr("You have the latest version (${BuildConfig.VERSION_NAME}).")
+                            UpdateState.Idle -> tr("New versions come from GitHub Releases. Android asks you to confirm each install.")
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (u is UpdateState.Failed) c.danger else c.inkSecondary,
                     )
                     when (u) {
-                        is UpdateState.Available -> AccentButton("Update to ${u.release.version}", { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
+                        is UpdateState.Available -> AccentButton(tr("Update to ${u.release.version}"), { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
                         is UpdateState.Downloading -> LinearProgressIndicator(
                             progress = { u.percent / 100f }, modifier = Modifier.fillMaxWidth(), color = c.accentDeep, trackColor = c.tile,
                         )
                         is UpdateState.Failed -> if (u.release != null) {
-                            AccentButton("Try again", { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
+                            AccentButton(tr("Try again"), { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
                         } else {
-                            TextButton(onClick = { vm.checkForUpdate() }) { Text("Check again", color = c.ink) }
+                            TextButton(onClick = { vm.checkForUpdate() }) { Text(tr("Check again"), color = c.ink) }
                         }
                         UpdateState.Checking -> {}
-                        else -> TextButton(onClick = { vm.checkForUpdate() }) { Text("Check for updates", color = c.ink) }
+                        else -> TextButton(onClick = { vm.checkForUpdate() }) { Text(tr("Check for updates"), color = c.ink) }
                     }
                 }
             }
@@ -201,10 +231,10 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                 Text("Mailplane ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { uriHandler.openUri("https://github.com/mauricekleindienst/mailplane") }) {
-                        Text("Source code", color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
+                        Text(tr("Source code"), color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
                     }
                     TextButton(onClick = { uriHandler.openUri("https://github.com/mauricekleindienst/mailplane/issues") }) {
-                        Text("Report a problem", color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
+                        Text(tr("Report a problem"), color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -214,10 +244,10 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
     confirmRemove?.let { acc ->
         AlertDialog(
             onDismissRequest = { confirmRemove = null },
-            title = { Text("Remove ${acc.email}?") },
-            text = { Text("Mail stays on the server. You can add the account again later.") },
-            confirmButton = { TextButton(onClick = { vm.removeAccount(acc.id); confirmRemove = null }) { Text("Remove", color = c.danger) } },
-            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Cancel", color = c.ink) } },
+            title = { Text(tr("Remove ${acc.email}?")) },
+            text = { Text(tr("Mail stays on the server. You can add the account again later.")) },
+            confirmButton = { TextButton(onClick = { vm.removeAccount(acc.id); confirmRemove = null }) { Text(tr("Remove"), color = c.danger) } },
+            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text(tr("Cancel"), color = c.ink) } },
             containerColor = c.surface,
         )
     }
@@ -234,5 +264,87 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChang
         }
         Switch(checked, onChange, colors = SwitchDefaults.colors(checkedTrackColor = c.accentDeep, checkedThumbColor = Color.White,
             uncheckedTrackColor = c.tile, uncheckedThumbColor = c.inkTertiary, uncheckedBorderColor = c.tileActive))
+    }
+}
+
+/**
+ * Optional AI: provider, address, key and model. While it is off the app shows
+ * no AI controls anywhere; nothing is sent until an AI button is tapped.
+ */
+@Composable
+private fun AiSection(vm: MailViewModel) {
+    val c = Frost.colors
+    val saved by vm.ai.collectAsState()
+    var provider by remember(saved) { mutableStateOf(saved.provider) }
+    var baseUrl by remember(saved) { mutableStateOf(saved.baseUrl) }
+    var model by remember(saved) { mutableStateOf(saved.model) }
+    var key by remember { mutableStateOf("") }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var providerMenu by remember { mutableStateOf(false) }
+    var modelMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val info = AiClient.provider(provider)
+    val fieldColors = TextFieldDefaults.colors(focusedContainerColor = c.tile, unfocusedContainerColor = c.tile,
+        focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = c.ink)
+
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(tr("Summaries, reply drafts and rewriting with a model you choose. Nothing is sent until you tap an AI button; while AI is off, Mailplane shows no AI features."),
+            style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+        Box {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.tile).clickable { providerMenu = true }.padding(14.dp)) {
+                Text(tr("Provider"), style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary, modifier = Modifier.weight(1f))
+                Text(info?.label ?: tr("Off"), style = MaterialTheme.typography.bodyMedium, color = c.ink)
+            }
+            DropdownMenu(expanded = providerMenu, onDismissRequest = { providerMenu = false }, containerColor = c.surface) {
+                DropdownMenuItem(text = { Text(tr("Off")) }, onClick = {
+                    providerMenu = false; provider = "off"; vm.saveAi(AiSettings(), null); status = null
+                })
+                AiClient.providers.forEach { p ->
+                    DropdownMenuItem(text = { Text(p.label) }, onClick = {
+                        providerMenu = false; provider = p.id; baseUrl = p.baseUrl; model = ""; models = emptyList(); status = null
+                    })
+                }
+            }
+        }
+        if (info != null) {
+            TextField(baseUrl, { baseUrl = it }, label = { Text(tr("Server address")) }, singleLine = true, colors = fieldColors,
+                shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth(),
+                supportingText = if (info.local) ({ Text(tr("The address of the computer running the AI app")) }) else null)
+            if (info.needsKey || provider == "custom") {
+                TextField(key, { key = it }, label = { Text(tr("API key")) }, singleLine = true, colors = fieldColors,
+                    visualTransformation = PasswordVisualTransformation(), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth(),
+                    supportingText = if (vm.hasAiKey() && key.isEmpty()) ({ Text(tr("Saved in this phone’s secure storage. Enter a new one to replace it.")) }) else null)
+            }
+            Box {
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.tile).clickable(enabled = models.isNotEmpty()) { modelMenu = true }
+                    .padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(tr("Model"), style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary, modifier = Modifier.weight(1f))
+                    Text(model.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                }
+                DropdownMenu(expanded = modelMenu, onDismissRequest = { modelMenu = false }, containerColor = c.surface) {
+                    models.forEach { m -> DropdownMenuItem(text = { Text(m) }, onClick = { modelMenu = false; model = m }) }
+                }
+            }
+            status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.inkSecondary) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(enabled = !busy, onClick = {
+                    busy = true; status = tr("Loading…")
+                    scope.launch {
+                        vm.aiModels(provider, baseUrl, key).fold(
+                            onSuccess = { list -> models = list; if (model.isBlank()) model = list.firstOrNull().orEmpty(); status = null },
+                            onFailure = { e -> status = e.message },
+                        )
+                        busy = false
+                    }
+                }) { Text(tr("Load models"), color = c.ink) }
+                AccentButton(tr("Save"), {
+                    vm.saveAi(AiSettings(provider, baseUrl.trim(), model), key.ifBlank { null })
+                    key = ""
+                    status = tr("Saved")
+                }, Modifier.weight(1f))
+            }
+        }
     }
 }

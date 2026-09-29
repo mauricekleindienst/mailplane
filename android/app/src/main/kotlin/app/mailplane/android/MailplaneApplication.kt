@@ -16,17 +16,21 @@ class MailplaneApplication : Application() {
     lateinit var accounts: AccountRepository private set
     lateinit var mail: MailRepository private set
     lateinit var updater: AppUpdater private set
+    /** Passwords and the AI key, encrypted with an Android Keystore key. */
+    lateinit var credentials: CredentialStore private set
 
     override fun onCreate() {
         super.onCreate()
         settings = AppSettings(this)
         updater = AppUpdater(this)
-        accounts = AccountRepository(this, CredentialStore(this))
+        credentials = CredentialStore(this)
+        accounts = AccountRepository(this, credentials)
         mail = MailRepository(accounts)
 
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(SyncWorker.CHANNEL_ID, getString(R.string.channel_new_mail), NotificationManager.IMPORTANCE_DEFAULT)
         )
+        app.mailplane.android.ui.I18n.apply(settings.language.value)
         SyncWorker.schedule(this)
     }
 }

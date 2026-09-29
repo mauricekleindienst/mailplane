@@ -1,13 +1,6 @@
 package app.mailplane.android.sync
 
-import android.Manifest
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -16,8 +9,6 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.mailplane.android.MailplaneApplication
-import app.mailplane.android.MainActivity
-import app.mailplane.android.R
 import java.util.concurrent.TimeUnit
 
 /**
@@ -36,7 +27,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 if (last >= 0 && latest > last) {
                     val fresh = app.mail.messages(account, "INBOX", limit = 10).messages
                         .filter { it.uid > last && !it.seen }
-                    if (fresh.isNotEmpty()) notify(account.id, account.email, fresh.map { it.fromName to it.subject })
+                    Notifications.newMail(applicationContext, account.id, account.email, fresh)
                 }
                 app.settings.setLastSeenUid(account.id, latest)
             }
@@ -44,33 +35,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         return Result.success()
     }
 
-    private fun notify(accountId: String, email: String, items: List<Pair<String, String>>) {
-        val ctx = applicationContext
-        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
-            android.os.Build.VERSION.SDK_INT >= 33
-        ) return
-        val open = PendingIntent.getActivity(
-            ctx, accountId.hashCode(),
-            Intent(ctx, MainActivity::class.java).putExtra(MainActivity.EXTRA_ACCOUNT_ID, accountId),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val title = if (items.size == 1) items[0].first else "${items.size} new messages"
-        val text = if (items.size == 1) items[0].second else items.joinToString(" · ") { it.first }
-        val style = NotificationCompat.InboxStyle().setSummaryText(email)
-        items.take(5).forEach { (from, subject) -> style.addLine("$from  $subject") }
-        val notification = NotificationCompat.Builder(ctx, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setStyle(style)
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .build()
-        runCatching { NotificationManagerCompat.from(ctx).notify(accountId.hashCode(), notification) }
-    }
-
     companion object {
-        const val CHANNEL_ID = "new_mail"
+        const val CHANNEL_ID = Notifications.CHANNEL_ID
         private const val WORK_NAME = "mailplane-sync"
 
         fun schedule(context: Context) {

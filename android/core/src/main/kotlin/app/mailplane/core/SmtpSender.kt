@@ -26,6 +26,10 @@ object SmtpSender {
         return mime.messageID
     }
 
+    /** A draft copy of [message] for [ImapMailClient.saveDraft] — unfinished addresses are fine. */
+    fun buildDraft(account: Account, message: OutgoingMessage): MimeMessage =
+        build(MailSessions.smtp(account.smtp).first, account, message, draft = true)
+
     /** Connects and authenticates without sending — used by account setup. */
     fun verify(account: Account, password: String) {
         val (session, protocol) = MailSessions.smtp(account.smtp)
@@ -36,20 +40,27 @@ object SmtpSender {
         }
     }
 
-    /** Builds the MIME message (exposed for tests and "save to Sent"). */
-    fun build(session: javax.mail.Session, account: Account, message: OutgoingMessage): MimeMessage {
-        val invalid = Addresses.firstInvalid(message.to)
-            ?: Addresses.firstInvalid(message.cc)
-            ?: Addresses.firstInvalid(message.bcc)
-        if (invalid != null) throw MailException("Invalid address: $invalid")
-        val to = Addresses.parseList(message.to)
-        if (to.isEmpty()) throw MailException("Add at least one recipient")
+    /**
+     * Builds the MIME message (exposed for tests, drafts and "save to Sent").
+     * A [draft] may be unfinished: no recipient yet, or an address still being typed.
+     */
+    fun build(session: javax.mail.Session, account: Account, message: OutgoingMessage, draft: Boolean = false): MimeMessage {
+        if (!draft) {
+            val invalid = Addresses.firstInvalid(message.to)
+                ?: Addresses.firstInvalid(message.cc)
+                ?: Addresses.firstInvalid(message.bcc)
+            if (invalid != null) throw MailException("Invalid address: $invalid")
+        }
+        fun parse(list: String) = if (draft) runCatching { Addresses.parseList(list) }.getOrDefault(emptyList())
+            .filter { Addresses.firstInvalid(it.email) == null } else Addresses.parseList(list)
+        val to = parse(message.to)
+        if (to.isEmpty() && !draft) throw MailException("Add at least one recipient")
 
         return MimeMessage(session).apply {
             setFrom(InternetAddress(account.email, account.name.ifBlank { null }, "UTF-8"))
-            setRecipients(Message.RecipientType.TO, to.toInternet())
-            Addresses.parseList(message.cc).takeIf { it.isNotEmpty() }?.let { setRecipients(Message.RecipientType.CC, it.toInternet()) }
-            Addresses.parseList(message.bcc).takeIf { it.isNotEmpty() }?.let { setRecipients(Message.RecipientType.BCC, it.toInternet()) }
+            if (to.isNotEmpty()) setRecipients(Message.RecipientType.TO, to.toInternet())
+            parse(message.cc).takeIf { it.isNotEmpty() }?.let { setRecipients(Message.RecipientType.CC, it.toInternet()) }
+            parse(message.bcc).takeIf { it.isNotEmpty() }?.let { setRecipients(Message.RecipientType.BCC, it.toInternet()) }
             setSubject(message.subject, "UTF-8")
             message.inReplyTo?.let { setHeader("In-Reply-To", it) }
             message.references?.let { setHeader("References", it) }

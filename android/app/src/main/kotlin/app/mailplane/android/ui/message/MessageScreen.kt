@@ -32,6 +32,8 @@ import androidx.compose.material.icons.automirrored.outlined.Forward
 import androidx.compose.material.icons.automirrored.outlined.Reply
 import androidx.compose.material.icons.automirrored.outlined.ReplyAll
 import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -74,6 +76,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import app.mailplane.android.ui.MailViewModel
 import app.mailplane.android.ui.ReaderState
+import app.mailplane.android.ui.tr
 import app.mailplane.android.ui.components.SenderAvatar
 import app.mailplane.android.ui.inbox.shortDate
 import app.mailplane.android.ui.theme.Frost
@@ -97,11 +100,14 @@ class MessageActions(
     val onOpenThread: (MessageSummary) -> Unit = {},
     val onAttachment: (AttachmentInfo) -> Unit = {},
     val onLink: (String) -> Unit = {},
+    val onSnooze: (java.time.Instant) -> Unit = {},
+    val onSummarize: () -> Unit = {},
 )
 
 @Composable
 fun MessageScreen(vm: MailViewModel, snackbar: SnackbarHostState, onBack: () -> Unit, onCompose: () -> Unit) {
     val r by vm.reader.collectAsState()
+    val ai by vm.ai.collectAsState()
     val m = r.summary ?: return
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -126,15 +132,21 @@ fun MessageScreen(vm: MailViewModel, snackbar: SnackbarHostState, onBack: () -> 
                 }
             },
             onLink = { url -> runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } },
+            onSnooze = { until -> vm.snooze(m, until); onBack() },
+            onSummarize = vm::summarize,
         ),
+        aiEnabled = ai.enabled,
     )
 }
 
 @Composable
-fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { SnackbarHostState() }, actions: MessageActions = MessageActions()) {
+fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { SnackbarHostState() }, actions: MessageActions = MessageActions(),
+                   aiEnabled: Boolean = false) {
     val c = Frost.colors
     val m = r.summary ?: return
     var menu by remember { mutableStateOf(false) }
+    var snoozeOpen by remember { mutableStateOf(false) }
+    if (snoozeOpen) SnoozeDialog(onPick = { snoozeOpen = false; actions.onSnooze(it) }, onDismiss = { snoozeOpen = false })
 
     Scaffold(
         containerColor = c.canvas,
@@ -142,17 +154,20 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
         topBar = {
             TopAppBar(
                 title = {},
-                navigationIcon = { IconButton(onClick = actions.onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = c.ink) } },
+                navigationIcon = { IconButton(onClick = actions.onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("Back"), tint = c.ink) } },
                 actions = {
-                    ActionIcon(Icons.Outlined.Archive, "Archive", onClick = actions.onArchive)
-                    ActionIcon(Icons.Outlined.Delete, "Delete", onClick = actions.onDelete)
-                    ActionIcon(if (m.flagged) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (m.flagged) "Unstar" else "Star",
+                    ActionIcon(Icons.Outlined.Archive, tr("Archive"), onClick = actions.onArchive)
+                    ActionIcon(Icons.Outlined.Schedule, tr("Snooze")) { snoozeOpen = true }
+                    ActionIcon(Icons.Outlined.Delete, tr("Delete"), onClick = actions.onDelete)
+                    ActionIcon(if (m.flagged) Icons.Outlined.Star else Icons.Outlined.StarOutline, tr(if (m.flagged) "Unstar" else "Star"),
                         tint = if (m.flagged) c.accentDeep else c.ink, onClick = actions.onStar)
                     Box {
-                        ActionIcon(Icons.Outlined.MoreVert, "More") { menu = true }
+                        ActionIcon(Icons.Outlined.MoreVert, tr("More")) { menu = true }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
-                            DropdownMenuItem(text = { Text("Mark as unread") }, leadingIcon = { Icon(Icons.Outlined.MarkEmailUnread, null) },
+                            DropdownMenuItem(text = { Text(tr("Mark as unread")) }, leadingIcon = { Icon(Icons.Outlined.MarkEmailUnread, null) },
                                 onClick = { menu = false; actions.onUnread() })
+                            if (aiEnabled) DropdownMenuItem(text = { Text(tr("Summarize")) }, leadingIcon = { Icon(Icons.Outlined.AutoAwesome, null) },
+                                onClick = { menu = false; actions.onSummarize() })
                         }
                     }
                 },
@@ -162,9 +177,9 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
         bottomBar = {
             Row(Modifier.fillMaxWidth().background(c.canvas).navigationBarsPadding().padding(horizontal = 16.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                BottomAction(Icons.AutoMirrored.Outlined.Reply, "Reply", primary = true, modifier = Modifier.weight(1f), onClick = actions.onReply)
-                BottomAction(Icons.AutoMirrored.Outlined.ReplyAll, "Reply all", modifier = Modifier.weight(1f), onClick = actions.onReplyAll)
-                BottomAction(Icons.AutoMirrored.Outlined.Forward, "Forward", modifier = Modifier.weight(1f), onClick = actions.onForward)
+                BottomAction(Icons.AutoMirrored.Outlined.Reply, tr("Reply"), primary = true, modifier = Modifier.weight(1f), onClick = actions.onReply)
+                BottomAction(Icons.AutoMirrored.Outlined.ReplyAll, tr("Reply all"), modifier = Modifier.weight(1f), onClick = actions.onReplyAll)
+                BottomAction(Icons.AutoMirrored.Outlined.Forward, tr("Forward"), modifier = Modifier.weight(1f), onClick = actions.onForward)
             }
         },
     ) { padding ->
@@ -181,7 +196,7 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
                         Text(m.fromName, style = MaterialTheme.typography.titleMedium, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(m.fromEmail, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val to = r.body?.to?.joinToString(", ") { it.name ?: it.email }
-                        if (!to.isNullOrBlank()) Text("to $to", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary,
+                        if (!to.isNullOrBlank()) Text(tr("to $to"), style = MaterialTheme.typography.bodySmall, color = c.inkTertiary,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     m.date?.let {
@@ -191,6 +206,16 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
                 }
             }
             HorizontalDivider(Modifier.padding(horizontal = 20.dp), color = c.tile)
+            if (r.aiBusy || r.aiSummary != null) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(c.tile)
+                    .padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Outlined.AutoAwesome, null, tint = c.inkSecondary, modifier = Modifier.size(14.dp))
+                        Text(tr(if (r.aiBusy) "Summarizing…" else "Summary"), style = MaterialTheme.typography.labelMedium, color = c.inkSecondary)
+                    }
+                    r.aiSummary?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.ink) }
+                }
+            }
 
             val body = r.body
             when {
@@ -209,8 +234,8 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
                             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             Icon(Icons.Outlined.Image, null, tint = c.inkTertiary, modifier = Modifier.size(18.dp))
-                            Text("Pictures from the web are hidden", style = MaterialTheme.typography.bodySmall, color = c.inkSecondary, modifier = Modifier.weight(1f))
-                            Text("Show", style = MaterialTheme.typography.labelMedium, color = c.onAccent,
+                            Text(tr("Pictures from the web are hidden"), style = MaterialTheme.typography.bodySmall, color = c.inkSecondary, modifier = Modifier.weight(1f))
+                            Text(tr("Show"), style = MaterialTheme.typography.labelMedium, color = c.onAccent,
                                 modifier = Modifier.padding(vertical = 6.dp).clip(RoundedCornerShape(10.dp)).background(c.accent)
                                     .clickable(onClick = actions.onAllowImages).padding(horizontal = 14.dp, vertical = 8.dp))
                         }
@@ -218,7 +243,7 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
                     if (html != null && !LocalInspectionMode.current) {
                         MailWebView(html, allowImages = r.imagesAllowed, colors = c, onLink = actions.onLink)
                     } else {
-                        Text(body.text ?: body.snippet.ifBlank { "(empty message)" }, style = MaterialTheme.typography.bodyLarge, color = c.ink,
+                        Text(body.text ?: body.snippet.ifBlank { tr("(empty message)") }, style = MaterialTheme.typography.bodyLarge, color = c.ink,
                             modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp))
                     }
                     if (body.attachments.isNotEmpty()) {
@@ -241,7 +266,7 @@ private fun ThreadContext(thread: List<MessageSummary>, onOpen: (MessageSummary)
         Row(Modifier.clip(RoundedCornerShape(10.dp)).background(c.tile).clickable { open = !open }.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Icon(if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, tint = c.inkSecondary, modifier = Modifier.size(16.dp))
-            Text("${thread.size} other message${if (thread.size > 1) "s" else ""} in this conversation",
+            Text(tr("${thread.size} other message${if (thread.size > 1) "s" else ""} in this conversation"),
                 style = MaterialTheme.typography.labelMedium, color = c.inkSecondary)
         }
         if (open) Column(Modifier.padding(top = 6.dp)) {
@@ -276,9 +301,48 @@ private fun AttachmentCard(att: AttachmentInfo, onClick: () -> Unit) {
             if (size.isNotEmpty()) Text(size, style = MaterialTheme.typography.labelSmall, color = c.inkTertiary)
         }
         Box(Modifier.size(32.dp).clip(CircleShape).background(c.raised), contentAlignment = Alignment.Center) {
-            Icon(Icons.Outlined.Download, "Open", tint = c.inkSecondary, modifier = Modifier.size(16.dp))
+            Icon(Icons.Outlined.Download, tr("Open"), tint = c.inkSecondary, modifier = Modifier.size(16.dp))
         }
     }
+}
+
+/** Later today / This evening / Tomorrow / This weekend / Next week — like the desktop. */
+@Composable
+private fun SnoozeDialog(onPick: (java.time.Instant) -> Unit, onDismiss: () -> Unit) {
+    val c = Frost.colors
+    val options = remember { snoozeOptions(java.time.LocalDateTime.now()) }
+    val fmt = remember { java.time.format.DateTimeFormatter.ofPattern("EEE HH:mm", java.util.Locale.getDefault()) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surface,
+        title = { Text(tr("Snooze until")) },
+        text = {
+            Column {
+                options.forEach { (label, at) ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                        onPick(at.atZone(java.time.ZoneId.systemDefault()).toInstant())
+                    }.padding(horizontal = 12.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(tr(label), style = MaterialTheme.typography.bodyLarge, color = c.ink, modifier = Modifier.weight(1f))
+                        Text(at.format(fmt), style = MaterialTheme.typography.labelMedium, color = c.inkTertiary)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text(tr("Cancel"), color = c.ink) } },
+    )
+}
+
+internal fun snoozeOptions(now: java.time.LocalDateTime): List<Pair<String, java.time.LocalDateTime>> {
+    val out = mutableListOf<Pair<String, java.time.LocalDateTime>>()
+    val later = now.plusHours(3).withMinute(0).withSecond(0).withNano(0)
+    if (later.toLocalDate() == now.toLocalDate() && later.hour <= 21) out += "Later today" to later
+    if (now.hour < 17) out += "This evening" to now.toLocalDate().atTime(18, 0)
+    out += "Tomorrow" to now.toLocalDate().plusDays(1).atTime(8, 0)
+    val dow = now.dayOfWeek.value   // 1 = Monday
+    if (dow in 1..4) out += "This weekend" to now.toLocalDate().plusDays((6 - dow).toLong()).atTime(9, 0)
+    out += "Next week" to now.toLocalDate().plusDays((8 - dow).toLong()).atTime(8, 0)
+    return out
 }
 
 private val REMOTE_IMG = Regex("<img[^>]+src=[\"']?https?://", RegexOption.IGNORE_CASE)

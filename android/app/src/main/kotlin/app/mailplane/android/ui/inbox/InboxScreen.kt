@@ -87,6 +87,9 @@ import app.mailplane.android.data.UpdateState
 import app.mailplane.android.ui.ListState
 import app.mailplane.android.ui.MailViewModel
 import app.mailplane.android.ui.STARRED
+import app.mailplane.android.ui.ALL_ACCOUNTS
+import app.mailplane.android.ui.I18n
+import app.mailplane.android.ui.tr
 import app.mailplane.android.ui.components.AccountChip
 import app.mailplane.android.ui.components.BrandMark
 import app.mailplane.android.ui.components.DayHeader
@@ -134,6 +137,7 @@ class InboxActions(
     val onSettings: () -> Unit = {},
     val onUpdate: (AppRelease) -> Unit = {},
     val onDismissUpdate: (AppRelease) -> Unit = {},
+    val onSearchAllFolders: (Boolean) -> Unit = {},
 )
 
 @Composable
@@ -165,6 +169,7 @@ fun InboxScreen(
             onArchive = vm::archive, onDelete = vm::delete, onStar = vm::toggleFlag,
             onAddAccount = onAddAccount, onSettings = onSettings,
             onUpdate = { vm.installUpdate(it) },
+            onSearchAllFolders = vm::setSearchAllFolders,
             onDismissUpdate = { vm.updater.dismiss(it); dismissed = it.version },
         ),
         snackbar = snackbar,
@@ -185,7 +190,9 @@ fun InboxContent(ui: InboxUi, actions: InboxActions, snackbar: SnackbarHostState
         drawerContent = {
             ModalDrawerSheet(drawerContainerColor = c.surface, drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)) {
                 FolderDrawer(
-                    folders = st.folders, current = st.folderPath, quota = ui.quota,
+                    folders = if (st.unified) emptyList() else st.folders, current = st.folderPath, quota = ui.quota,
+                    accounts = if (st.unified) ui.accounts else emptyList(),
+                    onAccount = { actions.onAccount(it); scope.launch { drawer.close() } },
                     onFolder = { actions.onFolder(it); scope.launch { drawer.close() } },
                     onAddAccount = { scope.launch { drawer.close() }; actions.onAddAccount() },
                     onSettings = { scope.launch { drawer.close() }; actions.onSettings() },
@@ -201,33 +208,46 @@ fun InboxContent(ui: InboxUi, actions: InboxActions, snackbar: SnackbarHostState
                     onClick = actions.onCompose, containerColor = c.accent, contentColor = c.onAccent,
                     shape = RoundedCornerShape(16.dp),
                     icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                    text = { Text("New message") },
+                    text = { Text(tr("New message")) },
                 )
             },
         ) { padding ->
             // Scaffold's padding already includes the status bar
             Column(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
                 Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, "Folders", tint = c.ink) }
+                    IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, tr("Folders"), tint = c.ink) }
                     if (searchOpen) {
                         TextField(
                             value = st.query, onValueChange = actions.onSearch, singleLine = true,
-                            placeholder = { Text("Search ${if (st.isStarred) "Inbox" else st.title}") },
+                            placeholder = { Text(if (st.searchAllFolders) tr("Search") else tr("Search ${if (st.isStarred) tr("Inbox") else st.title}")) },
                             leadingIcon = { Icon(Icons.Outlined.Search, null, tint = c.inkTertiary) },
                             modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp),
                             colors = TextFieldDefaults.colors(focusedContainerColor = c.tile, unfocusedContainerColor = c.tile,
                                 focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = c.ink),
                         )
-                        IconButton(onClick = { searchOpen = false; actions.onSearch("") }) { Icon(Icons.Outlined.Close, "Close search", tint = c.ink) }
+                        IconButton(onClick = { searchOpen = false; actions.onSearch("") }) { Icon(Icons.Outlined.Close, tr("Close search"), tint = c.ink) }
                     } else {
                         Column(Modifier.weight(1f).padding(start = 4.dp)) {
                             Text(st.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, color = c.ink)
-                            val u = if (st.isStarred) 0 else st.folder?.let {
-                                if (it.role == FolderRole.INBOX) ui.unread[ui.activeId] ?: it.unread else it.unread
-                            } ?: 0
-                            if (u > 0) Text("$u unread", style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
+                            val u = when {
+                                st.unified -> ui.accounts.sumOf { ui.unread[it.id] ?: 0 }
+                                st.isStarred -> 0
+                                else -> st.folder?.let { if (it.role == FolderRole.INBOX) ui.unread[ui.activeId] ?: it.unread else it.unread } ?: 0
+                            }
+                            if (u > 0) Text(tr("$u unread"), style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
                         }
-                        IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, "Search", tint = c.ink) }
+                        IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, tr("Search"), tint = c.ink) }
+                    }
+                }
+                if (searchOpen) {
+                    // Search the open folder, or every folder (Trash and Spam aside)
+                    Row(Modifier.padding(start = 16.dp, top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(false to st.title, true to tr("All folders")).forEach { (all, label) ->
+                            val on = st.searchAllFolders == all
+                            Text(label, style = MaterialTheme.typography.labelMedium, color = if (on) c.onAccent else c.inkSecondary,
+                                modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(if (on) c.accent else c.tile)
+                                    .clickable { actions.onSearchAllFolders(all) }.padding(horizontal = 12.dp, vertical = 7.dp))
+                        }
                     }
                 }
                 if (searchOpen && st.query.isEmpty() && ui.recentSearches.isNotEmpty()) {
@@ -245,6 +265,10 @@ fun InboxContent(ui: InboxUi, actions: InboxActions, snackbar: SnackbarHostState
                 }
                 if (ui.accounts.size > 1 && !searchOpen) {
                     LazyRow(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        item(key = ALL_ACCOUNTS) {
+                            AccountChip(tr("All"), null, active = ui.activeId == ALL_ACCOUNTS,
+                                badge = ui.accounts.sumOf { ui.unread[it.id] ?: 0 }) { actions.onAccount(ALL_ACCOUNTS) }
+                        }
                         items(ui.accounts, key = { it.id }) { acc ->
                             AccountChip(acc.name.ifBlank { acc.email.substringBefore('@') }, acc.color, active = acc.id == ui.activeId,
                                 badge = ui.unread[acc.id] ?: 0) { actions.onAccount(acc.id) }
@@ -257,15 +281,16 @@ fun InboxContent(ui: InboxUi, actions: InboxActions, snackbar: SnackbarHostState
                         when {
                             st.loading -> SkeletonList()
                             st.error != null && st.messages.isEmpty() -> ScrollableEmpty {
-                                EmptyMessage(Icons.Outlined.CloudOff, "Couldn’t load mail", st.error.orEmpty(), "Try again", actions.onRefresh)
+                                EmptyMessage(Icons.Outlined.CloudOff, tr("Couldn’t load mail"), st.error.orEmpty(), tr("Try again"), actions.onRefresh)
                             }
                             st.messages.isEmpty() -> ScrollableEmpty {
                                 when {
-                                    st.searching -> EmptyMessage(Icons.Outlined.SearchOff, "No results", "Nothing matches “${st.query}” in ${st.title}.")
-                                    st.isStarred -> EmptyMessage(Icons.Outlined.StarOutline, "Nothing starred", "Star a message to keep it here, whatever folder it’s in.")
-                                    st.folder?.role == FolderRole.INBOX -> EmptyMessage(Icons.Outlined.TaskAlt, "All caught up",
-                                        "Nothing left in your inbox. New mail shows up here.", "New message", actions.onCompose)
-                                    else -> EmptyMessage(Icons.Outlined.Inbox, "No messages", "${st.title} is empty.")
+                                    st.searching -> EmptyMessage(Icons.Outlined.SearchOff, tr("No results"),
+                                        tr("Nothing matches “${st.query}” in ${if (st.searchAllFolders) tr("All folders") else st.title}."))
+                                    st.isStarred -> EmptyMessage(Icons.Outlined.StarOutline, tr("Nothing starred"), tr("Star a message to keep it here, whatever folder it’s in."))
+                                    st.unified || st.folder?.role == FolderRole.INBOX -> EmptyMessage(Icons.Outlined.TaskAlt, tr("All caught up"),
+                                        tr("Nothing left in your inbox. New mail shows up here."), tr("New message"), actions.onCompose)
+                                    else -> EmptyMessage(Icons.Outlined.Inbox, tr("No messages"), tr("${st.title} is empty."))
                                 }
                             }
                             else -> MessageList(ui, actions)
@@ -308,33 +333,39 @@ private fun MessageList(ui: InboxUi, actions: InboxActions) {
     val listState = rememberLazyListState()
     val nearEnd by remember { derivedStateOf { (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= listState.layoutInfo.totalItemsCount - 5 } }
     LaunchedEffect(nearEnd, messages.size) { if (nearEnd && st.canLoadMore) actions.onLoadMore() }
-    val folderNames = remember(st.folders) { st.folders.associate { it.path to it.name } }
+    val folderNames = remember(st.folders) { st.folders.associate { it.path to I18n.folderName(it) } }
+    val accountNames = remember(ui.accounts) { ui.accounts.associate { it.id to (it.name.ifBlank { it.email.substringBefore('@') }) } }
 
     LazyColumn(state = listState, contentPadding = PaddingValues(top = 6.dp, bottom = 104.dp), modifier = Modifier.fillMaxSize()) {
         ui.update?.let { r ->
             item(key = "update") {
                 InfoCard(
-                    title = "Mailplane ${r.version} is available",
-                    body = "Download and install it straight from GitHub.",
+                    title = tr("Mailplane ${r.version} is available"),
+                    body = tr("Download and install it straight from GitHub."),
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { actions.onUpdate(r) }) { Text("Update", color = Frost.colors.ink, style = MaterialTheme.typography.labelLarge) }
-                        TextButton(onClick = { actions.onDismissUpdate(r) }) { Text("Later", color = Frost.colors.inkSecondary, style = MaterialTheme.typography.labelLarge) }
+                        TextButton(onClick = { actions.onUpdate(r) }) { Text(tr("Update"), color = Frost.colors.ink, style = MaterialTheme.typography.labelLarge) }
+                        TextButton(onClick = { actions.onDismissUpdate(r) }) { Text(tr("Later"), color = Frost.colors.inkSecondary, style = MaterialTheme.typography.labelLarge) }
                     }
                 }
             }
         }
         var lastDay: String? = null
         messages.forEach { m ->
-            val day = if (st.searching) null else Days.label(m.date)
+            val day = if (st.searching) null else Days.label(m.date, locale = java.util.Locale(I18n.code))
             if (day != null && day != lastDay) {
                 lastDay = day
-                item(key = "day:$day:${m.folder}:${m.uid}") { DayHeader(day) }
+                item(key = "day:$day:${m.accountId}:${m.folder}:${m.uid}") { DayHeader(day) }
             }
-            item(key = "${m.folder}:${m.uid}") {
+            item(key = "${m.accountId}:${m.folder}:${m.uid}") {
                 SwipeRow(onArchive = { actions.onArchive(m) }, onDelete = { actions.onDelete(m) }) {
-                    MessageRow(m, compact = ui.compact, folderLabel = if (st.isStarred) folderNames[m.folder] ?: m.folder else null,
+                    val tag = when {
+                        st.unified || (st.searching && ui.activeId == ALL_ACCOUNTS) -> accountNames[m.accountId]
+                        st.isStarred || (st.searching && st.searchAllFolders) -> folderNames[m.folder] ?: m.folder
+                        else -> null
+                    }
+                    MessageRow(m, compact = ui.compact, folderLabel = tag,
                         onClick = { actions.onOpen(m) }, onStar = { actions.onStar(m) })
                 }
             }
@@ -366,7 +397,7 @@ private fun SwipeRow(onArchive: () -> Unit, onDelete: () -> Unit, content: @Comp
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = if (toArchive) Arrangement.Start else Arrangement.End,
             ) {
-                Icon(if (toArchive) Icons.Outlined.Archive else Icons.Outlined.Delete, contentDescription = if (toArchive) "Archive" else "Delete",
+                Icon(if (toArchive) Icons.Outlined.Archive else Icons.Outlined.Delete, contentDescription = tr(if (toArchive) "Archive" else "Delete"),
                     tint = if (toArchive) c.onAccent else Color.White)
             }
         },
@@ -398,12 +429,12 @@ private fun MessageRow(m: MessageSummary, compact: Boolean, folderLabel: String?
             if (!compact && (m.hasAttachments || folderLabel != null)) {
                 Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (folderLabel != null) Tag(Icons.Outlined.Folder, folderLabel)
-                    if (m.hasAttachments) Tag(Icons.Outlined.AttachFile, "Attachment")
+                    if (m.hasAttachments) Tag(Icons.Outlined.AttachFile, tr("Attachment"))
                 }
             }
         }
         IconButton(onClick = onStar, modifier = Modifier.size(36.dp)) {
-            Icon(if (m.flagged) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (m.flagged) "Unstar" else "Star",
+            Icon(if (m.flagged) Icons.Outlined.Star else Icons.Outlined.StarOutline, tr(if (m.flagged) "Unstar" else "Star"),
                 tint = if (m.flagged) c.accentDeep else c.inkTertiary, modifier = Modifier.size(18.dp))
         }
     }
@@ -424,6 +455,8 @@ private fun FolderDrawer(
     folders: List<MailFolder>,
     current: String,
     quota: StorageQuota?,
+    accounts: List<Account>,
+    onAccount: (String) -> Unit,
     onFolder: (String) -> Unit,
     onAddAccount: () -> Unit,
     onSettings: () -> Unit,
@@ -442,25 +475,32 @@ private fun FolderDrawer(
             }
             system.forEachIndexed { i, f ->
                 item(key = f.path) {
-                    DrawerRow(roleIcon(f.role), f.name, selected = f.path == current,
+                    DrawerRow(roleIcon(f.role), I18n.folderName(f), selected = f.path == current,
                         badge = if (f.role == FolderRole.INBOX) f.unread else 0, accentBadge = true) { onFolder(f.path) }
                 }
                 // Starred sits right under the inbox
                 if (i == 0) item(key = STARRED) {
-                    DrawerRow(Icons.Outlined.Star, "Starred", selected = current == STARRED) { onFolder(STARRED) }
+                    DrawerRow(Icons.Outlined.Star, tr("Starred"), selected = current == STARRED) { onFolder(STARRED) }
+                }
+            }
+            if (accounts.isNotEmpty()) {
+                // Unified inbox: folders belong to one account — pick it first
+                item { Text(tr("Accounts"), style = MaterialTheme.typography.labelMedium, color = c.inkTertiary, modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 6.dp)) }
+                items(accounts, key = { it.id }) { acc ->
+                    DrawerRow(Icons.Outlined.Inbox, acc.name.ifBlank { acc.email }, selected = false) { onAccount(acc.id) }
                 }
             }
             if (custom.isNotEmpty()) {
-                item { Text("Folders", style = MaterialTheme.typography.labelMedium, color = c.inkTertiary, modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 6.dp)) }
+                item { Text(tr("Folders"), style = MaterialTheme.typography.labelMedium, color = c.inkTertiary, modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 6.dp)) }
                 items(custom, key = { it.path }) { f ->
-                    DrawerRow(Icons.Outlined.Folder, f.name, selected = f.path == current, badge = f.unread) { onFolder(f.path) }
+                    DrawerRow(Icons.Outlined.Folder, I18n.folderName(f), selected = f.path == current, badge = f.unread) { onFolder(f.path) }
                 }
             }
         }
         Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
             if (quota != null) StorageBar(quota, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
-            DrawerRow(Icons.Outlined.Add, "Add account", selected = false, onClick = onAddAccount)
-            DrawerRow(Icons.Outlined.Settings, "Settings", selected = false, onClick = onSettings)
+            DrawerRow(Icons.Outlined.Add, tr("Add account"), selected = false, onClick = onAddAccount)
+            DrawerRow(Icons.Outlined.Settings, tr("Settings"), selected = false, onClick = onSettings)
         }
     }
 }
@@ -510,7 +550,7 @@ internal fun shortDate(m: MessageSummary): String {
     val today = LocalDate.now()
     return when (d.toLocalDate()) {
         today -> d.format(timeFmt)
-        today.minusDays(1) -> "Yesterday"
+        today.minusDays(1) -> tr("Yesterday")
         else -> d.format(dayFmt)
     }
 }

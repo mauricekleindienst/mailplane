@@ -218,6 +218,47 @@ class ImapMailClientTest {
         assertTrue(e.message!!.contains("password"), e.message)
     }
 
+    @Test fun `drafts are saved, replaced and removed`() {
+        val first = client.saveDraft(SmtpSender.buildDraft(account, OutgoingMessage(to = "half@", subject = "Plan", text = "one")))
+        assertEquals("Drafts", first.folder)
+        assertNotNull(first.uid)
+        val second = client.saveDraft(SmtpSender.buildDraft(account,
+            OutgoingMessage(to = "bob@work.test", bcc = "hidden@work.test", subject = "Plan", text = "two")), first)
+        val drafts = client.fetchMessages("Drafts").messages
+        assertEquals(listOf(second.uid), drafts.map { it.uid })
+        val body = client.fetchBody("Drafts", second.uid!!)
+        assertEquals("two", body.text?.trim())
+        assertEquals("bob@work.test", body.to.single().email)
+        client.deleteDraft(second)
+        assertEquals(0, client.fetchMessages("Drafts").total)
+    }
+
+    @Test fun `snooze moves to Snoozed and back unread`() {
+        deliver("Later please")
+        val m = client.fetchMessages("INBOX").messages.single()
+        client.setSeen("INBOX", m.uid, true)
+        val ref = client.snooze("INBOX", m.uid)
+        assertEquals(0, client.fetchMessages("INBOX").total)
+        assertEquals(listOf("Later please"), client.fetchMessages(ref.folder).messages.map { it.subject })
+        assertTrue(client.unsnooze(ref))
+        val back = client.fetchMessages("INBOX").messages.single()
+        assertEquals("Later please", back.subject)
+        assertFalse(back.seen)
+        assertFalse(client.unsnooze(ref), "second wake finds nothing")
+    }
+
+    @Test fun `search all folders and messages carry their account`() {
+        deliver("Lisbon flights")
+        deliver("Other thing")
+        val uid = client.fetchMessages("INBOX").messages.first { it.subject == "Lisbon flights" }.uid
+        client.move("INBOX", uid, "Projects")
+        deliver("Lisbon hotel")
+        val hits = client.searchAll("Lisbon")
+        assertEquals(setOf("Lisbon flights", "Lisbon hotel"), hits.map { it.subject }.toSet())
+        assertEquals(setOf("Projects", "INBOX"), hits.map { it.folder }.toSet())
+        assertTrue(hits.all { it.accountId == "a" })
+    }
+
     @Test fun `smtp send delivers to to, cc and bcc with threading headers`() {
         greenMail.setUser("bob@work.test", "bob@work.test", "pw")
         greenMail.setUser("cc@work.test", "cc@work.test", "pw")

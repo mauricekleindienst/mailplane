@@ -2,6 +2,8 @@ package app.mailplane.android.data
 
 import app.mailplane.core.Account
 import app.mailplane.core.AutoConfig
+import app.mailplane.core.DraftRef
+import app.mailplane.core.SnoozedRef
 import app.mailplane.core.ImapMailClient
 import app.mailplane.core.MailException
 import app.mailplane.core.MailFolder
@@ -48,6 +50,21 @@ class MailRepository(private val accounts: AccountRepository) {
     suspend fun send(account: Account, message: OutgoingMessage): String = io {
         SmtpSender.send(account, accounts.password(account.id) ?: throw MailException("Password missing"), message)
     }
+
+    /** All folders except Trash and Spam. */
+    suspend fun searchAll(account: Account, query: String): List<MessageSummary> = io { client(account).searchAll(query) }
+
+    suspend fun move(account: Account, m: MessageSummary, destination: String) = io { client(account).move(m.folder, m.uid, destination) }
+
+    /** Saves [message] as a draft (unfinished addresses allowed), replacing [replace]. */
+    suspend fun saveDraft(account: Account, message: OutgoingMessage, replace: DraftRef?): DraftRef = io {
+        client(account).saveDraft(SmtpSender.buildDraft(account, message), replace)
+    }
+
+    suspend fun deleteDraft(account: Account, ref: DraftRef) = io { client(account).deleteDraft(ref) }
+
+    suspend fun snooze(account: Account, m: MessageSummary): SnoozedRef = io { client(account).snooze(m.folder, m.uid) }
+    suspend fun unsnooze(account: Account, ref: SnoozedRef, destination: String): Boolean = io { client(account).unsnooze(ref, destination) }
 
     fun disconnect(accountId: String) {
         clients.remove(accountId)?.let { c -> Thread { c.close() }.start() }

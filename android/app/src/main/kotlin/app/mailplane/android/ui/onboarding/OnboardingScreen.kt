@@ -79,6 +79,7 @@ import app.mailplane.android.ui.components.InfoCard
 import app.mailplane.android.ui.components.TileButton
 import app.mailplane.android.ui.components.accentWash
 import app.mailplane.android.ui.theme.Frost
+import app.mailplane.android.ui.tr
 import app.mailplane.core.AutoConfig
 import app.mailplane.core.Security
 
@@ -103,7 +104,7 @@ fun OnboardingScreen(onDone: (accountId: String) -> Unit, onCancel: (() -> Unit)
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { if (!vm.back()) onCancel?.invoke() }) {
                         Icon(if (s.step == SetupStep.EMAIL && !s.firstAccount) Icons.Outlined.Close else Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = "Back", tint = c.ink)
+                            contentDescription = tr("Back"), tint = c.ink)
                     }
                     val progress by animateFloatAsState(s.progress, label = "progress")
                     LinearProgressIndicator(
@@ -141,8 +142,8 @@ fun OnboardingScreen(onDone: (accountId: String) -> Unit, onCancel: (() -> Unit)
 @Composable
 private fun Title(title: String, subtitle: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)) {
-        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = Frost.colors.ink)
-        if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = Frost.colors.inkSecondary)
+        Text(tr(title), style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = Frost.colors.ink)
+        if (subtitle != null) Text(tr(subtitle), style = MaterialTheme.typography.bodyLarge, color = Frost.colors.inkSecondary)
     }
 }
 
@@ -158,7 +159,7 @@ internal fun Welcome(onStart: () -> Unit) {
     Feature(Icons.Outlined.NotificationsNone, "Quiet notifications when new mail arrives")
     Spacer(Modifier.height(24.dp))
     AccentButton("Add your first account", onStart, Modifier.fillMaxWidth())
-    Text("You can add more accounts any time.", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary,
+    Text(tr("You can add more accounts any time."), style = MaterialTheme.typography.bodySmall, color = c.inkTertiary,
         modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
 }
 
@@ -169,7 +170,7 @@ private fun Feature(icon: ImageVector, text: String) {
         Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.tile), contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = null, tint = c.ink, modifier = Modifier.size(20.dp))
         }
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
+        Text(tr(text), style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
     }
 }
 
@@ -189,12 +190,12 @@ private fun EmailStep(s: SetupState, vm: SetupViewModel) {
     Title("What's your e-mail address?", "We'll find the right server settings for you.")
     OutlinedTextField(
         value = s.email, onValueChange = vm::setEmail,
-        label = { Text("E-mail address") }, singleLine = true,
+        label = { Text(tr("E-mail address")) }, singleLine = true,
         isError = s.emailError != null,
         supportingText = {
             when {
-                s.emailError != null -> Text(s.emailError)
-                s.instantProvider != null -> Text("✓ ${s.instantProvider} — settings are built in", color = c.inkSecondary)
+                s.emailError != null -> Text(tr(s.emailError))
+                s.instantProvider != null -> Text(tr("✓ ${s.instantProvider} — settings are built in"), color = c.inkSecondary)
             }
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next, autoCorrectEnabled = false),
@@ -205,7 +206,7 @@ private fun EmailStep(s: SetupState, vm: SetupViewModel) {
     if (s.detecting) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = c.inkSecondary)
-            Text("Looking up server settings…", style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
+            Text(tr("Looking up server settings…"), style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
         }
     }
     AccentButton("Continue", vm::submitEmail, Modifier.fillMaxWidth(), enabled = s.email.isNotBlank() && !s.detecting)
@@ -222,17 +223,17 @@ private fun PasswordStep(s: SetupState, vm: SetupViewModel) {
         InfoCard(title = "Use an app password", body = s.note) {
             if (s.helpUrl != null) TextButton(onClick = {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(s.helpUrl)))
-            }) { Text("Create one at ${s.provider ?: "your provider"} ↗", color = c.ink) }
+            }) { Text(tr("Create one at ${s.provider ?: tr("your provider")} ↗"), color = c.ink) }
         }
     }
     OutlinedTextField(
         value = s.password, onValueChange = vm::setPassword,
-        label = { Text(if (s.note != null) "App password" else "Password") }, singleLine = true,
+        label = { Text(tr(if (s.note != null) "App password" else "Password")) }, singleLine = true,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = {
             IconButton(onClick = { visible = !visible }) {
                 Icon(if (visible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    contentDescription = if (visible) "Hide password" else "Show password")
+                    contentDescription = tr(if (visible) "Hide password" else "Show password"))
             }
         },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go, autoCorrectEnabled = false),
@@ -242,7 +243,7 @@ private fun PasswordStep(s: SetupState, vm: SetupViewModel) {
     )
     AccentButton("Sign in", vm::check, Modifier.fillMaxWidth(), enabled = s.password.isNotBlank())
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        TextButton(onClick = vm::editServers) { Text("Server settings", color = c.inkSecondary) }
+        TextButton(onClick = vm::editServers) { Text(tr("Server settings"), color = c.inkSecondary) }
     }
 }
 
@@ -263,8 +264,8 @@ private fun ProviderBadge(s: SetupState) {
             Text((title ?: "?").take(1).uppercase(), color = c.ink, style = MaterialTheme.typography.labelLarge)
         }
         Column {
-            Text(title ?: "", style = MaterialTheme.typography.titleMedium, color = c.ink)
-            Text(detail, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+            Text(tr(title ?: ""), style = MaterialTheme.typography.titleMedium, color = c.ink)
+            Text(tr(detail), style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
         }
     }
 }
@@ -272,12 +273,12 @@ private fun ProviderBadge(s: SetupState) {
 @Composable
 private fun ServersStep(s: SetupState, vm: SetupViewModel) {
     Title("Server settings", "Your provider's help pages list these. Most use SSL on port 993 and STARTTLS on 587.")
-    if (s.checkError != null) Text(s.checkError, color = Frost.colors.danger, style = MaterialTheme.typography.bodyMedium)
+    if (s.checkError != null) Text(tr(s.checkError), color = Frost.colors.danger, style = MaterialTheme.typography.bodyMedium)
     ServerFields("Incoming mail (IMAP)", s.imap, vm::setImap)
     ServerFields("Outgoing mail (SMTP)", s.smtp, vm::setSmtp)
     OutlinedTextField(
-        value = s.username, onValueChange = vm::setUsername, label = { Text("Username") }, singleLine = true,
-        supportingText = { Text("Usually your full e-mail address") },
+        value = s.username, onValueChange = vm::setUsername, label = { Text(tr("Username")) }, singleLine = true,
+        supportingText = { Text(tr("Usually your full e-mail address")) },
         shape = RoundedCornerShape(14.dp), colors = frostFieldColors(), modifier = Modifier.fillMaxWidth(),
     )
     AccentButton("Check connection", vm::check, Modifier.fillMaxWidth(), enabled = s.password.isNotBlank())
@@ -290,16 +291,16 @@ private fun ServerFields(label: String, form: ServerForm, onChange: (ServerForm)
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.raised).padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(label, style = MaterialTheme.typography.titleMedium, color = c.ink)
+        Text(tr(label), style = MaterialTheme.typography.titleMedium, color = c.ink)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(form.host, { onChange(form.copy(host = it)) }, label = { Text("Server") }, singleLine = true,
+            OutlinedTextField(form.host, { onChange(form.copy(host = it)) }, label = { Text(tr("Server")) }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
                 shape = RoundedCornerShape(12.dp), colors = frostFieldColors(), modifier = Modifier.weight(1f))
-            OutlinedTextField(form.port, { v -> onChange(form.copy(port = v.filter(Char::isDigit).take(5))) }, label = { Text("Port") },
+            OutlinedTextField(form.port, { v -> onChange(form.copy(port = v.filter(Char::isDigit).take(5))) }, label = { Text(tr("Port")) },
                 singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 shape = RoundedCornerShape(12.dp), colors = frostFieldColors(), modifier = Modifier.width(96.dp))
         }
-        val options = listOf(Security.SSL to "SSL/TLS", Security.STARTTLS to "STARTTLS", Security.NONE to "None")
+        val options = listOf(Security.SSL to "SSL/TLS", Security.STARTTLS to "STARTTLS", Security.NONE to tr("None"))
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
             options.forEachIndexed { i, (sec, text) ->
                 SegmentedButton(
@@ -320,7 +321,7 @@ private fun ServerFields(label: String, form: ServerForm, onChange: (ServerForm)
             }
         }
         if (form.security == Security.NONE) {
-            Text("Without encryption your password travels in plain text. Only use this for local servers.",
+            Text(tr("Without encryption your password travels in plain text. Only use this for local servers."),
                 style = MaterialTheme.typography.bodySmall, color = c.danger)
         }
     }
@@ -349,7 +350,7 @@ private fun CheckRow(title: String, detail: String, status: CheckStatus) {
     val c = Frost.colors
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = if (status == CheckStatus.PENDING) c.inkTertiary else c.ink)
+            Text(tr(title), style = MaterialTheme.typography.titleMedium, color = if (status == CheckStatus.PENDING) c.inkTertiary else c.ink)
             Text(detail, style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
         }
         Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
@@ -360,7 +361,7 @@ private fun CheckRow(title: String, detail: String, status: CheckStatus) {
                     Icon(Icons.Outlined.Check, contentDescription = "OK", tint = c.onAccent, modifier = Modifier.size(16.dp))
                 }
                 CheckStatus.FAILED -> Box(Modifier.size(26.dp).clip(CircleShape).background(c.danger), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.Close, contentDescription = "Failed", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Outlined.Close, contentDescription = tr("Failed"), tint = Color.White, modifier = Modifier.size(16.dp))
                 }
             }
         }
@@ -372,11 +373,11 @@ private fun PersonalizeStep(s: SetupState, vm: SetupViewModel, onFinish: () -> U
     val c = Frost.colors
     Title("You're connected", "Make this account easy to recognise.")
     OutlinedTextField(
-        value = s.name, onValueChange = vm::setName, label = { Text("Your name") }, singleLine = true,
-        supportingText = { Text("Shown to people you write to") },
+        value = s.name, onValueChange = vm::setName, label = { Text(tr("Your name")) }, singleLine = true,
+        supportingText = { Text(tr("Shown to people you write to")) },
         shape = RoundedCornerShape(14.dp), colors = frostFieldColors(), modifier = Modifier.fillMaxWidth(),
     )
-    Text("Account colour", style = MaterialTheme.typography.labelMedium, color = c.inkSecondary)
+    Text(tr("Account colour"), style = MaterialTheme.typography.labelMedium, color = c.inkSecondary)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
         SetupState.PALETTE.take(6).forEach { hex ->
             val selected = hex == s.color

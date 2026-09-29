@@ -3,6 +3,8 @@
 package app.mailplane.android.ui.compose
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -28,7 +31,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mailplane.android.ui.Draft
 import app.mailplane.android.ui.MailViewModel
+import app.mailplane.android.ui.tr
 import app.mailplane.android.ui.components.AccountDot
 import app.mailplane.android.ui.theme.Frost
 import app.mailplane.core.Account
@@ -74,26 +82,46 @@ import app.mailplane.core.Senders
 class ComposeActions(
     val onChange: ((Draft) -> Draft) -> Unit = {},
     val onSend: () -> Unit = {},
+    /** Close and keep what was written (saved to Drafts). */
+    val onClose: () -> Unit = {},
+    /** Throw the message and its saved draft away. */
     val onDiscard: () -> Unit = {},
+    val onAttach: () -> Unit = {},
+    val onRemoveAttachment: (Int) -> Unit = {},
+    val onAiWrite: (String) -> Unit = {},
+    val onAiRewrite: (String) -> Unit = {},
 )
 
 @Composable
 fun ComposeScreen(vm: MailViewModel, onClose: () -> Unit) {
     val d by vm.draft.collectAsState()
     val accounts by vm.accounts.collectAsState()
-    ComposeContent(d, accounts, ComposeActions(onChange = vm::updateDraft, onSend = { vm.send(onClose) }, onDiscard = onClose))
+    val ai by vm.ai.collectAsState()
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) vm.addAttachments(uris)
+    }
+    ComposeContent(
+        d, accounts, aiEnabled = ai.enabled,
+        actions = ComposeActions(
+            onChange = vm::updateDraft, onSend = { vm.send(onClose) },
+            onClose = { vm.closeDraft(); onClose() },
+            onDiscard = { vm.discardDraft(); onClose() },
+            onAttach = { picker.launch(arrayOf("*/*")) },
+            onRemoveAttachment = vm::removeAttachment,
+            onAiWrite = vm::aiWrite, onAiRewrite = vm::aiRewrite,
+        ),
+    )
 }
 
 @Composable
-fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = ComposeActions()) {
+fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = ComposeActions(), aiEnabled: Boolean = false) {
     val c = Frost.colors
     var showCc by remember { mutableStateOf(d.cc.isNotBlank() || d.bcc.isNotBlank()) }
     var confirmDiscard by remember { mutableStateOf(false) }
-    val hasContent = d.to.isNotBlank() || d.subject.isNotBlank() || d.body.isNotBlank()
-    val close: () -> Unit = {
-        if (hasContent && !d.sending) { confirmDiscard = true } else { actions.onDiscard() }
-    }
-    BackHandler(onBack = close)
+    var menu by remember { mutableStateOf(false) }
+    var aiPrompt by remember { mutableStateOf<String?>(null) }
+    // Back / close keeps the message: it is saved to Drafts
+    BackHandler(onBack = actions.onClose)
 
     val fieldColors = TextFieldDefaults.colors(
         focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
@@ -104,10 +132,27 @@ fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = 
         AlertDialog(
             onDismissRequest = { confirmDiscard = false },
             containerColor = c.surface,
-            title = { Text("Discard this message?") },
-            text = { Text("What you wrote won’t be saved.", color = c.inkSecondary) },
-            confirmButton = { TextButton(onClick = { confirmDiscard = false; actions.onDiscard() }) { Text("Discard", color = c.danger) } },
-            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("Keep editing", color = c.ink) } },
+            title = { Text(tr("Discard this message?")) },
+            text = { Text(tr(if (d.saved != null) "The saved draft is deleted too." else "What you wrote won’t be saved."), color = c.inkSecondary) },
+            confirmButton = { TextButton(onClick = { confirmDiscard = false; actions.onDiscard() }) { Text(tr("Discard"), color = c.danger) } },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text(tr("Keep editing"), color = c.ink) } },
+        )
+    }
+
+    aiPrompt?.let { text ->
+        AlertDialog(
+            onDismissRequest = { aiPrompt = null },
+            containerColor = c.surface,
+            title = { Text(tr(if (d.sourceText != null) "Draft a reply" else "Write with AI")) },
+            text = {
+                TextField(text, { aiPrompt = it }, placeholder = {
+                    Text(tr(if (d.sourceText != null) "What should the reply say?" else "Tell AI what to write"), color = c.inkTertiary)
+                }, colors = TextFieldDefaults.colors(focusedContainerColor = c.tile, unfocusedContainerColor = c.tile,
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = c.ink),
+                    shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = { TextButton(onClick = { actions.onAiWrite(text); aiPrompt = null }) { Text(tr("Write"), color = c.ink) } },
+            dismissButton = { TextButton(onClick = { aiPrompt = null }) { Text(tr("Cancel"), color = c.inkSecondary) } },
         )
     }
 
@@ -116,19 +161,39 @@ fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = 
         topBar = {
             TopAppBar(
                 title = {
-                    Text(d.subject.ifBlank { d.title }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+                    Text(d.subject.ifBlank { tr(d.title) }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
                         color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 },
-                navigationIcon = { IconButton(onClick = close) { Icon(Icons.Outlined.Close, "Close", tint = c.ink) } },
+                navigationIcon = { IconButton(onClick = actions.onClose) { Icon(Icons.Outlined.Close, tr("Close"), tint = c.ink) } },
                 actions = {
-                    if (d.sending) CircularProgressIndicator(Modifier.padding(end = 20.dp).size(20.dp), strokeWidth = 2.dp, color = c.inkSecondary)
-                    else Row(
-                        Modifier.padding(end = 12.dp).clip(RoundedCornerShape(12.dp)).background(c.accent).clickable(onClick = actions.onSend)
-                            .padding(horizontal = 14.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Icon(Icons.AutoMirrored.Outlined.Send, null, tint = c.onAccent, modifier = Modifier.size(16.dp))
-                        Text("Send", color = c.onAccent, style = MaterialTheme.typography.labelLarge)
+                    if (d.sending || d.aiBusy) CircularProgressIndicator(Modifier.padding(end = 20.dp).size(20.dp), strokeWidth = 2.dp, color = c.inkSecondary)
+                    else {
+                        IconButton(onClick = actions.onAttach) { Icon(Icons.Outlined.AttachFile, tr("Attach files"), tint = c.ink) }
+                        Box {
+                            IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, tr("More"), tint = c.ink) }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
+                                if (aiEnabled) {
+                                    DropdownMenuItem(text = { Text(tr(if (d.sourceText != null) "Draft a reply" else "Write with AI")) },
+                                        leadingIcon = { Icon(Icons.Outlined.AutoAwesome, null) }, onClick = { menu = false; aiPrompt = "" })
+                                    listOf("improve" to "Improve writing", "shorter" to "Make shorter", "formal" to "More formal",
+                                        "friendly" to "Friendlier", "fix" to "Fix spelling & grammar").forEach { (mode, label) ->
+                                        DropdownMenuItem(text = { Text(tr(label)) }, onClick = { menu = false; actions.onAiRewrite(mode) })
+                                    }
+                                    HorizontalDivider(color = c.tile)
+                                }
+                                DropdownMenuItem(text = { Text(tr("Discard"), color = c.danger) },
+                                    leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = c.danger) },
+                                    onClick = { menu = false; if (d.hasContent) confirmDiscard = true else actions.onDiscard() })
+                            }
+                        }
+                        Row(
+                            Modifier.padding(start = 4.dp, end = 12.dp).clip(RoundedCornerShape(12.dp)).background(c.accent).clickable(onClick = actions.onSend)
+                                .padding(horizontal = 14.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.Send, null, tint = c.onAccent, modifier = Modifier.size(16.dp))
+                            Text(tr("Send"), color = c.onAccent, style = MaterialTheme.typography.labelLarge)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = c.canvas),
@@ -137,7 +202,7 @@ fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = 
         bottomBar = {
             // Sender lives in the footer, like the desktop compose window
             val from = accounts.firstOrNull { it.id == d.accountId } ?: accounts.firstOrNull()
-            if (from != null) FromFooter(from, accounts) { id -> actions.onChange { it.copy(accountId = id) } }
+            if (from != null) FromFooter(from, accounts, d.saveState) { id -> actions.onChange { it.copy(accountId = id) } }
         },
     ) { padding ->
         Column(
@@ -148,20 +213,38 @@ fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = 
                 Text(d.error, color = c.danger, style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 14.dp))
             }
-            RecipientField("To", d.to, trailing = {
-                if (!showCc) TextButton(onClick = { showCc = true }) { Text("Cc Bcc", color = c.inkSecondary, fontSize = 13.sp) }
+            RecipientField(tr("To"), d.to, trailing = {
+                if (!showCc) TextButton(onClick = { showCc = true }) { Text(tr("Cc Bcc"), color = c.inkSecondary, fontSize = 13.sp) }
             }) { v -> actions.onChange { it.copy(to = v, error = null) } }
             HorizontalDivider(color = c.tile)
             if (showCc) {
-                RecipientField("Cc", d.cc) { v -> actions.onChange { it.copy(cc = v, error = null) } }
+                RecipientField(tr("Cc"), d.cc) { v -> actions.onChange { it.copy(cc = v, error = null) } }
                 HorizontalDivider(color = c.tile)
-                RecipientField("Bcc", d.bcc) { v -> actions.onChange { it.copy(bcc = v, error = null) } }
+                RecipientField(tr("Bcc"), d.bcc) { v -> actions.onChange { it.copy(bcc = v, error = null) } }
                 HorizontalDivider(color = c.tile)
             }
-            TextField(d.subject, { v -> actions.onChange { it.copy(subject = v) } }, placeholder = { Text("Subject", color = c.inkTertiary) },
+            TextField(d.subject, { v -> actions.onChange { it.copy(subject = v) } }, placeholder = { Text(tr("Subject"), color = c.inkTertiary) },
                 textStyle = MaterialTheme.typography.titleMedium, colors = fieldColors, singleLine = true, modifier = Modifier.fillMaxWidth())
             HorizontalDivider(color = c.tile)
-            TextField(d.body, { v -> actions.onChange { it.copy(body = v) } }, placeholder = { Text("Write your message", color = c.inkTertiary) },
+            if (d.attachments.isNotEmpty()) {
+                FlowRow(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    d.attachments.forEachIndexed { i, att ->
+                        Row(Modifier.clip(RoundedCornerShape(12.dp)).background(c.tile).padding(start = 10.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Outlined.AttachFile, null, tint = c.inkTertiary, modifier = Modifier.size(14.dp))
+                            Text(att.fileName, style = MaterialTheme.typography.bodySmall, color = c.ink, maxLines = 1,
+                                overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 180.dp))
+                            Text(sizeLabel(att.bytes.size.toLong()), style = MaterialTheme.typography.labelSmall, color = c.inkTertiary)
+                            Box(Modifier.size(28.dp).clip(CircleShape).clickable { actions.onRemoveAttachment(i) }, contentAlignment = Alignment.Center) {
+                                Icon(Icons.Outlined.Close, tr("Remove"), tint = c.inkTertiary, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(color = c.tile)
+            }
+            TextField(d.body, { v -> actions.onChange { it.copy(body = v) } }, placeholder = { Text(tr("Write your message"), color = c.inkTertiary) },
                 textStyle = MaterialTheme.typography.bodyLarge, colors = fieldColors, modifier = Modifier.fillMaxWidth().heightIn(min = 220.dp))
             if (d.quoted.isNotBlank()) {
                 Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
@@ -172,6 +255,12 @@ fun ComposeContent(d: Draft, accounts: List<Account>, actions: ComposeActions = 
             }
         }
     }
+}
+
+private fun sizeLabel(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / 1048576.0)
 }
 
 /**
@@ -207,7 +296,7 @@ private fun RecipientField(label: String, value: String, trailing: @Composable (
                         maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 200.dp))
                     Box(Modifier.size(20.dp).clip(CircleShape).clickable { onChange(join(chips.filterIndexed { j, _ -> j != i }, typing)) },
                         contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Close, "Remove $addr", tint = c.inkTertiary, modifier = Modifier.size(12.dp))
+                        Icon(Icons.Outlined.Close, tr("Remove $addr"), tint = c.inkTertiary, modifier = Modifier.size(12.dp))
                     }
                 }
             }
@@ -232,19 +321,19 @@ private fun RecipientField(label: String, value: String, trailing: @Composable (
 }
 
 @Composable
-private fun FromFooter(from: Account, accounts: List<Account>, onPick: (String) -> Unit) {
+private fun FromFooter(from: Account, accounts: List<Account>, saveState: String?, onPick: (String) -> Unit) {
     val c = Frost.colors
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().background(c.canvas).navigationBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Text("from", style = MaterialTheme.typography.labelMedium, color = c.inkTertiary)
+        Text(tr("from"), style = MaterialTheme.typography.labelMedium, color = c.inkTertiary)
         Box {
             Row(Modifier.padding(start = 6.dp).clip(RoundedCornerShape(10.dp))
                 .clickable(enabled = accounts.size > 1) { open = true }.padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 AccountDot(from.color, 7.dp)
                 Text(from.email, style = MaterialTheme.typography.labelMedium, color = c.inkSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                if (accounts.size > 1) Icon(Icons.Outlined.ExpandMore, "Choose sender", tint = c.inkTertiary, modifier = Modifier.size(16.dp))
+                if (accounts.size > 1) Icon(Icons.Outlined.ExpandMore, tr("Choose sender"), tint = c.inkTertiary, modifier = Modifier.size(16.dp))
             }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }, containerColor = c.surface) {
                 accounts.forEach { acc ->
@@ -253,5 +342,7 @@ private fun FromFooter(from: Account, accounts: List<Account>, onPick: (String) 
                 }
             }
         }
+        Spacer(Modifier.weight(1f))
+        if (saveState != null) Text(tr(saveState), style = MaterialTheme.typography.labelSmall, color = c.inkTertiary)
     }
 }

@@ -47,6 +47,8 @@ data class MessageSummary(
     val seen: Boolean,
     val flagged: Boolean,
     val hasAttachments: Boolean,
+    /** Account the message belongs to (set by [ImapMailClient]; the unified inbox mixes accounts). */
+    val accountId: String = "",
 )
 
 data class MessagePage(
@@ -109,5 +111,11 @@ data class OutgoingMessage(
 data class StorageQuota(val usedKb: Long, val limitKb: Long) {
     val fraction: Float get() = if (limitKb <= 0) 0f else (usedKb.toFloat() / limitKb).coerceIn(0f, 1f)
 }
+
+/** Where a saved draft lives on the server; replaced on every save. */
+data class DraftRef(val folder: String, val uid: Long?)
+
+/** A snoozed message: it waits in [folder] and is found again by [messageId]. */
+data class SnoozedRef(val folder: String, val messageId: String)
 
 class MailException(message: String, cause: Throwable? = null) : Exception(message, cause)

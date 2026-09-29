@@ -19,7 +19,9 @@ import androidx.compose.runtime.remember
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import app.mailplane.android.ui.I18n
 import app.mailplane.android.ui.MailViewModel
+import androidx.compose.runtime.key
 import app.mailplane.android.ui.compose.ComposeScreen
 import app.mailplane.android.ui.inbox.InboxScreen
 import app.mailplane.android.ui.message.MessageScreen
@@ -42,6 +44,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val theme by app.settings.theme.collectAsState()
             val accent by app.settings.accent.collectAsState()
+            val language by app.settings.language.collectAsState()
             val accounts by vm.accounts.collectAsState()
             val mailto by pendingMailto.collectAsState()
             val nav = rememberNavController()
@@ -58,7 +61,9 @@ class MainActivity : ComponentActivity() {
                 nav.navigate("compose")
             }
 
-            MailplaneTheme(theme, accent) {
+            // The whole UI re-composes in the new language (see ui/I18n)
+            I18n.apply(language)
+            MailplaneTheme(theme, accent) { key(language) {
                 NavHost(nav, startDestination = if (accounts.isEmpty()) "onboarding" else "inbox") {
                     composable("onboarding") {
                         OnboardingScreen(
@@ -73,7 +78,10 @@ class MainActivity : ComponentActivity() {
                     composable("inbox") {
                         InboxScreen(
                             vm, snackbar,
-                            onOpen = { vm.open(it); nav.navigate("message") },
+                            onOpen = { m ->
+                                if (vm.isDraft(m)) vm.openDraft(m) { nav.navigate("compose") }
+                                else { vm.open(m); nav.navigate("message") }
+                            },
                             onCompose = { vm.newDraft(); nav.navigate("compose") },
                             onAddAccount = { nav.navigate("onboarding") },
                             onSettings = { nav.navigate("settings") },
@@ -87,7 +95,7 @@ class MainActivity : ComponentActivity() {
                         SettingsScreen(vm, onBack = { nav.popBackStack() }, onAddAccount = { nav.navigate("onboarding") })
                     }
                 }
-            }
+            } }
         }
     }
 

@@ -13,6 +13,8 @@ import javax.mail.internet.InternetAddress
 import javax.mail.search.BodyTerm
 import javax.mail.search.FlagTerm
 import javax.mail.search.FromStringTerm
+import javax.mail.search.HeaderTerm
+import javax.mail.internet.MimeMessage
 import javax.mail.search.OrTerm
 import javax.mail.search.SubjectTerm
 
@@ -174,6 +176,99 @@ class ImapMailClient(
         return out.sortedByDescending { it.date }.take(limit)
     }
 
+    /**
+     * Searches every folder except Trash and Spam (subject, sender, body), newest
+     * first — "search all folders". At most [perFolder] hits per folder.
+     */
+    @Synchronized
+    fun searchAll(query: String, perFolder: Int = 30, limit: Int = 100): List<MessageSummary> {
+        val folders = (folderCache ?: listFolders(withUnreadCounts = false))
+            .filter { it.role != FolderRole.TRASH && it.role != FolderRole.SPAM }
+            .take(30)
+        val out = mutableListOf<MessageSummary>()
+        for (f in folders) runCatching { out += search(f.path, query, perFolder) }
+        return out.sortedByDescending { it.date }.take(limit)
+    }
+
+    // ── Drafts ───────────────────────────────────────────────────────────────
+
+    /**
+     * Saves [message] into the Drafts folder (created if the server has none),
+     * then removes the previous copy [replace]. Returns where the new copy is.
+     */
+    @Synchronized
+    fun saveDraft(message: MimeMessage, replace: DraftRef? = null): DraftRef {
+        val path = replace?.folder ?: folderFor(FolderRole.DRAFTS)?.path ?: ensureFolder("Drafts")
+        message.setFlag(Flags.Flag.DRAFT, true)
+        message.setFlag(Flags.Flag.SEEN, true)
+        if (message.messageID == null) message.saveChanges()
+        val messageId = message.messageID
+        val uid = withFolder(path, Folder.READ_WRITE) { folder ->
+            val appended = folder.appendUIDMessages(arrayOf(message)).firstOrNull()?.uid
+            val uid = appended ?: messageId?.let { id ->
+                folder.search(HeaderTerm("Message-ID", id)).lastOrNull()?.let { folder.getUID(it) }
+            }
+            if (replace?.uid != null && replace.uid != uid) {
+                folder.getMessageByUID(replace.uid)?.let { old ->
+                    old.setFlag(Flags.Flag.DELETED, true)
+                    expunge(folder, old)
+                }
+            }
+            uid
+        }
+        return DraftRef(path, uid)
+    }
+
+    /** Removes a saved draft for good (sent or discarded). Missing drafts are ignored. */
+    @Synchronized
+    fun deleteDraft(ref: DraftRef) {
+        val uid = ref.uid ?: return
+        withFolder(ref.folder, Folder.READ_WRITE) { folder ->
+            folder.getMessageByUID(uid)?.let { msg ->
+                msg.setFlag(Flags.Flag.DELETED, true)
+                expunge(folder, msg)
+            }
+        }
+    }
+
+    // ── Snooze ───────────────────────────────────────────────────────────────
+
+    /** Moves the message into "Snoozed" (created on first use). UIDs change on move, so it is tracked by Message-ID. */
+    @Synchronized
+    fun snooze(folderPath: String, uid: Long): SnoozedRef {
+        val snoozed = (folderCache ?: listFolders(withUnreadCounts = false))
+            .firstOrNull { it.name.equals("Snoozed", ignoreCase = true) }?.path ?: ensureFolder("Snoozed")
+        val messageId = withFolder(folderPath, Folder.READ_ONLY) { folder ->
+            (folder.getMessageByUID(uid) ?: throw MailException("Message no longer exists")).getHeader("Message-ID")?.firstOrNull()
+        } ?: throw MailException("This message can't be snoozed")
+        move(folderPath, uid, snoozed)
+        return SnoozedRef(snoozed, messageId)
+    }
+
+    /** Brings a snoozed message back to [destination], unread. False when it is gone (moved by hand). */
+    @Synchronized
+    fun unsnooze(ref: SnoozedRef, destination: String = "INBOX"): Boolean {
+        val uids = withFolder(ref.folder, Folder.READ_WRITE) { folder ->
+            folder.search(HeaderTerm("Message-ID", ref.messageId)).map { msg ->
+                msg.setFlag(Flags.Flag.SEEN, false)
+                folder.getUID(msg)
+            }
+        }
+        if (uids.isEmpty()) return false
+        uids.forEach { move(ref.folder, it, destination) }
+        return true
+    }
+
+    /** Creates a top-level folder and returns its path. */
+    @Synchronized
+    fun ensureFolder(name: String): String {
+        val s = connect()
+        val f = s.getFolder(name)
+        if (!f.exists() && !f.create(Folder.HOLDS_MESSAGES)) throw MailException("Couldn't create the folder \"$name\"")
+        folderCache = null
+        return f.fullName
+    }
+
     /** Mailbox storage from IMAP QUOTA, or null when the server doesn't report it. */
     @Synchronized
     fun quota(): StorageQuota? = runCatching {
@@ -261,6 +356,7 @@ class ImapMailClient(
             seen = m.isSet(Flags.Flag.SEEN),
             flagged = m.isSet(Flags.Flag.FLAGGED),
             hasAttachments = m.isMimeType("multipart/mixed"),
+            accountId = account.id,
         )
     }
 

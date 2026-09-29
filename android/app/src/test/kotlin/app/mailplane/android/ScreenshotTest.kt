@@ -129,6 +129,46 @@ class ScreenshotTest {
         shot("compose-dark", dark = true) { ComposeContent(d, listOf(maurice, studio)) }
     }
 
+    @Test fun newFeatures() {
+        // Every account's inbox in one list, with the account on each row
+        val mixed = inbox.mapIndexed { i, m -> m.copy(accountId = if (i % 3 == 1) "b" else "a") }
+        shot("unified") {
+            InboxContent(ui.copy(activeId = app.mailplane.android.ui.ALL_ACCOUNTS,
+                list = ui.list.copy(messages = mixed, unified = true)), InboxActions())
+        }
+        shot("search-all-folders") {
+            InboxContent(ui.copy(list = ui.list.copy(query = "invoice", searching = true, searchAllFolders = true,
+                messages = inbox.filter { it.hasAttachments }.mapIndexed { i, m -> if (i == 0) m.copy(folder = "Receipts") else m })),
+                InboxActions(), initialSearchOpen = true)
+        }
+        val d = Draft(accountId = "a", to = "lena@hoffmann.me", subject = "Photos from Lisbon", body = "Here are the best ones!",
+            attachments = listOf(app.mailplane.core.OutgoingAttachment("lisbon-01.jpg", "image/jpeg", ByteArray(2_400_000)),
+                app.mailplane.core.OutgoingAttachment("itinerary.pdf", "application/pdf", ByteArray(48_000))),
+            saveState = "Saved")
+        shot("compose-attachments") { ComposeContent(d, listOf(maurice, studio), aiEnabled = true) }
+        val m = inbox[1]
+        shot("message-summary") {
+            MessageContent(ReaderState(summary = m, body = MessageBody(m.subject, MailAddress("TAP", m.fromEmail), emptyList(), emptyList(),
+                m.date, "Your flights are confirmed.", null, emptyList(), null, null, null),
+                aiSummary = "Your flights to Lisbon on 12 Oct are confirmed.\n• Check-in opens 24 h before\n• One bag included"), aiEnabled = true)
+        }
+    }
+
+    @Test fun german() {
+        app.mailplane.android.ui.I18n.apply("de")
+        try {
+            shot("de-inbox") { InboxContent(ui, InboxActions()) }
+            shot("de-drawer") { InboxContent(ui, InboxActions(), initialDrawerOpen = true) }
+            shot("de-compose") {
+                ComposeContent(Draft(accountId = "a", to = "lena@hoffmann.me", subject = "Freitag?", body = "Passt 20:30?", title = "Reply"),
+                    listOf(maurice, studio))
+            }
+            shot("de-empty") { InboxContent(ui.copy(list = ui.list.copy(messages = emptyList(), total = 0)), InboxActions()) }
+        } finally {
+            app.mailplane.android.ui.I18n.apply("en")
+        }
+    }
+
     @Test fun onboarding() {
         shot("onboarding-welcome") {
             Column(Modifier.fillMaxSize().background(Frost.colors.canvas).padding(horizontal = 24.dp, vertical = 12.dp),

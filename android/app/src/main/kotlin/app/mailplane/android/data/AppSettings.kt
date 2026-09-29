@@ -6,6 +6,13 @@ import kotlinx.coroutines.flow.StateFlow
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/** AI provider choice ("off" = no AI anywhere in the app). */
+data class AiSettings(val provider: String = "off", val baseUrl: String = "", val model: String = "") {
+    val enabled: Boolean get() = provider != "off" && model.isNotBlank()
+}
+
+const val AI_KEY_ID = "ai:key"
+
 /** Same accent presets as the desktop app (Settings → Appearance). */
 object Accents {
     data class Accent(val id: String, val label: String, val hex: Long)
@@ -42,6 +49,24 @@ class AppSettings(context: Context) {
 
     private val _recentSearches = MutableStateFlow(prefs.getString("recentSearches", "").orEmpty().split('\n').filter { it.isNotBlank() })
     val recentSearches: StateFlow<List<String>> = _recentSearches
+
+    private val _language = MutableStateFlow(prefs.getString("language", "system") ?: "system")
+    /** "system" | "en" | "de" — see ui/I18n. */
+    val language: StateFlow<String> = _language
+    fun setLanguage(code: String) { prefs.edit().putString("language", code).apply(); _language.value = code }
+
+    private val _ai = MutableStateFlow(AiSettings(
+        provider = prefs.getString("ai.provider", "off") ?: "off",
+        baseUrl = prefs.getString("ai.baseUrl", "").orEmpty(),
+        model = prefs.getString("ai.model", "").orEmpty(),
+    ))
+    /** Optional AI; the key itself lives in [CredentialStore] under [AI_KEY_ID]. */
+    val ai: StateFlow<AiSettings> = _ai
+    fun setAi(settings: AiSettings) {
+        prefs.edit().putString("ai.provider", settings.provider).putString("ai.baseUrl", settings.baseUrl)
+            .putString("ai.model", settings.model).apply()
+        _ai.value = settings
+    }
 
     fun setCompact(on: Boolean) { prefs.edit().putBoolean("compact", on).apply(); _compact.value = on }
     fun rememberSearch(q: String) {

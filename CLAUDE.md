@@ -42,6 +42,14 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
   pills + folder drawer + swipe archive/delete, sandboxed HTML reader (no JS, images on request), compose/reply,
   settings (theme, accent, notifications), background sync via WorkManager, mailto: handling.
   Passwords are AES-GCM encrypted with an Android Keystore key (`CredentialStore`).
+  Also: unified inbox (`ALL_ACCOUNTS` pill, merged by date, account tag per row), search in the open folder or
+  all folders (`ImapMailClient.searchAll`), drafts autosaved to the server Drafts folder (2.5 s debounce; close keeps,
+  Discard deletes, sent drafts removed; Drafts rows reopen in compose), attachments in compose (document picker, ≤ 20 MB),
+  snooze (server "Snoozed" folder + `UnsnoozeWorker`), per-message notifications with Archive / Mark read / inline Reply
+  (`sync/Notifications.kt`, `NotificationActionReceiver`), optional AI (`core/AiClient` — same providers/prompts as
+  desktop; key in `CredentialStore` under `ai:key`), and German UI (`ui/I18n.kt`, English text = key, `tr()`;
+  Settings → Language; leaf components like `AccentButton`/`InfoCard`/`SectionLabel` translate their text).
+  Screens are rendered by `ScreenshotTest` (Roborazzi) — Actions → "Android screenshots" publishes them for review.
 - Protocols: IMAP/SMTP only on Android (JMAP is desktop-only, Fastmail). No OAuth anywhere yet.
 
 ## IPC channels (main ↔ renderer)

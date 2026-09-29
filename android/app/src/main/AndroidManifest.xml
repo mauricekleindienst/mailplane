@@ -35,6 +35,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Archive / Mark read / Reply buttons on new-mail notifications -->
+        <receiver
+            android:name=".sync.NotificationActionReceiver"
+            android:exported="false" />
+
         <!-- Shares downloaded attachments with viewer apps -->
         <provider
             android:name="androidx.core.content.FileProvider"

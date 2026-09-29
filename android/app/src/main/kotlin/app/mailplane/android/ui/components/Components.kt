@@ -18,6 +18,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.outlined.AllInbox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -117,7 +118,7 @@ fun AccentButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifie
         colors = ButtonDefaults.buttonColors(containerColor = c.accent, contentColor = c.onAccent,
             disabledContainerColor = c.tile, disabledContentColor = c.inkTertiary),
         contentPadding = PaddingValues(horizontal = 22.dp),
-    ) { Text(text, style = MaterialTheme.typography.labelLarge) }
+    ) { Text(app.mailplane.android.ui.tr(text), style = MaterialTheme.typography.labelLarge) }
 }
 
 @Composable
@@ -127,7 +128,7 @@ fun TileButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier)
         onClick = onClick, modifier = modifier.height(50.dp), shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(containerColor = c.tile, contentColor = c.ink),
         contentPadding = PaddingValues(horizontal = 22.dp),
-    ) { Text(text, style = MaterialTheme.typography.labelLarge) }
+    ) { Text(app.mailplane.android.ui.tr(text), style = MaterialTheme.typography.labelLarge) }
 }
 
 /** Grouped list container, like the desktop settings groups. */
@@ -139,7 +140,7 @@ fun Group(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
 
 @Composable
 fun SectionLabel(text: String) {
-    Text(text, color = Frost.colors.inkTertiary, style = MaterialTheme.typography.labelMedium,
+    Text(app.mailplane.android.ui.tr(text), color = Frost.colors.inkTertiary, style = MaterialTheme.typography.labelMedium,
         modifier = Modifier.padding(start = 6.dp, top = 18.dp, bottom = 8.dp))
 }
 
@@ -150,8 +151,8 @@ fun InfoCard(title: String, body: String, modifier: Modifier = Modifier, action:
         modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(accentWash()).background(c.raised.copy(alpha = 0.6f)).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = c.ink)
-        Text(body, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
+        Text(app.mailplane.android.ui.tr(title), style = MaterialTheme.typography.titleMedium, color = c.ink)
+        Text(app.mailplane.android.ui.tr(body), style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary)
         action?.invoke()
     }
 }
@@ -209,7 +210,8 @@ private fun lerpColor(a: Color, b: Color, t: Float) = Color(
 
 /** Account switcher avatar: the active one shows its name (like the desktop title bar). */
 @Composable
-fun AccountChip(name: String, colorHex: String, active: Boolean, badge: Int, onClick: () -> Unit) {
+/** [colorHex] null = the "All inboxes" chip. */
+fun AccountChip(name: String, colorHex: String?, active: Boolean, badge: Int, onClick: () -> Unit) {
     val c = Frost.colors
     Row(
         Modifier.clip(RoundedCornerShape(20.dp)).background(if (active) c.tile else Color.Transparent)
@@ -218,10 +220,12 @@ fun AccountChip(name: String, colorHex: String, active: Boolean, badge: Int, onC
     ) {
         Box {
             Box(Modifier.size(30.dp).clip(CircleShape).background(if (active) c.raised else c.tile), contentAlignment = Alignment.Center) {
-                Text(app.mailplane.core.Senders.initials(name), color = if (active) c.ink else c.inkSecondary,
+                if (colorHex == null) androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.AllInbox, null,
+                    tint = if (active) c.ink else c.inkSecondary, modifier = Modifier.size(16.dp))
+                else Text(app.mailplane.core.Senders.initials(name), color = if (active) c.ink else c.inkSecondary,
                     fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
-            Box(Modifier.align(Alignment.BottomStart).size(10.dp).clip(CircleShape).background(c.canvas).padding(2.dp)) {
+            if (colorHex != null) Box(Modifier.align(Alignment.BottomStart).size(10.dp).clip(CircleShape).background(c.canvas).padding(2.dp)) {
                 AccountDot(colorHex, 6.dp)
             }
             if (badge > 0 && !active) {
@@ -240,7 +244,7 @@ fun AccountChip(name: String, colorHex: String, active: Boolean, badge: Int, onC
 /** Day header in the message list: TODAY · YESTERDAY · MONDAY … */
 @Composable
 fun DayHeader(label: String) {
-    Text(label.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp,
+    Text(app.mailplane.android.ui.tr(label).uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp,
         color = Frost.colors.inkTertiary, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 6.dp))
 }
 

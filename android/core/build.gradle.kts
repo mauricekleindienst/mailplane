@@ -18,9 +18,12 @@ kotlin {
 dependencies {
     compileOnly("com.sun.mail:jakarta.mail:1.6.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    // org.json is part of Android; on the JVM (tests) the reference implementation stands in
+    compileOnly("org.json:json:20240303")
 
     testImplementation(kotlin("test"))
     testImplementation("com.sun.mail:jakarta.mail:1.6.7")
+    testImplementation("org.json:json:20240303")
     testImplementation("com.icegreen:greenmail-junit5:1.6.15")
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
