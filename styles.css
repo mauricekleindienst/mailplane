@@ -3117,7 +3117,3 @@ webview { display: block; flex: 1; width: 100%; border: none; min-height: 0; }
 }
 .about-link-btn:hover { text-decoration: underline; }
 
-/* Light mode: soften the hero slightly */
-:root:not(.dark) .about-hero {
-  background: linear-gradient(160deg, #1a2a4a 0%, #1e3560 55%, #152040 100%);
-}

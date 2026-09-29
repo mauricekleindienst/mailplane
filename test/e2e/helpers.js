@@ -18,7 +18,7 @@ const ACCOUNT_A = {
   imap: { host: '127.0.0.1', port: 1, secure: false },
   smtp: { host: '127.0.0.1', port: 1, secure: false },
   providerType: 'default',
-  color: '#3498db',
+  color: '#5f8fc4',
   icon: 'mail',
   signature: '',
 };
@@ -28,7 +28,7 @@ const ACCOUNT_B = {
   id: 'acc-b',
   name: 'Bob Work',
   email: 'bob@work.test',
-  color: '#e74c3c',
+  color: '#cf6f5f',
   icon: 'briefcase',
 };
 

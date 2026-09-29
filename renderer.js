@@ -355,6 +355,59 @@ function applyTheme(theme) {
 }
 
 applyTheme(localStorage.getItem('mailplane-theme') || 'system');
+
+// ── Accent colour ─────────────────────────────────────────────────────────────
+// Soft tones that sit well on the grey-green surfaces. The accent always
+// carries ink on top (dark on light accents, light on dark ones).
+const ACCENTS = [
+  { id: 'lime',     label: 'Lime',     hex: '#e2f47c' },
+  { id: 'mint',     label: 'Mint',     hex: '#b9ead0' },
+  { id: 'sky',      label: 'Sky',      hex: '#bcdcf5' },
+  { id: 'lilac',    label: 'Lilac',    hex: '#d8d0f5' },
+  { id: 'peach',    label: 'Peach',    hex: '#f6cfb4' },
+  { id: 'sand',     label: 'Sand',     hex: '#e8dcbc' },
+  { id: 'graphite', label: 'Graphite', hex: '#3a3f3c' },
+];
+const DEFAULT_ACCENT = ACCENTS[0].hex;
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim());
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// WCAG relative luminance (0 = black, 1 = white)
+function luminance([r, g, b]) {
+  const lin = c => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+}
+
+function applyAccent(hex) {
+  const root = document.documentElement.style;
+  const rgb = hexToRgb(hex);
+  if (!rgb || hex.toLowerCase() === DEFAULT_ACCENT) {
+    // Default: let theme.css use its per-mode tuned lime
+    ['--lime', '--lime-deep', '--lime-ink'].forEach(v => root.removeProperty(v));
+    document.documentElement.dataset.accent = 'lime';
+    return;
+  }
+  const light = luminance(rgb) > 0.4;
+  root.setProperty('--lime', hex);
+  // A slightly stronger shade for hover / dots / toggles
+  root.setProperty('--lime-deep', light ? `color-mix(in srgb, ${hex} 78%, #000)` : `color-mix(in srgb, ${hex} 80%, #fff)`);
+  root.setProperty('--lime-ink', light ? '#262a28' : '#f3f5f4');
+  document.documentElement.dataset.accent = ACCENTS.find(a => a.hex === hex.toLowerCase())?.id || 'custom';
+}
+
+function getAccent() {
+  const saved = localStorage.getItem('mailplane-accent');
+  return hexToRgb(saved) ? saved.toLowerCase() : DEFAULT_ACCENT;
+}
+
+applyAccent(getAccent());
+// Preview-lines preference drives the list snippet clamp
+document.documentElement.style.setProperty('--preview-lines', getSetting('preview-lines', '2'));
 _darkMQ.addEventListener('change', () => {
   if ((localStorage.getItem('mailplane-theme') || 'system') === 'system') applyTheme('system');
 });
@@ -425,7 +478,8 @@ let refreshTimer = null;
 })();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-const PALETTE = ['#f5a623','#9b59b6','#e74c3c','#3498db','#1abc9c','#e67e22','#e91e63','#2ecc71','#635bff','#0ea5e9'];
+// Muted account colours — they only appear as small dots/tiles on the quiet Frost surfaces
+const PALETTE = ['#c9a23a','#8f7fc4','#cf6f5f','#5f8fc4','#4fa596','#d38c55','#c2708f','#6fa665','#7b80c9','#4ea2bf'];
 
 function colorFor(str) {
   let h = 0;
@@ -1369,7 +1423,7 @@ function makeEmailItem(email, showAccountBadge) {
   subj.appendChild(document.createTextNode(email.subject || '(no subject)'));
 
   let snippetEl = null;
-  if (email.snippet && getSetting('show-snippets', 'true') === 'true') {
+  if (email.snippet && getSetting('preview-lines', '2') !== '0') {
     snippetEl = document.createElement('div');
     snippetEl.className = 'email-snippet';
     snippetEl.textContent = email.snippet;
@@ -1834,6 +1888,14 @@ function renderDetailShell(email) {
   panel.appendChild(view);
 }
 
+// Neutral brand mark (ink tile + accent fold) — replaces the blue app icon inside the UI
+const BRAND_MARK_SVG = `<svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true">
+  <rect width="48" height="48" rx="13" class="bm-tile"/>
+  <path d="M12 17.5 24 26l12-8.5" class="bm-line"/>
+  <rect x="12" y="15" width="24" height="18" rx="3.5" class="bm-line"/>
+  <circle cx="35.5" cy="14.5" r="4.5" class="bm-dot"/>
+</svg>`;
+
 // ── Full detail view ──────────────────────────────────────────────────────────
 const PLACEHOLDER_HTML = `<div class="detail-placeholder">
       <div class="placeholder-art" aria-hidden="true">
@@ -2257,6 +2319,11 @@ function openCompose({
 
   document.getElementById('composeFloatTitle').textContent = subject || title;
   document.getElementById('composeError').classList.add('hidden');
+  applySpellcheck();
+  // "Rich text by default" off → fresh messages start in plain-text mode
+  if (getSetting('rich-text', 'true') === 'false' && !bodyHtml && rawBodyHtml === null) {
+    document.getElementById('tbPlainToggle').click();
+  }
 
   const panel = document.getElementById('composeFloat');
   panel.classList.remove('hidden', 'minimized', 'expanded');
@@ -2820,7 +2887,7 @@ function switchSettingsPanel(panel) {
   const titles = {
     accounts: 'Accounts', general: 'General', notifications: 'Notifications',
     reading: 'Reading', composing: 'Composing', calendar: 'Calendar',
-    apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard Shortcuts',
+    apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard shortcuts',
     about: 'About',
   };
   document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
@@ -2839,7 +2906,7 @@ function switchSettingsPanel(panel) {
 function makePrefRow(label, desc, control) {
   return `<div class="settings-pref-row">
     <div class="settings-pref-info">
-      <div class="settings-pref-label">${label}</div>
+      <div class="settings-pref-name">${label}</div>
       ${desc ? `<div class="settings-pref-desc">${desc}</div>` : ''}
     </div>
     <div class="settings-pref-control">${control}</div>
@@ -2890,7 +2957,17 @@ function applyPrefChange(key, value) {
     updateDockBadge();
   } else if (key.startsWith('notifications-')) {
     syncNotifyPrefs();
+  } else if (key === 'preview-lines') {
+    document.documentElement.style.setProperty('--preview-lines', value);
+    renderEmailList(S.isSearching);
+  } else if (key === 'spell-check') {
+    applySpellcheck();
   }
+}
+
+function applySpellcheck() {
+  const on = getSetting('spell-check', 'true') === 'true';
+  ['composeBody', 'composeSubject'].forEach(id => { document.getElementById(id).spellcheck = on; });
 }
 
 function _renderUpdateStatus(el, status) {
@@ -2911,34 +2988,26 @@ function renderSettingsGeneral() {
   const content = document.getElementById('settingsPanelContent');
   content.innerHTML = `
     <div class="settings-section">
-      <div class="settings-section-title">Refresh</div>
+      <div class="settings-section-title">Checking for mail</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Auto-refresh interval', 'How often to check for new mail',
+        ${makePrefRow('Refresh interval', 'New mail also arrives instantly via push when the server supports it',
           makeSelect('refresh-interval', '120000', [
             ['60000','Every minute'],['120000','Every 2 minutes'],['300000','Every 5 minutes'],
-            ['600000','Every 10 minutes'],['0','Manual only'],
+            ['600000','Every 10 minutes'],['0','Manually'],
           ])
         )}
       </div>
     </div>
     <div class="settings-section">
-      <div class="settings-section-title">Startup</div>
+      <div class="settings-section-title">On launch</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Open to folder', 'Which folder to show on launch',
+        ${makePrefRow('Open to', 'Folder shown when Mailplane starts',
           makeSelect('startup-folder', 'inbox', [
-            ['inbox','Inbox'],['last','Last viewed'],
+            ['inbox','Inbox'],['last','Last viewed folder'],
           ])
         )}
-        ${makePrefRow('Show unread count in dock', 'Display unread email badge on the app icon',
+        ${makePrefRow('Unread count on app icon', 'Badge the dock icon with unread inbox mail',
           makeToggle('dock-badge', 'true')
-        )}
-      </div>
-    </div>
-    <div class="settings-section">
-      <div class="settings-section-title">Privacy</div>
-      <div class="settings-pref-group">
-        ${makePrefRow('Analytics', 'Help improve Mailplane by sending anonymous usage data',
-          makeToggle('analytics', 'false')
         )}
       </div>
     </div>
@@ -2950,29 +3019,27 @@ function renderSettingsNotifications() {
   const content = document.getElementById('settingsPanelContent');
   content.innerHTML = `
     <div class="settings-section">
-      <div class="settings-section-title">New Mail</div>
+      <div class="settings-section-title">New mail</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Show notifications', 'Display a system notification when new mail arrives',
+        ${makePrefRow('Show notifications', 'System notification when new mail arrives',
           makeToggle('notifications-enabled', 'true')
         )}
-        ${makePrefRow('Notification sound', 'Play a sound with each notification',
+        ${makePrefRow('Play sound', '',
           makeToggle('notifications-sound', 'true')
-        )}
-        ${makePrefRow('Show sender name', 'Include the sender\'s name in notifications',
-          makeToggle('notifications-sender', 'true')
-        )}
-        ${makePrefRow('Show subject', 'Include the email subject in notifications',
-          makeToggle('notifications-subject', 'true')
         )}
       </div>
     </div>
     <div class="settings-section">
-      <div class="settings-section-title">Do Not Disturb</div>
+      <div class="settings-section-title">Notification content</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Respect system Do Not Disturb', 'Suppress notifications when macOS DND is active',
-          makeToggle('notifications-dnd', 'true')
+        ${makePrefRow('Sender name', '',
+          makeToggle('notifications-sender', 'true')
+        )}
+        ${makePrefRow('Subject', '',
+          makeToggle('notifications-subject', 'true')
         )}
       </div>
+      <div class="settings-footnote">Turn both off to only see “New email received”.</div>
     </div>
   `;
   bindPrefControls(content);
@@ -2982,40 +3049,28 @@ function renderSettingsReading() {
   const content = document.getElementById('settingsPanelContent');
   content.innerHTML = `
     <div class="settings-section">
-      <div class="settings-section-title">Reading Pane</div>
+      <div class="settings-section-title">Message list</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Mark as read', 'When to mark an email as read',
-          makeSelect('mark-read-delay', 'open', [
-            ['open','When opened'],['instant','Immediately'],
-            ['3000','After 3 seconds'],['never','Never'],
-          ])
-        )}
-        ${makePrefRow('Show message preview', 'Number of preview lines in the message list',
+        ${makePrefRow('Preview lines', 'Body preview under the subject (shown once a message has been opened)',
           makeSelect('preview-lines', '2', [
             ['0','None'],['1','1 line'],['2','2 lines'],['3','3 lines'],
           ])
         )}
-      </div>
-    </div>
-    <div class="settings-section">
-      <div class="settings-section-title">Images & Security</div>
-      <div class="settings-pref-group">
-        ${makePrefRow('Block remote images', 'Prevent external images from loading automatically (protects your privacy)',
-          makeToggle('images-blocked', 'true')
-        )}
-        ${makePrefRow('Open links in browser', 'Open all email links in your default browser',
-          makeToggle('links-external', 'true')
-        )}
-      </div>
-    </div>
-    <div class="settings-section">
-      <div class="settings-section-title">Display</div>
-      <div class="settings-pref-group">
-        ${makePrefRow('Group by thread', 'Group related emails into conversations',
+        ${makePrefRow('Group by conversation', 'Bundle replies with the same subject',
           makeToggle('thread-grouping', String(S.threadGrouping))
         )}
-        ${makePrefRow('Show snippets', 'Display a preview of each email in the list',
-          makeToggle('show-snippets', 'true')
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Reading pane</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Mark as read', '',
+          makeSelect('mark-read-delay', 'open', [
+            ['open','When opened'],['3000','After 3 seconds'],['never','Never'],
+          ])
+        )}
+        ${makePrefRow('Block remote images', 'Stops senders from tracking when you open a message',
+          makeToggle('images-blocked', 'true')
         )}
       </div>
     </div>
@@ -3040,13 +3095,13 @@ function renderSettingsComposing() {
     <div class="settings-section">
       <div class="settings-section-title">Sending</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Undo send window', 'Time to cancel a send after clicking Send',
+        ${makePrefRow('Undo send', 'Delay before a message actually leaves',
           makeSelect('undo-delay', '8000', [
-            ['0','Off (send immediately)'],['5000','5 seconds'],
-            ['8000','8 seconds (recommended)'],['15000','15 seconds'],['30000','30 seconds'],
+            ['0','Off'],['5000','5 seconds'],
+            ['8000','8 seconds'],['15000','15 seconds'],['30000','30 seconds'],
           ])
         )}
-        ${makePrefRow('Confirm before discarding', 'Ask for confirmation when closing a draft',
+        ${makePrefRow('Confirm before discarding', 'Ask before closing a draft that has text',
           makeToggle('confirm-discard', 'false')
         )}
       </div>
@@ -3054,10 +3109,10 @@ function renderSettingsComposing() {
     <div class="settings-section">
       <div class="settings-section-title">Replies</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Include quoted message', 'Quote the original email when replying',
+        ${makePrefRow('Quote original message', '',
           makeToggle('quote-reply', 'true')
         )}
-        ${makePrefRow('Reply from same account', 'Use the recipient account when replying',
+        ${makePrefRow('Reply from the receiving account', 'Otherwise the currently selected account is used',
           makeToggle('reply-same-account', 'true')
         )}
       </div>
@@ -3065,11 +3120,11 @@ function renderSettingsComposing() {
     <div class="settings-section">
       <div class="settings-section-title">Editor</div>
       <div class="settings-pref-group">
-        ${makePrefRow('Spell check', 'Check spelling while composing',
-          makeToggle('spell-check', 'true')
-        )}
-        ${makePrefRow('Rich text by default', 'Compose in HTML/rich-text mode',
+        ${makePrefRow('Rich text', 'Off starts new messages in plain text',
           makeToggle('rich-text', 'true')
+        )}
+        ${makePrefRow('Check spelling', '',
+          makeToggle('spell-check', 'true')
         )}
       </div>
     </div>
@@ -3136,37 +3191,23 @@ function renderSettingsCalendar() {
   addBtn.addEventListener('click', () => { hideSettingsModal(); openCaldavModal(); });
   content.appendChild(addBtn);
 
-  const syncSection = document.createElement('div');
-  syncSection.className = 'settings-section';
-  syncSection.style.marginTop = '20px';
-  const syncTitle = document.createElement('div');
-  syncTitle.className = 'settings-section-title';
-  syncTitle.textContent = 'Sync';
-  syncSection.appendChild(syncTitle);
-  syncSection.innerHTML += `<div class="settings-pref-group">
-    ${makePrefRow('Sync calendars automatically', 'Fetch new events in the background',
-      makeToggle('calendar-auto-sync', 'true')
-    )}
-    ${makePrefRow('Sync interval', 'How often to check for calendar updates',
-      makeSelect('calendar-sync-interval', '900000', [
-        ['300000','Every 5 minutes'],['900000','Every 15 minutes'],
-        ['1800000','Every 30 minutes'],['3600000','Every hour'],
-      ])
-    )}
-  </div>`;
-  content.appendChild(syncSection);
-  bindPrefControls(syncSection);
 }
 
 function renderSettingsAppearance() {
   const content = document.getElementById('settingsPanelContent');
   const current = localStorage.getItem('mailplane-theme') || 'system';
+  const accent = getAccent();
+  const isPreset = ACCENTS.some(a => a.hex === accent);
 
   const themes = [
-    { id: 'system', label: 'System', desc: 'Follows macOS appearance setting', previewClass: 'theme-option-preview-system' },
-    { id: 'light',  label: 'Light',  desc: 'Always use light mode',            previewClass: 'theme-option-preview-light' },
-    { id: 'dark',   label: 'Dark',   desc: 'Always use dark mode',             previewClass: 'theme-option-preview-dark' },
+    { id: 'system', label: 'Automatic' },
+    { id: 'light',  label: 'Light' },
+    { id: 'dark',   label: 'Dark' },
   ];
+  // Miniature of the real layout: top pills, folder rail, list, reading pane
+  const mockup = `<div class="tp-bar"><i></i><i class="on"></i><i></i></div>
+    <div class="tp-body"><div class="tp-rail"><i class="on"></i><i></i><i></i></div>
+    <div class="tp-list"><i class="on"></i><i></i><i></i></div><div class="tp-read"><i></i></div></div>`;
 
   content.innerHTML = `
     <div class="settings-section">
@@ -3174,11 +3215,35 @@ function renderSettingsAppearance() {
       <div class="theme-options">
         ${themes.map(t => `
           <button class="theme-option-btn${current === t.id ? ' active' : ''}" data-theme="${t.id}">
-            <div class="theme-option-preview ${t.previewClass}"></div>
+            <div class="theme-preview theme-preview-${t.id}">
+              ${t.id === 'system'
+                ? `<div class="tp-half tp-light">${mockup}</div><div class="tp-half tp-dark">${mockup}</div>`
+                : `<div class="tp-full tp-${t.id}">${mockup}</div>`}
+            </div>
             <span class="theme-option-label">${t.label}</span>
-            <span class="theme-option-desc">${t.desc}</span>
           </button>
         `).join('')}
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-title">Accent colour</div>
+      <div class="settings-pref-group accent-group">
+        <div class="accent-swatches" role="radiogroup" aria-label="Accent colour">
+          ${ACCENTS.map(a => `
+            <button class="accent-swatch${a.hex === accent ? ' active' : ''}" role="radio" aria-checked="${a.hex === accent}"
+              data-accent="${a.hex}" title="${a.label}" style="--swatch:${a.hex}">
+              <span class="accent-dot"></span><span class="accent-name">${a.label}</span>
+            </button>`).join('')}
+          <label class="accent-swatch accent-custom${isPreset ? '' : ' active'}" title="Custom colour" style="--swatch:${accent}">
+            <span class="accent-dot"><input type="color" id="accentCustom" value="${accent}" /></span><span class="accent-name">Custom</span>
+          </label>
+        </div>
+        <div class="accent-preview">
+          <span class="ap-btn">New Message</span>
+          <span class="ap-badge">3</span>
+          <span class="ap-dot"></span>
+          <span class="ap-wash">Selected message</span>
+        </div>
       </div>
     </div>
   `;
@@ -3191,6 +3256,21 @@ function renderSettingsAppearance() {
       content.querySelectorAll('.theme-option-btn').forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
     });
   });
+
+  const setAccent = hex => {
+    localStorage.setItem('mailplane-accent', hex);
+    applyAccent(hex);
+    content.querySelectorAll('.accent-swatch').forEach(b => {
+      const on = b.dataset.accent ? b.dataset.accent === hex : !ACCENTS.some(a => a.hex === hex);
+      b.classList.toggle('active', on);
+      if (b.getAttribute('role') === 'radio') b.setAttribute('aria-checked', String(on));
+    });
+    content.querySelector('.accent-custom').style.setProperty('--swatch', hex);
+  };
+  content.querySelectorAll('.accent-swatch[data-accent]').forEach(btn => {
+    btn.addEventListener('click', () => setAccent(btn.dataset.accent));
+  });
+  content.querySelector('#accentCustom').addEventListener('input', e => setAccent(e.target.value.toLowerCase()));
 }
 
 // Inline icon set (Lucide-style, 24×24 stroke)
@@ -3383,63 +3463,58 @@ function renderSettingsAbout() {
   const version = window.electronAPI.appVersion || '1.0.0';
   content.innerHTML = `
     <div class="about-panel">
-
       <div class="about-hero">
-        <div class="about-orb about-orb-1"></div>
-        <div class="about-orb about-orb-2"></div>
-        <div class="about-orb about-orb-3"></div>
-        <div class="about-icon-wrap">
-          <img src="assets/icon.svg" class="about-icon" alt="Mailplane" />
-        </div>
+        ${BRAND_MARK_SVG}
         <div class="about-name">Mailplane</div>
-        <div class="about-tagline">Opensource email client for macOS &nbsp;·&nbsp; v${version}</div>
+        <div class="about-tagline">Open-source email for macOS · Version ${escHtml(version)}</div>
       </div>
 
-      <div class="about-body">
-
-        <div class="about-update-row">
-          <div>
-            <div class="about-row-label">Software Update</div>
-            <div class="about-update-status" id="updateStatusText">Up to date</div>
+      <div class="settings-section">
+        <div class="settings-pref-group">
+          <div class="settings-pref-row">
+            <div class="settings-pref-info">
+              <div class="settings-pref-name">Software update</div>
+              <div class="settings-pref-desc" id="updateStatusText"></div>
+            </div>
+            <div class="settings-pref-control"><button class="btn-secondary" id="checkUpdateBtn">Check now</button></div>
           </div>
-          <button class="btn-secondary" id="checkUpdateBtn">Check for Updates</button>
+          <div class="settings-pref-row">
+            <div class="settings-pref-info">
+              <div class="settings-pref-name">Source code</div>
+              <div class="settings-pref-desc">github.com/mauricekleindienst/mailplane</div>
+            </div>
+            <div class="settings-pref-control about-links">
+              <button class="btn-secondary" id="aboutGithubBtn">GitHub</button>
+              <button class="btn-secondary" id="aboutIssueBtn">Report issue</button>
+            </div>
+          </div>
         </div>
+      </div>
 
-        <div class="about-sep"></div>
-
-        <div class="about-row-label">Built with</div>
+      <div class="settings-section">
+        <div class="settings-section-title">Built with</div>
         <div class="about-pills">
-          <span class="about-pill">Electron 30</span>
-          <span class="about-pill">imapflow</span>
-          <span class="about-pill">nodemailer</span>
-          <span class="about-pill">mailparser</span>
-          <span class="about-pill">better-sqlite3</span>
-          <span class="about-pill">electron-updater</span>
+          <span class="about-pill">Electron</span><span class="about-pill">imapflow</span>
+          <span class="about-pill">nodemailer</span><span class="about-pill">mailparser</span>
+          <span class="about-pill">better-sqlite3</span><span class="about-pill">electron-updater</span>
         </div>
-
-        <div class="about-footer-row">
-          <span class="about-copyright">© ${new Date().getFullYear()} Mailplane</span>
-          <div class="about-links">
-            <button class="about-link-btn" id="aboutGithubBtn">GitHub</button>
-            <span class="about-link-sep">·</span>
-            <button class="about-link-btn" id="aboutIssueBtn">Report Issue</button>
-          </div>
-        </div>
-
       </div>
+      <div class="about-copyright">© ${new Date().getFullYear()} Mailplane</div>
     </div>
   `;
 
   const statusEl = content.querySelector('#updateStatusText');
   _renderUpdateStatus(statusEl, S.updateStatus);
+  if (!statusEl.textContent) statusEl.textContent = 'Updates install automatically in the background';
 
   content.querySelector('#checkUpdateBtn').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
     btn.textContent = 'Checking…';
-    await _invoke('update:check');
+    const res = await _invoke('update:check').catch(() => null);
+    if (res?.state === 'unavailable' || res?.state === 'error') _renderUpdateStatus(statusEl, res);
     btn.disabled = false;
-    btn.textContent = 'Check for Updates';
+    btn.textContent = 'Check now';
   });
 
   content.querySelector('#aboutGithubBtn').addEventListener('click', () =>
@@ -3450,28 +3525,41 @@ function renderSettingsAbout() {
 
 function renderSettingsShortcuts() {
   const content = document.getElementById('settingsPanelContent');
-  const shortcuts = [
-    ['⌘N', 'New Message'],
-    ['⌘R', 'Reply'],
-    ['⇧⌘R', 'Reply All'],
-    ['⌘F', 'Forward'],
-    ['↑ / k', 'Previous email'],
-    ['↓ / j', 'Next email'],
-    ['⌫', 'Delete email'],
-    ['E', 'Archive email'],
-    ['U', 'Mark read / unread'],
-    ['S', 'Star / unstar'],
-    ['/', 'Focus search'],
-    ['⌘,', 'Open Settings'],
-    ['⇧⌘N', 'Refresh'],
-    ['Esc', 'Close / dismiss'],
+  const groups = [
+    ['Write', [
+      [['⌘', 'N'], 'New message'],
+      [['⌘', 'R'], 'Reply'],
+      [['⇧', '⌘', 'R'], 'Reply all'],
+      [['⌘', 'F'], 'Forward'],
+    ]],
+    ['Move around', [
+      [['↑'], 'Previous message', ['K']],
+      [['↓'], 'Next message', ['J']],
+      [['/'], 'Search'],
+      [['Esc'], 'Close / dismiss'],
+    ]],
+    ['Act on a message', [
+      [['E'], 'Archive'],
+      [['⌫'], 'Delete'],
+      [['U'], 'Mark read / unread'],
+      [['S'], 'Star / unstar'],
+    ]],
+    ['App', [
+      [['⇧', '⌘', 'N'], 'Refresh'],
+      [['⌘', ','], 'Settings'],
+    ]],
   ];
-  content.innerHTML = shortcuts.map(([key, desc]) =>
-    `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);">
-      <span style="font-size:13px;color:var(--text-secondary)">${desc}</span>
-      <kbd style="font-size:11.5px;background:var(--sidebar-bg);border:1px solid var(--border);border-radius:5px;padding:2px 7px;font-family:inherit;color:var(--text-primary);white-space:nowrap">${key}</kbd>
-    </div>`
-  ).join('');
+  const keys = ks => ks.map(k => `<kbd>${k}</kbd>`).join('');
+  content.innerHTML = groups.map(([title, rows]) => `
+    <div class="settings-section">
+      <div class="settings-section-title">${title}</div>
+      <div class="settings-pref-group">
+        ${rows.map(([ks, desc, alt]) => `<div class="settings-pref-row shortcut-row">
+          <div class="settings-pref-name">${desc}</div>
+          <div class="shortcut-keys">${keys(ks)}${alt ? `<span class="shortcut-or">or</span>${keys(alt)}` : ''}</div>
+        </div>`).join('')}
+      </div>
+    </div>`).join('');
 }
 
 document.getElementById('settingsBtn').addEventListener('click', showSettingsModal);

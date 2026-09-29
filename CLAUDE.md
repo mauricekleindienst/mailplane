@@ -70,7 +70,8 @@ theme.css               — "Frost" visual theme (tokens, colours, radius, eleva
 ```
 
 ## Key design decisions
-- **Theming**: change the look in `theme.css` (tokens at the top, light + `.dark` + system dark). The account colour only appears as a small dot (tab pill, account tag in All Mail) via `--acc-color`; `--lime` is the only accent — use it sparingly and always with dark ink on top.
+- **Theming**: change the look in `theme.css` (tokens at the top, light + `.dark` + system dark). The account colour only appears as a small dot (tab pill, account tag in All Mail) via `--acc-color`; `--lime` is the only accent — use it sparingly, always with `--lime-ink` on top. The accent is user-selectable (Settings → Appearance: presets in `ACCENTS` + custom picker, stored in `localStorage['mailplane-accent']`); `applyAccent()` sets `--lime`/`--lime-deep`/`--lime-ink` inline on `<html>`, and every tint (selection wash, `--selected-bg`, background glow) is derived from `--lime` via `color-mix`, so never hard-code accent rgba values.
+- **Settings only show options that work** — don't add placebo toggles.
 - **Snippets**: list cards show a preview only for messages whose body is cached (SQLite `bodies.snippet`); IMAP listing itself doesn't fetch body text.
 - **No framework**: state lives in a plain `S` object in renderer.js; mutations always call a render function.
 - **Connection pool**: `imap-manager.js` keeps one `ImapFlow` client per account ID alive. Each operation locks the mailbox, runs, then releases.
@@ -139,6 +140,7 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] Swipe gestures (left → delete, right → toggle read)
 - [x] Account customization (color, icon)
 - [x] Dark / Light / System theme switching
+- [x] Accent colour choice (7 presets + custom)
 - [x] Apps sidebar (embed any web app)
 - [x] safeStorage encrypted passwords (OS keychain)
 - [x] Remote image blocking + Load Images button

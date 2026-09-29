@@ -106,7 +106,7 @@ test('settings modal opens, switches panels and closes with Escape', async () =>
   await page.locator('.settings-acc-card').first().locator('.settings-acc-card-header').click();
   await page.screenshot({ path: 'test-results/ui-settings.png' });
   for (const [panel, title] of [['general', 'General'], ['reading', 'Reading'], ['composing', 'Composing'],
-    ['appearance', 'Appearance'], ['shortcuts', 'Keyboard Shortcuts'], ['about', 'About']]) {
+    ['appearance', 'Appearance'], ['shortcuts', 'Keyboard shortcuts'], ['about', 'About']]) {
     await page.locator(`.settings-nav-item[data-panel="${panel}"]`).click();
     await expect(page.locator('#settingsPanelTitle')).toHaveText(title);
   }
@@ -139,13 +139,13 @@ test('editing an account updates its tab name and color', async () => {
   const card = page.locator('.settings-acc-card').first();
   await card.locator('.settings-acc-card-header').click();
   await card.locator('[data-field="name"]').fill('Alice Private');
-  await card.locator('.swatch[data-color="#2ecc71"]').click();
+  await card.locator('.swatch[data-color="#6fa665"]').click();
   await card.locator('.settings-save-btn').click();
   await expect(page.locator('#toast')).toHaveText('Account saved');
   await page.keyboard.press('Escape');
   const tab = page.locator('.acc-tab', { hasText: 'Alice Private' });
   await expect(tab).toBeVisible();
-  await expect(tab.locator('.acc-tab-dot')).toHaveCSS('background-color', 'rgb(46, 204, 113)');
+  await expect(tab.locator('.acc-tab-dot')).toHaveCSS('background-color', 'rgb(111, 166, 101)');
 });
 
 test('removing the active account switches to the remaining one', async () => {
@@ -244,5 +244,59 @@ test('keyboard shortcut list documents the real shortcuts', async () => {
   await page.locator('#settingsBtn').click();
   await page.locator('.settings-nav-item[data-panel="shortcuts"]').click();
   const text = await page.locator('#settingsPanelContent').innerText();
-  for (const s of ['New Message', 'Reply All', 'Archive email', 'Star / unstar', 'Refresh']) expect(text).toContain(s);
+  for (const s of ['New message', 'Reply all', 'Archive', 'Star / unstar', 'Refresh']) expect(text).toContain(s);
+});
+
+test('accent colour can be changed, is applied app-wide and persists', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  const composeBg = () => page.locator('#composeTrigger').evaluate(el => getComputedStyle(el).backgroundColor);
+  await expect.poll(composeBg).toBe('rgb(226, 244, 124)'); // default lime
+
+  await page.locator('#settingsBtn').click();
+  await page.locator('.settings-nav-item[data-panel="appearance"]').click();
+  await page.locator('.accent-swatch[data-accent="#bcdcf5"]').click();
+  await expect(page.locator('.accent-swatch[data-accent="#bcdcf5"]')).toHaveClass(/active/);
+  await expect.poll(composeBg).toBe('rgb(188, 220, 245)');
+  await page.screenshot({ path: 'test-results/ui-accent.png' });
+
+  // Dark accents flip the text on top of them to light ink
+  await page.locator('.accent-swatch[data-accent="#3a3f3c"]').click();
+  await expect(page.locator('#composeTrigger')).toHaveCSS('color', 'rgb(243, 245, 244)');
+
+  // Custom colour via the colour input
+  await page.locator('#accentCustom').evaluate(el => {
+    el.value = '#f0b8c8';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('.accent-custom')).toHaveClass(/active/);
+  await expect.poll(composeBg).toBe('rgb(240, 184, 200)');
+
+  await page.reload();
+  await page.waitForSelector('.acc-tab');
+  await expect.poll(composeBg).toBe('rgb(240, 184, 200)');
+});
+
+test('settings only offer options that work: preview lines hides snippets', async () => {
+  ctx = await launchApp();
+  const { page } = ctx;
+  await emailItem(page, 'Quarterly report').click();
+  await expect(page.locator('.detail-text-body')).toHaveText('Please see the numbers.');
+  await page.reload();
+  await expect(emailItem(page, 'Quarterly report').locator('.email-snippet')).toBeVisible();
+
+  await page.locator('#settingsBtn').click();
+  await page.locator('.settings-nav-item[data-panel="reading"]').click();
+  await page.selectOption('[data-pref="preview-lines"]', '0');
+  await page.keyboard.press('Escape');
+  await expect(emailItem(page, 'Quarterly report').locator('.email-snippet')).toHaveCount(0);
+
+  // Removed placebo options stay gone
+  await page.locator('#settingsBtn').click();
+  for (const panel of ['general', 'notifications', 'reading', 'composing', 'calendar']) {
+    await page.locator(`.settings-nav-item[data-panel="${panel}"]`).click();
+    for (const dead of ['analytics', 'notifications-dnd', 'links-external', 'show-snippets', 'calendar-auto-sync']) {
+      await expect(page.locator(`[data-pref="${dead}"]`)).toHaveCount(0);
+    }
+  }
 });
