@@ -43,7 +43,7 @@ import java.time.Instant
 
 /**
  * Renders every main screen with sample data (light + dark) into
- * build/outputs/roborazzi/*.png — the Android equivalent of the desktop
+ * PNG files in build/outputs/roborazzi — the Android equivalent of the desktop
  * README screenshots, and a visual check in CI.
  */
 @RunWith(RobolectricTestRunner::class)
