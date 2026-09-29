@@ -81,18 +81,18 @@ test('HTML mail cannot run scripts and blocks remote images until requested', as
   expect(page.url()).toMatch(/index\.html$/);
 });
 
-test('detail view shows recipients and auth badges, also when served from cache', async () => {
+test('detail view shows recipients and the verified-sender check, also when served from cache', async () => {
   ctx = await launchApp();
   const { page } = ctx;
   await emailItem(page, 'Lunch?').click();
   await expect(page.locator('.detail-recipients')).toHaveText('to Alice Example');
-  await expect(page.locator('.auth-badge')).toHaveCount(2);
+  await expect(page.locator('.auth-verified')).toHaveAttribute('title', /DKIM pass · SPF pass/);
 
   // Reload: body now comes from the SQLite cache and must keep header data
   await page.reload();
   await emailItem(page, 'Lunch?').click();
   await expect(page.locator('.detail-recipients')).toHaveText('to Alice Example');
-  await expect(page.locator('.auth-badge')).toHaveCount(2);
+  await expect(page.locator('.auth-verified')).toHaveCount(1);
 });
 
 test('settings modal opens, switches panels and closes with Escape', async () => {
