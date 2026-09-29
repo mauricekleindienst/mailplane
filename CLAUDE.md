@@ -50,6 +50,8 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 | `accounts:remove` | invoke | `id` |
 | `accounts:update` | invoke | `{id, changes}` → `{success, account}` |
 | `accounts:preset` | invoke | `email` → `{imap,smtp}` or null |
+| `accounts:autodiscover` | invoke | `domain` → `{imap,smtp}` via Mozilla ISPDB / autoconfig / autodiscover, or null |
+| `accounts:test` | invoke | `{kind:'imap'\|'smtp'\|'jmap', data}` → `{success,error?}` — setup checks each server separately |
 | `accounts:folders` | invoke | `accountId` → `{inbox,sent,drafts,trash,spam}` |
 | `accounts:folders:all` | invoke | `accountId` → `Folder[]` from server |
 | `emails:fetch` | invoke | `{accountId,folder,limit,offset}` → `{success,emails[]}` |
@@ -86,6 +88,7 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 ## Key design decisions
 - **Theming**: change the look in `theme.css` (tokens at the top, light + `.dark` + system dark). The account colour only appears as a small dot (tab pill, account tag in All Mail) via `--acc-color`; `--lime` is the only accent — use it sparingly, always with `--lime-ink` on top. The accent is user-selectable (Settings → Appearance: presets in `ACCENTS` + custom picker, stored in `localStorage['mailplane-accent']`); `applyAccent()` sets `--lime`/`--lime-deep`/`--lime-ink` inline on `<html>`, and every tint (selection wash, `--selected-bg`, background glow) is derived from `--lime` via `color-mix`, so never hard-code accent rgba values.
 - **Settings only show options that work** — don't add placebo toggles.
+- **Account setup** (renderer.js "Account setup", `#setupModal` sections by `data-step`): welcome (first run only) → email (live preset detection, autodiscover on continue, guess `imap.<domain>` as last resort) → password (`PROVIDER_HELP` gives app-password steps + link per provider family) → optional server form (security select switches default ports; "None" warns) → checking (`accounts:test` for IMAP then SMTP, live status, `parseSetupError` explains failures per server) → personalise (name derived from address, colour) → `accounts:add` with `verified: true`.
 - **Pane layout** (`PANES` in renderer.js): sidebar + message list widths live in CSS vars `--sidebar-w` / `--list-w` set by `applyLayout()`; state `{w, collapsed}` persists in `localStorage['mailplane-layout']`. Drag a handle to resize, below 55 % of the minimum to collapse (width is kept for re-expanding), double-click to reset, ←/→/Enter on a focused handle. ⌘\ toggles the sidebar, ⇧⌘\ the list. The reading pane keeps ≥ 380px. Overlays (apps, calendar, expanded compose) position themselves from `--sidebar-w`.
 - **Snippets**: list cards show a preview only for messages whose body is cached (SQLite `bodies.snippet`); IMAP listing itself doesn't fetch body text.
 - **No framework**: state lives in a plain `S` object in renderer.js; mutations always call a render function.

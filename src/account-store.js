@@ -104,14 +104,16 @@ function addAccount(data) {
     id: Date.now().toString(),
     name: data.name || data.email.split('@')[0],
     email: data.email,
+    // Login name when it differs from the address (some hosts use plain usernames)
+    ...(data.username && data.username !== data.email ? { username: data.username } : {}),
     passwordEncrypted: encrypted,
     protocol: data.protocol || 'imap',
     jmapUrl: data.jmapUrl || null,
     imap: data.imap || null,
     smtp: data.smtp || null,
     providerType: getProviderType(data.email),
-    color: null,
-    icon: 'mail',
+    color: data.color || null,
+    icon: data.icon || 'mail',
     signature: '',
   };
   accounts.push(account);

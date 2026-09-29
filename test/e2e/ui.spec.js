@@ -163,36 +163,116 @@ test('removing the active account switches to the remaining one', async () => {
   await expect(page.locator('#folderNav .folder-btn')).toHaveCount(6);
 });
 
-test('first run without accounts shows the setup modal; adding one opens its inbox', async () => {
+test('first run: welcome → email → password → live checks → personalise → inbox', async () => {
   ctx = await launchApp({ accounts: [] });
-  const { page } = ctx;
+  const { page, app } = ctx;
   await expect(page.locator('#setupModal')).toBeVisible();
-  await expect(page.locator('#setupCancelBtn')).toBeHidden();
-  await page.screenshot({ path: 'test-results/ui-setup.png' });
+  await expect(page.locator('#setupModal .setup-step.active')).toHaveAttribute('data-step', 'welcome');
+  await expect(page.locator('#setupCancelBtn')).toHaveClass(/invisible/); // can't dismiss on first run
+  await page.screenshot({ path: 'test-results/setup-welcome.png' });
+  await page.locator('#setupStartBtn').click();
 
+  // Email: validation, then live provider detection
   await page.fill('#setupEmail', 'not-an-email');
-  await page.fill('#setupPassword', 'secret');
-  await page.locator('#setupSaveBtn').click();
+  await page.locator('#setupContinueBtn').click();
   await expect(page.locator('#setupError')).toHaveText('Enter a valid email address');
+  await page.fill('#setupEmail', 'jane.doe@gmail.com');
+  await expect(page.locator('#setupDetect')).toHaveText('✓ Gmail — settings are built in');
+  await page.keyboard.press('Enter');
 
-  await page.fill('#setupEmail', 'alice@example.com');
-  await page.locator('#advancedToggle').click();
-  await page.fill('#imapHost', 'imap.example.com');
-  await page.fill('#smtpHost', 'smtp.example.com');
+  // Password step shows Gmail's app-password guidance
+  await expect(page.locator('#setupModal .setup-step.active')).toHaveAttribute('data-step', 'password');
+  await expect(page.locator('.setup-provider-name')).toHaveText('Gmail');
+  await expect(page.locator('.setup-help-title')).toHaveText('Gmail needs an app password');
+  await expect(page.locator('#setupPasswordLabel')).toHaveText('App password');
+  await page.screenshot({ path: 'test-results/setup-password.png' });
+  await page.locator('.setup-help-link').click();
+  await expect.poll(() => app.evaluate(() => global.__fake.opened)).toEqual(['https://myaccount.google.com/apppasswords']);
+
+  await page.fill('#setupPassword', 'abcd efgh ijkl mnop');
   await page.locator('#setupSaveBtn').click();
+  await expect(page.locator('#checkIncoming')).toHaveAttribute('data-status', 'ok');
+  await expect(page.locator('#checkOutgoing')).toHaveAttribute('data-status', 'ok');
+  await expect(page.locator('#checkIncoming .setup-check-detail')).toHaveText('imap.gmail.com:993');
+
+  // Personalise: name derived from the address, colour choice with live preview
+  await expect(page.locator('#setupModal .setup-step.active')).toHaveAttribute('data-step', 'personalize');
+  await expect(page.locator('#setupName')).toHaveValue('Jane Doe');
+  await page.locator('.setup-color[data-color="#6fa665"]').click();
+  await expect(page.locator('#setupPreviewPill .setup-preview-dot')).toHaveCSS('background-color', 'rgb(111, 166, 101)');
+  await page.screenshot({ path: 'test-results/setup-personalize.png' });
+  await page.locator('#setupFinishBtn').click();
 
   await expect(page.locator('#setupModal')).toBeHidden();
-  await expect(page.locator('.acc-tab.active')).toContainText('alice');
+  await expect(page.locator('.acc-tab.active')).toContainText('Jane Doe');
   await expect(page.locator('#folderNav .folder-btn')).toHaveCount(6);
+  const stored = await app.evaluate(() => global.__mailplaneModules.accountStore.getAccounts()[0]);
+  expect(stored).toMatchObject({ email: 'jane.doe@gmail.com', name: 'Jane Doe', color: '#6fa665' });
+  expect(stored.imap.host).toBe('imap.gmail.com');
+});
+
+test('setup explains a failed login and lets you retry or edit servers', async () => {
+  ctx = await launchApp({ accounts: [] });
+  const { page, fake } = ctx;
+  await fake(s => { s.failSmtp = 'Invalid login: 535 5.7.8 Username and Password not accepted'; });
+  await page.locator('#setupStartBtn').click();
+  await page.fill('#setupEmail', 'me@icloud.com');
+  await page.locator('#setupContinueBtn').click();
+  await page.fill('#setupPassword', 'wrong');
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator('#checkIncoming')).toHaveAttribute('data-status', 'ok');
+  await expect(page.locator('#checkOutgoing')).toHaveAttribute('data-status', 'failed');
+  await expect(page.locator('#setupCheckTitle')).toHaveText('Couldn’t connect');
+  await expect(page.locator('#setupFailMsg')).toContainText('iCloud rejected the password. It needs an app-specific password');
+  await page.screenshot({ path: 'test-results/setup-failed.png' });
+
+  // Edit servers → the form is prefilled; security change updates the port
+  await page.locator('#setupEditServersBtn').click();
+  await expect(page.locator('#imapHost')).toHaveValue('imap.mail.me.com');
+  await expect(page.locator('#smtpPort')).toHaveValue('587');
+  await page.selectOption('#smtpSecurity', 'ssl');
+  await expect(page.locator('#smtpPort')).toHaveValue('465');
+  await page.selectOption('#smtpSecurity', 'none');
+  await expect(page.locator('#setupPlainWarning')).toBeVisible();
+  await page.selectOption('#smtpSecurity', 'starttls');
+
+  // Fix the problem and check again
+  await fake(s => { s.failSmtp = null; });
+  await page.locator('#setupCheckBtn').click();
+  await expect(page.locator('#setupModal .setup-step.active')).toHaveAttribute('data-step', 'personalize');
+});
+
+test('unknown domains get looked up, and back navigation keeps entered data', async () => {
+  ctx = await launchApp({ accounts: [] });
+  const { page, app } = ctx;
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('accounts:autodiscover');
+    ipcMain.handle('accounts:autodiscover', () => ({ imap: { host: 'mail.corp.test', port: 993, secure: true }, smtp: { host: 'mail.corp.test', port: 465, secure: true } }));
+  });
+  await page.locator('#setupStartBtn').click();
+  await page.fill('#setupEmail', 'ops@corp.test');
+  await expect(page.locator('#setupDetect')).toContainText('look up the server settings');
+  await page.locator('#setupContinueBtn').click();
+  await expect(page.locator('.setup-provider-detail')).toHaveText('Settings found automatically');
+  await expect(page.locator('#setupHelp')).toBeHidden();
+
+  await page.locator('#setupBackBtn').click();
+  await expect(page.locator('#setupEmail')).toHaveValue('ops@corp.test');
+  await page.keyboard.press('Enter');
+  await page.locator('#advancedToggle').click();
+  await expect(page.locator('#smtpHost')).toHaveValue('mail.corp.test');
+  await expect(page.locator('#smtpSecurity')).toHaveValue('ssl');
 });
 
 test('adding an account that already exists is refused', async () => {
   ctx = await launchApp({ accounts: [ACCOUNT_A] });
   const { page } = ctx;
   await page.locator('.acc-add-btn').click();
+  // Adding (not first run) skips the welcome and can be dismissed
+  await expect(page.locator('#setupModal .setup-step.active')).toHaveAttribute('data-step', 'email');
   await page.fill('#setupEmail', 'Alice@Example.com');
-  await page.fill('#setupPassword', 'x');
-  await page.locator('#setupSaveBtn').click();
+  await page.locator('#setupContinueBtn').click();
   await expect(page.locator('#setupError')).toHaveText('This account has already been added');
   await page.keyboard.press('Escape');
   await expect(page.locator('#setupModal')).toBeHidden();

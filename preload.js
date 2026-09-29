@@ -7,7 +7,7 @@ const { version: APP_VERSION } = require('./package.json');
 // Explicit channel allowlists — nothing outside these lists can cross the boundary
 const INVOKE_CHANNELS = new Set([
   'accounts:list', 'accounts:add', 'accounts:remove', 'accounts:update',
-  'accounts:preset', 'accounts:autodiscover', 'accounts:folders', 'accounts:folders:all',
+  'accounts:preset', 'accounts:autodiscover', 'accounts:test', 'accounts:folders', 'accounts:folders:all',
   'apps:list', 'apps:add', 'apps:remove',
   'emails:fetch', 'emails:search',
   'email:body', 'email:send', 'email:delete', 'email:archive',

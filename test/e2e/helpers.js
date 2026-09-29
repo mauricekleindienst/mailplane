@@ -136,7 +136,9 @@ function installFakeBackend({ shell, ipcMain, session }, { mailboxes, folders })
 
   imap.stopAllIdle();
   imap.startIdle = () => {};
-  imap.testConnection = async () => ({ success: true });
+  // Tests can make the setup checks fail: fake(s => { s.failImap = 'Invalid credentials' })
+  imap.testConnection = async () => (state.failImap ? { success: false, error: state.failImap } : { success: true });
+  smtp.testSmtp = async () => (state.failSmtp ? { success: false, error: state.failSmtp } : { success: true });
   imap.listFolders = async () => state.folders;
   imap.fetchEmails = async (acc, folder, limit = 60, offset = 0) => {
     const all = box(acc, folder).slice().sort((a, b) => new Date(b.date) - new Date(a.date));

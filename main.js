@@ -364,11 +364,26 @@ ipcMain.handle('accounts:autodiscover', async (_, domain) => {
   if (autodis) { const r = parseAutodiscoverXml(autodis); if (r) return r; }
   return null;
 });
+// Account setup checks incoming and outgoing mail separately so the UI can
+// show which half failed. kind: 'imap' | 'smtp' | 'jmap'
+ipcMain.handle('accounts:test', async (_, { kind, data }) => {
+  try {
+    if (kind === 'jmap') return await jmapManager.testConnection(data);
+    if (kind === 'smtp') return await smtpManager.testSmtp(data);
+    return await imapManager.testConnection(data);
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 ipcMain.handle('accounts:add', async (_, data) => {
   try {
-    const manager = data.protocol === 'jmap' ? jmapManager : imapManager;
-    const res = await manager.testConnection(data);
-    if (!res.success) return res;
+    // The setup flow has already run accounts:test for both servers
+    if (!data.verified) {
+      const manager = data.protocol === 'jmap' ? jmapManager : imapManager;
+      const res = await manager.testConnection(data);
+      if (!res.success) return res;
+    }
     const account = accountStore.addAccount(data);
     startIdleForAccount(account);
     return { success: true, account: { ...account, password: undefined, passwordEncrypted: undefined } };

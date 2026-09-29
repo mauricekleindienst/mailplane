@@ -7,7 +7,8 @@ function buildTransport(account) {
     host: account.smtp.host,
     port: account.smtp.port,
     secure: account.smtp.secure,
-    auth: { user: account.email, pass: account.password },
+    ignoreTLS: !!account.smtp.ignoreTLS,
+    auth: { user: account.username || account.email, pass: account.password },
     connectionTimeout: 15000,
     greetingTimeout: 10000,
     socketTimeout: 30000,
@@ -56,10 +57,11 @@ async function testSmtp(account) {
   const transport = buildTransport(account);
   try {
     await transport.verify();
-    transport.close();
     return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
+  } finally {
+    transport.close();
   }
 }
 

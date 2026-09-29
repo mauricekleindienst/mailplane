@@ -3681,140 +3681,169 @@ function focusSoon(modalId, inputId) {
   }, 50);
 }
 
-// ── Account setup modal ───────────────────────────────────────────────────────
+// ── Account setup ─────────────────────────────────────────────────────────────
+// Step flow shared by first run and "Add account":
+//   welcome (first run only) → email (provider detection) → password (with
+//   app-password guidance) → [servers] → checking (IMAP and SMTP separately,
+//   live status) → personalise (name + colour).
 
-const SETUP_KNOWN_DOMAINS = {
-  'gmail.com': 'Gmail',        'googlemail.com': 'Gmail',
-  'outlook.com': 'Outlook',    'hotmail.com': 'Outlook',   'hotmail.co.uk': 'Outlook',
-  'hotmail.fr': 'Outlook',     'hotmail.de': 'Outlook',    'live.com': 'Outlook',  'msn.com': 'Outlook',
-  'yahoo.com': 'Yahoo',        'yahoo.co.uk': 'Yahoo',     'yahoo.fr': 'Yahoo',    'yahoo.de': 'Yahoo',
-  'yahoo.co.jp': 'Yahoo',      'ymail.com': 'Yahoo',
-  'icloud.com': 'iCloud',      'me.com': 'iCloud',         'mac.com': 'iCloud',
-  'fastmail.com': 'Fastmail',  'fastmail.fm': 'Fastmail',
-  'aol.com': 'AOL',
-  'gmx.com': 'GMX',            'gmx.net': 'GMX',           'gmx.de': 'GMX',        'web.de': 'Web.de',
-  'zoho.com': 'Zoho',          'zohomail.com': 'Zoho',
-  'yandex.com': 'Yandex',      'yandex.ru': 'Yandex',
-  'mail.com': 'Mail.com',
-  't-online.de': 'T-Online',
-  'protonmail.com': 'Proton Mail', 'proton.me': 'Proton Mail', 'pm.me': 'Proton Mail',
+// What users need to know per provider before typing a password.
+const PROVIDER_HELP = {
+  gmail: {
+    name: 'Gmail', label: 'App password', url: 'https://myaccount.google.com/apppasswords', linkText: 'Open Google app passwords',
+    title: 'Gmail needs an app password',
+    steps: ['Turn on 2-Step Verification for your Google account', 'Open “App passwords” and create one called “Mailplane”', 'Paste the 16-character password below'],
+  },
+  icloud: {
+    name: 'iCloud', label: 'App-specific password', url: 'https://account.apple.com/account/manage', linkText: 'Open Apple Account',
+    title: 'iCloud needs an app-specific password',
+    steps: ['Sign in to your Apple Account', 'Go to Sign-In and Security → App-Specific Passwords', 'Create one called “Mailplane” and paste it below'],
+  },
+  yahoo: {
+    name: 'Yahoo', label: 'App password', url: 'https://login.yahoo.com/myaccount/security/app-password', linkText: 'Open Yahoo account security',
+    title: 'Yahoo needs an app password',
+    steps: ['Open Account Security', 'Choose “Generate app password”, name it “Mailplane”', 'Paste the password below'],
+  },
+  aol: {
+    name: 'AOL', label: 'App password', url: 'https://login.aol.com/account/security', linkText: 'Open AOL account security',
+    title: 'AOL needs an app password',
+    steps: ['Open Account Security', 'Generate an app password for “Mailplane”', 'Paste it below'],
+  },
+  outlook: {
+    name: 'Outlook', label: 'Password', url: 'https://account.microsoft.com/security', linkText: 'Open Microsoft security settings',
+    title: 'Signing in to Outlook',
+    steps: ['Use your normal password if you don’t use two-step verification', 'With two-step verification on, create an app password and use that', 'Some work and school accounts only allow browser sign-in (OAuth), which Mailplane doesn’t support yet'],
+  },
+  fastmail: {
+    name: 'Fastmail', label: 'API token', url: 'https://app.fastmail.com/settings/security/tokens', linkText: 'Open Fastmail API tokens',
+    title: 'Fastmail connects with an API token',
+    steps: ['Open Settings → Privacy & Security → API tokens', 'Create a token with Email access, name it “Mailplane”', 'Paste the token below'],
+  },
+  gmx: {
+    name: 'GMX / WEB.DE', label: 'Password', url: null,
+    title: 'Allow IMAP access first',
+    steps: ['In the GMX / WEB.DE web mail, open Settings → POP3/IMAP', 'Turn on “Access via POP3 and IMAP”', 'Then sign in here with your normal password'],
+  },
+};
+const PROVIDER_FAMILY = {
+  'gmail.com': 'gmail', 'googlemail.com': 'gmail',
+  'icloud.com': 'icloud', 'me.com': 'icloud', 'mac.com': 'icloud',
+  'yahoo.com': 'yahoo', 'yahoo.co.uk': 'yahoo', 'yahoo.fr': 'yahoo', 'yahoo.de': 'yahoo', 'yahoo.co.jp': 'yahoo', 'ymail.com': 'yahoo',
+  'aol.com': 'aol',
+  'outlook.com': 'outlook', 'hotmail.com': 'outlook', 'hotmail.co.uk': 'outlook', 'hotmail.fr': 'outlook',
+  'hotmail.de': 'outlook', 'live.com': 'outlook', 'msn.com': 'outlook',
+  'fastmail.com': 'fastmail', 'fastmail.fm': 'fastmail',
+  'gmx.net': 'gmx', 'gmx.de': 'gmx', 'gmx.com': 'gmx', 'web.de': 'gmx',
+};
+const PROVIDER_NAMES = {
+  'zoho.com': 'Zoho', 'zohomail.com': 'Zoho', 'yandex.com': 'Yandex', 'yandex.ru': 'Yandex',
+  'mail.com': 'Mail.com', 't-online.de': 'T-Online', 'protonmail.com': 'Proton Mail (Bridge)',
+  'proton.me': 'Proton Mail (Bridge)', 'pm.me': 'Proton Mail (Bridge)',
 };
 
-const ALL_TIPS = ['gmailTip', 'outlookTip', 'fastmailTip', 'protonTip', 'autodiscoverTip'];
+const SETUP_PROGRESS = { welcome: 0, email: 0.2, password: 0.45, servers: 0.45, checking: 0.75, personalize: 1 };
 
-function setupModalReset() {
-  ['setupEmail', 'setupPassword', 'setupName', 'imapHost', 'smtpHost'].forEach(id => {
-    document.getElementById(id).value = '';
-  });
-  document.getElementById('imapPort').value = '993';
-  document.getElementById('smtpPort').value = '587';
-  document.getElementById('setupPassword').type = 'password';
-  document.getElementById('setupError').classList.add('hidden');
-  document.getElementById('providerBadge').className = 'provider-badge hidden';
-  document.getElementById('passwordHint').textContent = '';
-  ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
-  document.getElementById('advancedSection').classList.add('hidden');
-  document.getElementById('advancedToggle').classList.remove('open');
-  document.querySelectorAll('.prov-btn').forEach(b => b.classList.remove('active'));
+const setup = {
+  step: 'email',
+  cancellable: true,
+  history: [],
+  preset: null,       // { protocol, jmapUrl, imap, smtp }
+  source: null,       // 'builtin' | 'autodiscover' | 'guess'
+  family: null,       // key into PROVIDER_HELP
+  color: null,
+  busy: false,
+  checkRun: 0,        // invalidates an in-flight check when the user navigates away
+};
+
+const $s = id => document.getElementById(id);
+const setupDomain = email => (email.split('@')[1] || '').toLowerCase().trim();
+const providerName = domain => PROVIDER_HELP[PROVIDER_FAMILY[domain]]?.name || PROVIDER_NAMES[domain] || null;
+
+function setupGo(step, { push = true } = {}) {
+  if (push && setup.step && setup.step !== step) setup.history.push(setup.step);
+  setup.step = step;
+  document.querySelectorAll('#setupModal .setup-step').forEach(sec => sec.classList.toggle('active', sec.dataset.step === step));
+  $s('setupModal').dataset.step = step;
+  $s('setupProgressBar').style.width = (SETUP_PROGRESS[step] * 100) + '%';
+  $s('setupBackBtn').classList.toggle('invisible', setup.history.length === 0 || step === 'welcome');
+  $s('setupCancelBtn').classList.toggle('invisible', !setup.cancellable);
+  hideSetupError();
+  const focusFor = { email: 'setupEmail', password: 'setupPassword', servers: 'imapHost', personalize: 'setupName', welcome: 'setupStartBtn' };
+  // Move focus into the new step (a still-focused Back button would swallow Enter),
+  // unless the user already clicked into one of its fields
+  // (synchronous: the step is already visible, and a delayed focus could steal typing)
+  const ae = document.activeElement;
+  const typingHere = ae?.closest('#setupModal .setup-step.active') && ae.matches('input, select, textarea');
+  if (!typingHere && focusFor[step]) $s(focusFor[step]).focus();
+}
+
+function setupBack() {
+  if (setup.busy && setup.step !== 'checking') return;
+  setup.checkRun++; // abandon a running check
+  const prev = setup.history.pop();
+  if (prev) setupGo(prev === 'checking' ? 'password' : prev, { push: false });
+}
+
+function showSetupError(msg) {
+  const el = $s('setupError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  // Show it right above the active step's buttons
+  const actions = document.querySelector(`#setupModal .setup-step[data-step="${setup.step}"] .setup-actions`);
+  if (actions) actions.before(el);
+}
+function hideSetupError() { $s('setupError').classList.add('hidden'); }
+
+function setBusy(btn, busy, label) {
+  setup.busy = busy;
+  btn.disabled = busy;
+  const lbl = btn.querySelector('.btn-label');
+  if (lbl && label) lbl.textContent = label;
+  btn.querySelector('.btn-spinner')?.classList.toggle('hidden', !busy);
 }
 
 function showSetupModal(cancellable = false) {
-  setupModalReset();
-  document.getElementById('setupCancelBtn').style.display = cancellable ? '' : 'none';
-  document.getElementById('setupModal').classList.remove('hidden');
-  focusSoon('setupModal', 'setupEmail');
+  setup.cancellable = cancellable;
+  setup.history = [];
+  setup.preset = null; setup.source = null; setup.family = null; setup.busy = false; setup.checkRun++;
+  setup.color = PALETTE[S.accounts.length % PALETTE.length];
+  ['setupEmail', 'setupPassword', 'setupName', 'setupUsername', 'imapHost', 'smtpHost'].forEach(id => { $s(id).value = ''; });
+  $s('imapPort').value = '993'; $s('smtpPort').value = '587';
+  $s('imapSecurity').value = 'ssl'; $s('smtpSecurity').value = 'starttls';
+  $s('setupPassword').type = 'password';
+  $s('setupDetect').textContent = '';
+  setBusy($s('setupContinueBtn'), false, 'Continue');
+  document.querySelectorAll('#setupModal .prov-btn').forEach(b => b.classList.remove('active'));
+  $s('setupModal').classList.remove('hidden');
+  setup.step = null;
+  setupGo(S.accounts.length === 0 ? 'welcome' : 'email', { push: false });
 }
-function hideSetupModal() { document.getElementById('setupModal').classList.add('hidden'); }
-
-document.getElementById('togglePassword').addEventListener('click', () => {
-  const inp = document.getElementById('setupPassword');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
-});
-
-document.getElementById('advancedToggle').addEventListener('click', () => {
-  const sec = document.getElementById('advancedSection');
-  const btn = document.getElementById('advancedToggle');
-  const isOpen = btn.classList.contains('open');
-  sec.classList.toggle('hidden', isOpen);
-  btn.classList.toggle('open', !isOpen);
-});
-
-function applyProviderSettings(domain, preset, providerName) {
-  const isGmail    = ['gmail.com', 'googlemail.com'].includes(domain);
-  const isOutlook  = ['outlook.com', 'hotmail.com', 'hotmail.co.uk', 'hotmail.fr', 'hotmail.de', 'live.com', 'msn.com'].includes(domain);
-  const isFastmail = ['fastmail.com', 'fastmail.fm'].includes(domain);
-  const isProton   = ['protonmail.com', 'proton.me', 'pm.me'].includes(domain);
-
-  ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
-  if (isGmail)    document.getElementById('gmailTip').classList.remove('hidden');
-  if (isOutlook)  document.getElementById('outlookTip').classList.remove('hidden');
-  if (isFastmail) document.getElementById('fastmailTip').classList.remove('hidden');
-  if (isProton)   document.getElementById('protonTip').classList.remove('hidden');
-  document.getElementById('passwordHint').textContent =
-    (isGmail || isFastmail) ? '(App Password required)' : '';
-
-  if (preset) {
-    document.getElementById('imapHost').value = preset.imap?.host || '';
-    document.getElementById('imapPort').value = preset.imap?.port || '993';
-    document.getElementById('smtpHost').value = preset.smtp?.host || '';
-    document.getElementById('smtpPort').value = preset.smtp?.port || '587';
-    const badge = document.getElementById('providerBadge');
-    badge.textContent = `✓ ${providerName || domain} — server settings auto-filled`;
-    badge.className = 'provider-badge provider-badge-ok';
-    if (!document.getElementById('advancedToggle').classList.contains('open')) {
-      document.getElementById('advancedSection').classList.add('hidden');
-    }
-  }
+function hideSetupModal() {
+  setup.checkRun++;
+  $s('setupModal').classList.add('hidden');
 }
 
-let _setupPresetDebounce = null;
-document.getElementById('setupEmail').addEventListener('input', () => {
-  clearTimeout(_setupPresetDebounce);
-  _setupPresetDebounce = setTimeout(async () => {
-    const email = document.getElementById('setupEmail').value.trim();
-    const atIdx = email.indexOf('@');
-    if (atIdx < 1) {
-      document.getElementById('providerBadge').className = 'provider-badge hidden';
-      ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
-      return;
-    }
-    const domain = email.slice(atIdx + 1).toLowerCase();
-
-    // Sync the provider quick-pick highlight
-    document.querySelectorAll('.prov-btn').forEach(b => b.classList.toggle('active', b.dataset.domain === domain));
-
-    const badge = document.getElementById('providerBadge');
+// ── Step: email ──
+let _detectTimer = null;
+$s('setupEmail').addEventListener('input', () => {
+  hideSetupError();
+  clearTimeout(_detectTimer);
+  _detectTimer = setTimeout(async () => {
+    const email = $s('setupEmail').value.trim();
+    const domain = setupDomain(email);
+    document.querySelectorAll('#setupModal .prov-btn').forEach(b => b.classList.toggle('active', b.dataset.domain === domain));
+    const detect = $s('setupDetect');
+    if (!EMAIL_RE.test(email)) { detect.textContent = ''; return; }
     const preset = await ipc('accounts:preset', email);
-    if (preset) {
-      applyProviderSettings(domain, preset, SETUP_KNOWN_DOMAINS[domain]);
-    } else {
-      // Unknown domain — try autodiscover (ISPDB, autoconfig, autodiscover)
-      badge.textContent = 'Detecting server settings…';
-      badge.className = 'provider-badge provider-badge-custom';
-      document.getElementById('advancedSection').classList.remove('hidden');
-      document.getElementById('advancedToggle').classList.add('open');
-
-      const discovered = await ipc('accounts:autodiscover', domain);
-      if (discovered) {
-        applyProviderSettings(domain, discovered, domain);
-        badge.textContent = `✓ ${domain} — server settings detected automatically`;
-        badge.className = 'provider-badge provider-badge-ok';
-        document.getElementById('autodiscoverTipText').textContent =
-          `Found: ${discovered.imap.host}:${discovered.imap.port} (IMAP) / ${discovered.smtp?.host || '?'}:${discovered.smtp?.port || '?'} (SMTP)`;
-        document.getElementById('autodiscoverTip').classList.remove('hidden');
-        if (!document.getElementById('advancedToggle').classList.contains('open')) {
-          document.getElementById('advancedSection').classList.add('hidden');
-        }
-      } else {
-        badge.textContent = 'Custom provider — enter your server details below';
-        badge.className = 'provider-badge provider-badge-custom';
-      }
-    }
-  }, 350);
+    if ($s('setupEmail').value.trim() !== email) return;
+    const name = providerName(domain);
+    detect.textContent = preset ? `✓ ${name || domain} — settings are built in` : 'We’ll look up the server settings when you continue';
+    detect.classList.toggle('ok', !!preset);
+  }, 250);
 });
 
 // Provider logos come from the network — fall back to a letter badge offline
-document.querySelectorAll('.prov-favicon').forEach(img => {
+document.querySelectorAll('#setupModal .prov-favicon').forEach(img => {
   const fallback = () => {
     const letter = document.createElement('span');
     letter.className = 'prov-letter';
@@ -3825,142 +3854,297 @@ document.querySelectorAll('.prov-favicon').forEach(img => {
   else img.addEventListener('error', fallback, { once: true });
 });
 
-// Provider quick-pick buttons
-document.querySelectorAll('.prov-btn').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const domain = btn.dataset.domain;
-    const name   = btn.dataset.name;
-    document.querySelectorAll('.prov-btn').forEach(b => b.classList.remove('active'));
-
-    if (!domain) {
-      // "Other" — expand server settings
-      btn.classList.add('active');
-      document.getElementById('advancedSection').classList.remove('hidden');
-      document.getElementById('advancedToggle').classList.add('open');
-      document.getElementById('providerBadge').className = 'provider-badge hidden';
-      ALL_TIPS.forEach(id => document.getElementById(id).classList.add('hidden'));
-      document.getElementById('setupEmail').focus();
-      return;
-    }
-
-    btn.classList.add('active');
-    // Update email placeholder hint
-    const emailEl = document.getElementById('setupEmail');
-    if (!emailEl.value.includes('@')) {
-      emailEl.placeholder = `you@${domain}`;
-    }
-    // Apply preset settings
-    const preset = await ipc('accounts:preset', `user@${domain}`);
-    applyProviderSettings(domain, preset, name);
-    emailEl.focus();
+document.querySelectorAll('#setupModal .prov-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = $s('setupEmail');
+    const local = input.value.split('@')[0].trim();
+    input.value = local ? `${local}@${btn.dataset.domain}` : '';
+    input.placeholder = `you@${btn.dataset.domain}`;
+    input.focus();
+    // Put the caret before the "@" so the user can type their name right away
+    if (local) input.dispatchEvent(new Event('input'));
+    else document.querySelectorAll('#setupModal .prov-btn').forEach(b => b.classList.toggle('active', b === btn));
   });
 });
 
-function parseSetupError(err) {
-  const m = (err || '').toLowerCase();
-  if (m.includes('auth') || m.includes('credentials') || m.includes('invalid') || m.includes('535') || m.includes('534') || m.includes('login') || m.includes('password')) {
-    return 'Wrong password or credentials. Gmail and Fastmail require an App Password — not your regular account password.';
-  }
-  if (m.includes('econnrefused') || m.includes('connection refused')) {
-    return 'Connection refused. Check that the host and port are correct in Server settings.';
-  }
-  if (m.includes('etimedout') || m.includes('timed out') || m.includes('timeout')) {
-    return 'Connection timed out. Check the server address and make sure IMAP is enabled for your account.';
-  }
-  if (m.includes('enotfound') || m.includes('getaddrinfo') || m.includes('not found')) {
-    return 'Server not found. Check the IMAP host name in Server settings.';
-  }
-  if (m.includes('certificate') || m.includes('ssl') || m.includes('tls') || m.includes('self-signed')) {
-    return 'SSL/TLS error. Try port 993 (IMAP SSL) or 587 (SMTP STARTTLS).';
-  }
-  return err || 'Connection failed. Check your credentials and server settings.';
-}
+// Mozilla ISPDB / autoconfig lookups can hang on unknown domains — cap the wait
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise(r => setTimeout(() => r(null), ms))]);
 
-document.getElementById('setupSaveBtn').addEventListener('click', async () => {
-  if (document.getElementById('setupSaveBtn').disabled) return; // Enter while connecting
-  const email = document.getElementById('setupEmail').value.trim();
-  const password = document.getElementById('setupPassword').value;
-  const name = document.getElementById('setupName').value.trim() || email.split('@')[0];
-  const imapHostInput = document.getElementById('imapHost').value.trim();
-  const imapPort = parseInt(document.getElementById('imapPort').value) || 993;
-  const smtpHostInput = document.getElementById('smtpHost').value.trim();
-  const smtpPort = parseInt(document.getElementById('smtpPort').value) || 587;
-
-  if (!EMAIL_RE.test(email)) {
-    showSetupError('Enter a valid email address'); return;
-  }
-  if (!password) { showSetupError('Enter your password'); return; }
+async function submitSetupEmail() {
+  if (setup.busy) return;
+  const email = $s('setupEmail').value.trim();
+  if (!EMAIL_RE.test(email)) { showSetupError('Enter a valid email address'); return; }
   if (S.accounts.some(a => a.email.toLowerCase() === email.toLowerCase())) {
     showSetupError('This account has already been added'); return;
   }
-
-  document.getElementById('setupError').classList.add('hidden');
-  setSetupLoading(true);
-
-  const preset = await ipc('accounts:preset', email);
-  const domain = (email.split('@')[1] || '').toLowerCase();
-  const isJmap = ['fastmail.com', 'fastmail.fm'].includes(domain);
-
-  const resolvedImap = imapHostInput
-    ? { host: imapHostInput, port: imapPort, secure: imapPort === 993 || imapPort === 465 }
-    : preset?.imap || null;
-  const resolvedSmtp = smtpHostInput
-    ? { host: smtpHostInput, port: smtpPort, secure: smtpPort === 465 }
-    : preset?.smtp || null;
-
-  if (!resolvedImap && !isJmap) {
-    setSetupLoading(false);
-    document.getElementById('advancedSection').classList.remove('hidden');
-    document.getElementById('advancedToggle').classList.add('open');
-    showSetupError('Enter your IMAP and SMTP server settings below');
-    document.getElementById('imapHost').focus();
-    return;
+  const btn = $s('setupContinueBtn');
+  const domain = setupDomain(email);
+  let preset = await ipc('accounts:preset', email);
+  let source = preset ? 'builtin' : null;
+  if (!preset) {
+    setBusy(btn, true, 'Looking up server settings…');
+    const found = await withTimeout(ipc('accounts:autodiscover', domain).catch(() => null), 9000);
+    setBusy(btn, false, 'Continue');
+    if ($s('setupEmail').value.trim() !== email) return; // edited meanwhile
+    if (found?.imap) { preset = { protocol: 'imap', ...found }; source = 'autodiscover'; }
   }
+  if (!preset) {
+    preset = { protocol: 'imap', imap: { host: `imap.${domain}`, port: 993, secure: true }, smtp: { host: `smtp.${domain}`, port: 587, secure: false } };
+    source = 'guess';
+  }
+  if (!preset.smtp) preset.smtp = { host: `smtp.${domain}`, port: 587, secure: false };
+  setup.preset = preset;
+  setup.source = source;
+  setup.family = PROVIDER_FAMILY[domain] || null;
+  fillServerForm(preset);
+  $s('setupUsername').value = email;
+  renderPasswordStep(email, domain);
+  setupGo('password');
+}
 
-  const accountData = {
-    name, email, password,
-    protocol: preset?.protocol || 'imap',
-    jmapUrl: preset?.jmapUrl || null,
-    imap: resolvedImap,
-    smtp: resolvedSmtp,
+// ── Step: password ──
+function renderPasswordStep(email, domain) {
+  $s('setupEmailEcho').textContent = email;
+  const help = PROVIDER_HELP[setup.family];
+  const isJmap = setup.preset?.protocol === 'jmap';
+  const name = providerName(domain) || (setup.source === 'guess' ? 'Custom server' : domain);
+  const detail = {
+    builtin: 'Settings are built in',
+    autodiscover: 'Settings found automatically',
+    guess: `We’ll try ${setup.preset.imap.host} — adjust under Server settings if needed`,
+  }[setup.source];
+  const card = $s('setupProviderCard');
+  card.innerHTML = '';
+  const letter = document.createElement('span');
+  letter.className = 'setup-provider-letter';
+  letter.textContent = name[0].toUpperCase();
+  const text = document.createElement('div');
+  text.innerHTML = `<div class="setup-provider-name"></div><div class="setup-provider-detail"></div>`;
+  text.querySelector('.setup-provider-name').textContent = name + (isJmap ? ' · JMAP' : '');
+  text.querySelector('.setup-provider-detail').textContent = detail;
+  card.append(letter, text);
+
+  const box = $s('setupHelp');
+  box.innerHTML = '';
+  box.classList.toggle('hidden', !help);
+  if (help) {
+    const title = document.createElement('div');
+    title.className = 'setup-help-title';
+    title.textContent = help.title;
+    const list = document.createElement('ol');
+    help.steps.forEach(t => { const li = document.createElement('li'); li.textContent = t; list.appendChild(li); });
+    box.append(title, list);
+    if (help.url) {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'setup-help-link';
+      link.textContent = help.linkText + ' ↗';
+      link.addEventListener('click', () => ipc('shell:open', help.url));
+      box.appendChild(link);
+    }
+  }
+  $s('setupPasswordLabel').textContent = help?.label || (isJmap ? 'API token' : 'Password');
+  $s('setupPassword').value = '';
+}
+
+$s('togglePassword').addEventListener('click', () => {
+  const inp = $s('setupPassword');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  $s('togglePassword').setAttribute('aria-label', inp.type === 'password' ? 'Show password' : 'Hide password');
+});
+
+// ── Step: servers ──
+function fillServerForm(preset) {
+  const secOf = cfg => (cfg.secure ? 'ssl' : (cfg.port === 25 || cfg.security === 'none' ? 'none' : 'starttls'));
+  $s('imapHost').value = preset.imap?.host || '';
+  $s('imapPort').value = preset.imap?.port || 993;
+  $s('imapSecurity').value = preset.imap ? (preset.imap.secure ? 'ssl' : 'starttls') : 'ssl';
+  $s('smtpHost').value = preset.smtp?.host || '';
+  $s('smtpPort').value = preset.smtp?.port || 587;
+  $s('smtpSecurity').value = preset.smtp ? secOf(preset.smtp) : 'starttls';
+  updatePlainWarning();
+}
+
+function readServerForm() {
+  const imapHost = $s('imapHost').value.trim();
+  const smtpHost = $s('smtpHost').value.trim();
+  if (!imapHost || !smtpHost) return null;
+  const imapSec = $s('imapSecurity').value;
+  const smtpSec = $s('smtpSecurity').value;
+  return {
+    imap: { host: imapHost, port: parseInt($s('imapPort').value, 10) || 993, secure: imapSec === 'ssl', ...(imapSec === 'none' ? { tlsDisabled: true } : {}) },
+    smtp: { host: smtpHost, port: parseInt($s('smtpPort').value, 10) || 587, secure: smtpSec === 'ssl', ...(smtpSec === 'none' ? { ignoreTLS: true } : {}) },
+  };
+}
+
+function updatePlainWarning() {
+  $s('setupPlainWarning').classList.toggle('hidden', $s('imapSecurity').value !== 'none' && $s('smtpSecurity').value !== 'none');
+}
+// Switching security switches to that mode's usual port when the old one was a default
+[['imapSecurity', 'imapPort', { ssl: 993, starttls: 143, none: 143 }], ['smtpSecurity', 'smtpPort', { ssl: 465, starttls: 587, none: 25 }]]
+  .forEach(([selId, portId, ports]) => {
+    $s(selId).addEventListener('change', () => {
+      const port = $s(portId);
+      if (Object.values(ports).map(String).includes(port.value) || !port.value) port.value = ports[$s(selId).value];
+      updatePlainWarning();
+    });
+  });
+
+// ── Step: checking ──
+function setCheck(id, status, detail) {
+  const row = $s(id);
+  row.dataset.status = status;
+  if (detail !== undefined) row.querySelector('.setup-check-detail').textContent = detail;
+}
+
+function setupAccountData() {
+  const email = $s('setupEmail').value.trim();
+  const isJmap = setup.preset?.protocol === 'jmap';
+  const servers = isJmap ? { imap: null, smtp: null } : readServerForm();
+  if (!servers) return null;
+  return {
+    email,
+    password: $s('setupPassword').value,
+    name: $s('setupName').value.trim() || defaultNameFor(email),
+    protocol: isJmap ? 'jmap' : 'imap',
+    jmapUrl: setup.preset?.jmapUrl || null,
+    username: $s('setupUsername').value.trim() || email,
+    ...servers,
+  };
+}
+
+async function runSetupCheck() {
+  if (!$s('setupPassword').value) { showSetupError('Enter your password'); return; }
+  const data = setupAccountData();
+  if (!data) { setupGo('servers'); showSetupError('Fill in both server addresses'); return; }
+  const run = ++setup.checkRun;
+  const isJmap = data.protocol === 'jmap';
+  setupGo('checking');
+  $s('setupCheckTitle').textContent = 'Connecting…';
+  $s('setupCheckEcho').textContent = data.email;
+  $s('setupFail').classList.add('hidden');
+  $s('checkOutgoing').classList.toggle('hidden', isJmap);
+  setCheck('checkIncoming', 'running', isJmap ? 'Fastmail (JMAP)' : `${data.imap.host}:${data.imap.port}`);
+  if (!isJmap) setCheck('checkOutgoing', 'pending', `${data.smtp.host}:${data.smtp.port}`);
+
+  const fail = (rowId, kind, error) => {
+    if (run !== setup.checkRun) return;
+    setCheck(rowId, 'failed');
+    $s('setupCheckTitle').textContent = 'Couldn’t connect';
+    $s('setupFailMsg').textContent = parseSetupError(error, kind);
+    $s('setupFail').classList.remove('hidden');
+    $s('setupEditServersBtn').classList.toggle('hidden', isJmap);
   };
 
+  const incoming = await ipc('accounts:test', { kind: isJmap ? 'jmap' : 'imap', data }).catch(e => ({ success: false, error: e.message }));
+  if (run !== setup.checkRun) return;
+  if (!incoming.success) return fail('checkIncoming', 'imap', incoming.error);
+  setCheck('checkIncoming', 'ok');
+
+  if (!isJmap) {
+    setCheck('checkOutgoing', 'running');
+    const outgoing = await ipc('accounts:test', { kind: 'smtp', data }).catch(e => ({ success: false, error: e.message }));
+    if (run !== setup.checkRun) return;
+    if (!outgoing.success) return fail('checkOutgoing', 'smtp', outgoing.error);
+    setCheck('checkOutgoing', 'ok');
+  }
+  $s('setupCheckTitle').textContent = 'Connected';
+  await new Promise(r => setTimeout(r, 450)); // let the second tick register
+  if (run !== setup.checkRun) return;
+  if (!$s('setupName').value.trim()) $s('setupName').value = defaultNameFor(data.email);
+  renderSetupColors();
+  setupGo('personalize');
+}
+
+function parseSetupError(err, kind = 'imap') {
+  const m = (err || '').toLowerCase();
+  const which = kind === 'smtp' ? 'outgoing (SMTP)' : 'incoming (IMAP)';
+  if (m.includes('auth') || m.includes('credentials') || m.includes('invalid') || m.includes('535') || m.includes('534') || m.includes('login') || m.includes('password') || m.includes('401')) {
+    const help = PROVIDER_HELP[setup.family];
+    return help && help.label !== 'Password'
+      ? `${help.name} rejected the password. It needs an ${help.label.toLowerCase()} — not your normal account password. The steps are on the previous screen.`
+      : 'The server rejected your email or password. Check them and try again.';
+  }
+  if (m.includes('econnrefused') || m.includes('connection refused')) return `The ${which} server refused the connection. The port or security setting is probably wrong.`;
+  if (m.includes('etimedout') || m.includes('timed out') || m.includes('timeout')) return `The ${which} server didn’t answer. Check the address, and that IMAP is enabled for your account.`;
+  if (m.includes('enotfound') || m.includes('getaddrinfo') || m.includes('not found')) return `The ${which} server address couldn’t be found. Check it under server settings.`;
+  if (m.includes('certificate') || m.includes('ssl') || m.includes('tls') || m.includes('self-signed') || m.includes('wrong version')) {
+    return `Secure connection to the ${which} server failed. Try SSL/TLS on port ${kind === 'smtp' ? '465' : '993'} or STARTTLS on ${kind === 'smtp' ? '587' : '143'}.`;
+  }
+  return err || `Couldn’t reach the ${which} server.`;
+}
+
+// ── Step: personalise ──
+function defaultNameFor(email) {
+  return email.split('@')[0].split(/[._-]+/).filter(Boolean).map(p => p[0].toUpperCase() + p.slice(1)).join(' ');
+}
+
+function renderSetupColors() {
+  const wrap = $s('setupColors');
+  wrap.innerHTML = '';
+  PALETTE.forEach(c => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'setup-color' + (c === setup.color ? ' active' : '');
+    b.style.setProperty('--c', c);
+    b.dataset.color = c;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(c === setup.color));
+    b.title = c;
+    b.addEventListener('click', () => { setup.color = c; renderSetupColors(); });
+    wrap.appendChild(b);
+  });
+  updateSetupPreview();
+}
+function updateSetupPreview() {
+  const pill = $s('setupPreviewPill');
+  pill.querySelector('.setup-preview-dot').style.background = setup.color;
+  pill.querySelector('.setup-preview-label').textContent = $s('setupName').value.trim() || $s('setupEmail').value.trim();
+}
+$s('setupName').addEventListener('input', updateSetupPreview);
+
+async function finishSetup() {
+  if (setup.busy) return;
+  const data = setupAccountData();
+  if (!data) return;
+  const btn = $s('setupFinishBtn');
+  btn.disabled = true;
+  setup.busy = true;
   let res;
   try {
-    res = await ipc('accounts:add', accountData);
+    res = await ipc('accounts:add', { ...data, color: setup.color, verified: true });
   } catch (err) {
     res = { success: false, error: err.message };
   }
-  setSetupLoading(false);
-
-  if (res.success) {
-    S.accounts.push(res.account);
-    hideSetupModal();
-    renderAppsNav();
-    toast('Account added — ' + email);
-    // Jump straight to the new account's inbox
-    await switchAccount(res.account.id);
-  } else {
-    showSetupError(parseSetupError(res.error));
-  }
-});
-
-function showSetupError(msg) {
-  const el = document.getElementById('setupError');
-  el.textContent = msg;
-  el.classList.remove('hidden');
+  btn.disabled = false;
+  setup.busy = false;
+  if (!res.success) { showSetupError(parseSetupError(res.error)); return; }
+  S.accounts.push(res.account);
+  hideSetupModal();
+  renderAppsNav();
+  toast('Account added — ' + data.email);
+  await switchAccount(res.account.id);
 }
-function setSetupLoading(on) {
-  document.getElementById('setupSaveBtn').disabled = on;
-  document.getElementById('setupBtnText').textContent = on ? 'Connecting…' : 'Connect Account';
-  document.getElementById('setupSpinner').classList.toggle('hidden', !on);
-}
-document.getElementById('setupCancelBtn').addEventListener('click', hideSetupModal);
-document.getElementById('setupModal').addEventListener('click', e => {
-  if (e.target === e.currentTarget && document.getElementById('setupCancelBtn').style.display !== 'none') hideSetupModal();
+
+// ── Wiring ──
+$s('setupStartBtn').addEventListener('click', () => setupGo('email'));
+$s('setupContinueBtn').addEventListener('click', submitSetupEmail);
+$s('setupSaveBtn').addEventListener('click', runSetupCheck);
+$s('setupCheckBtn').addEventListener('click', runSetupCheck);
+$s('advancedToggle').addEventListener('click', () => setupGo('servers'));
+$s('setupEditServersBtn').addEventListener('click', () => setupGo('servers'));
+$s('setupRetryBtn').addEventListener('click', () => { setup.history.pop(); setupGo('password', { push: false }); $s('setupPassword').select(); });
+$s('setupFinishBtn').addEventListener('click', finishSetup);
+$s('setupBackBtn').addEventListener('click', setupBack);
+$s('setupCancelBtn').addEventListener('click', () => { if (setup.cancellable) hideSetupModal(); });
+$s('setupModal').addEventListener('click', e => {
+  if (e.target === e.currentTarget && setup.cancellable) hideSetupModal();
 });
-['setupEmail', 'setupPassword', 'setupName', 'imapHost', 'imapPort', 'smtpHost', 'smtpPort'].forEach(id => {
-  document.getElementById(id)?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('setupSaveBtn').click(); });
+// Enter advances the current step
+$s('setupModal').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+  e.preventDefault();
+  ({ email: submitSetupEmail, password: runSetupCheck, servers: runSetupCheck, personalize: finishSetup })[setup.step]?.();
 });
 
 // ── Toolbar buttons ───────────────────────────────────────────────────────────
@@ -4003,7 +4187,8 @@ document.addEventListener('keydown', e => {
     if (!isHidden('addAppModal')) { document.getElementById('addAppModal').classList.add('hidden'); return; }
     if (!isHidden('caldavModal')) { closeCaldavModal(); return; }
     if (setupOpen) {
-      if (document.getElementById('setupCancelBtn').style.display !== 'none') hideSetupModal();
+      if (setup.step === 'checking' || setup.step === 'servers' || setup.step === 'password') setupBack();
+      else if (setup.cancellable) hideSetupModal();
       return;
     }
     if (!isHidden('settingsModal')) { hideSettingsModal(); return; }

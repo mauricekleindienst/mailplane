@@ -295,100 +295,125 @@
 
 <!-- ── Account Setup Modal ────────────────────────────────────────── -->
 <div class="modal-overlay hidden" id="setupModal">
-  <div class="modal setup-modal">
-    <div class="modal-header">
-      <svg class="brand-mark brand-mark-lg" viewBox="100 100 824 824" aria-hidden="true"><rect x="100" y="100" width="824" height="824" rx="186" class="bm-tile"/><path d="M236 500 L512 676 L788 500 V736 a56 56 0 0 1 -56 56 H292 a56 56 0 0 1 -56 -56 Z" class="bm-env"/><path d="M236 500 L512 676 L788 500" class="bm-flap"/><g transform="translate(560 206) rotate(-6)"><path d="M232 0 L0 104 L96 142 Z" class="bm-plane"/><path d="M232 0 L96 142 L126 236 Z" class="bm-fold"/></g></svg>
-      <div><h2>Add Email Account</h2><p class="modal-subtitle">Connect your mailbox to Mailplane</p></div>
-    </div>
-
-    <!-- Provider quick-pick shortcuts -->
-    <div class="provider-picker" id="providerPicker">
-      <button class="prov-btn" data-domain="gmail.com" data-name="Gmail">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=gmail.com&sz=32" alt="" /><span>Gmail</span>
-      </button>
-      <button class="prov-btn" data-domain="outlook.com" data-name="Outlook">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=outlook.com&sz=32" alt="" /><span>Outlook</span>
-      </button>
-      <button class="prov-btn" data-domain="icloud.com" data-name="iCloud">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=icloud.com&sz=32" alt="" /><span>iCloud</span>
-      </button>
-      <button class="prov-btn" data-domain="yahoo.com" data-name="Yahoo">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=yahoo.com&sz=32" alt="" /><span>Yahoo</span>
-      </button>
-      <button class="prov-btn" data-domain="fastmail.com" data-name="Fastmail">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=fastmail.com&sz=32" alt="" /><span>Fastmail</span>
-      </button>
-      <button class="prov-btn" data-domain="proton.me" data-name="Proton Mail">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=proton.me&sz=32" alt="" /><span>Proton</span>
-      </button>
-      <button class="prov-btn" data-domain="zoho.com" data-name="Zoho">
-        <img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=zoho.com&sz=32" alt="" /><span>Zoho</span>
-      </button>
-      <button class="prov-btn" data-domain="" data-name="Other">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="3.6" y1="9" x2="20.4" y2="9"/><line x1="3.6" y1="15" x2="20.4" y2="15"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Other</span>
+  <!-- Account setup: welcome (first run) → email → password → [servers] → checking → personalise.
+       Driven by renderer.js "Account setup"; each <section data-step> is one screen. -->
+  <div class="modal setup-modal" role="dialog" aria-modal="true" aria-labelledby="setupTitleEmail">
+    <div class="setup-top">
+      <button class="setup-icon-btn" id="setupBackBtn" type="button" aria-label="Back"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
+      <div class="setup-progress" aria-hidden="true"><span id="setupProgressBar"></span></div>
+      <button class="setup-icon-btn" id="setupCancelBtn" type="button" aria-label="Close">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
 
-    <div class="form-group">
-      <label>Email address</label>
-      <input type="email" id="setupEmail" placeholder="you@example.com" autocomplete="email" spellcheck="false" />
-      <div class="provider-badge hidden" id="providerBadge"></div>
-    </div>
+    <section class="setup-step" data-step="welcome">
+      <div class="setup-hero"><svg class="brand-mark brand-mark-xl" viewBox="100 100 824 824" aria-hidden="true"><rect x="100" y="100" width="824" height="824" rx="186" class="bm-tile"/><path d="M236 500 L512 676 L788 500 V736 a56 56 0 0 1 -56 56 H292 a56 56 0 0 1 -56 -56 Z" class="bm-env"/><path d="M236 500 L512 676 L788 500" class="bm-flap"/><g transform="translate(560 206) rotate(-6)"><path d="M232 0 L0 104 L96 142 Z" class="bm-plane"/><path d="M232 0 L96 142 L126 236 Z" class="bm-fold"/></g></svg></div>
+      <h2 class="setup-title">Welcome to Mailplane</h2>
+      <p class="setup-sub">Calm, fast email for every account you have.</p>
+      <ul class="setup-features">
+        <li><span class="setup-feature-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>Works with Gmail, Outlook, iCloud, Yahoo, Fastmail and any IMAP server</li>
+        <li><span class="setup-feature-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>Passwords are stored in your system keychain, never on a server</li>
+        <li><span class="setup-feature-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></span>Quiet by design — no tracking pixels, remote images only when you ask</li>
+      </ul>
+      <div class="setup-actions"><button class="btn-primary setup-cta" id="setupStartBtn" type="button">Add your first account</button></div>
+    </section>
 
-    <div class="form-group">
-      <label>Password <span class="label-hint" id="passwordHint"></span></label>
-      <div class="input-wrap">
-        <input type="password" id="setupPassword" placeholder="••••••••••••••••" autocomplete="current-password" />
-        <button class="input-eye" id="togglePassword" tabindex="-1" type="button">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        </button>
+    <section class="setup-step" data-step="email">
+      <h2 class="setup-title" id="setupTitleEmail">What's your email address?</h2>
+      <p class="setup-sub">We'll find the right server settings for you.</p>
+      <div class="form-group">
+        <input type="email" id="setupEmail" placeholder="you@example.com" autocomplete="email" spellcheck="false" aria-label="Email address" />
+        <div class="setup-detect" id="setupDetect" aria-live="polite"></div>
       </div>
-    </div>
-
-    <div class="form-group">
-      <label>Display name <span class="label-optional">(optional)</span></label>
-      <input type="text" id="setupName" placeholder="Your Name" autocomplete="name" />
-    </div>
-
-    <div class="provider-tip hidden" id="gmailTip">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="#f59e0b"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-      <span>Gmail requires an <strong>App Password</strong>. Go to <strong>myaccount.google.com → Security → App passwords</strong>.</span>
-    </div>
-    <div class="provider-tip hidden" id="fastmailTip">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="#7c3aed"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-      <span>Fastmail uses JMAP. Create an <strong>App Password</strong> in Settings → Privacy & Security.</span>
-    </div>
-    <div class="provider-tip hidden" id="outlookTip">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="#3b82f6"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-      <span>Outlook may need IMAP enabled at <strong>Settings → Mail → Sync email</strong>.</span>
-    </div>
-    <div class="provider-tip hidden" id="protonTip">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="#6d4aff"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-      <span>Proton Mail requires the <strong>Proton Mail Bridge</strong> desktop app to be running. Download it at proton.me/mail/bridge.</span>
-    </div>
-    <div class="provider-tip hidden" id="autodiscoverTip">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="#10b981"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
-      <span id="autodiscoverTipText">Server settings detected automatically.</span>
-    </div>
-
-    <button class="advanced-toggle" id="advancedToggle" type="button">
-      <svg class="advanced-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-      Server settings
-    </button>
-    <div class="advanced-section hidden" id="advancedSection">
-      <div class="advanced-grid">
-        <div class="form-group"><label>IMAP host</label><input type="text" id="imapHost" placeholder="imap.example.com" spellcheck="false" autocomplete="off" /></div>
-        <div class="form-group"><label>Port</label><input type="number" id="imapPort" value="993" min="1" max="65535" /></div>
-        <div class="form-group"><label>SMTP host</label><input type="text" id="smtpHost" placeholder="smtp.example.com" spellcheck="false" autocomplete="off" /></div>
-        <div class="form-group"><label>Port</label><input type="number" id="smtpPort" value="587" min="1" max="65535" /></div>
+      <div class="setup-providers" id="providerPicker" aria-label="Quick pick">
+        <button class="prov-btn" type="button" data-domain="gmail.com" data-name="Gmail"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=gmail.com&sz=32" alt="" /><span>Gmail</span></button>
+        <button class="prov-btn" type="button" data-domain="outlook.com" data-name="Outlook"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=outlook.com&sz=32" alt="" /><span>Outlook</span></button>
+        <button class="prov-btn" type="button" data-domain="icloud.com" data-name="iCloud"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=icloud.com&sz=32" alt="" /><span>iCloud</span></button>
+        <button class="prov-btn" type="button" data-domain="yahoo.com" data-name="Yahoo"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=yahoo.com&sz=32" alt="" /><span>Yahoo</span></button>
+        <button class="prov-btn" type="button" data-domain="fastmail.com" data-name="Fastmail"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=fastmail.com&sz=32" alt="" /><span>Fastmail</span></button>
+        <button class="prov-btn" type="button" data-domain="gmx.net" data-name="GMX"><img class="prov-favicon" src="https://www.google.com/s2/favicons?domain=gmx.net&sz=32" alt="" /><span>GMX</span></button>
       </div>
-    </div>
+      <div class="setup-actions"><button class="btn-primary setup-cta" id="setupContinueBtn" type="button"><span class="btn-label">Continue</span><div class="btn-spinner hidden"></div></button></div>
+    </section>
 
-    <div class="modal-error hidden" id="setupError"></div>
-    <div class="modal-footer">
-      <button class="btn-ghost" id="setupCancelBtn" style="display:none">Cancel</button>
-      <button class="btn-primary" id="setupSaveBtn"><span id="setupBtnText">Connect Account</span><div class="btn-spinner hidden" id="setupSpinner"></div></button>
-    </div>
+    <section class="setup-step" data-step="password">
+      <h2 class="setup-title">Sign in</h2>
+      <p class="setup-sub" id="setupEmailEcho"></p>
+      <div class="setup-provider-card" id="setupProviderCard"></div>
+      <div class="setup-help hidden" id="setupHelp"></div>
+      <div class="form-group">
+        <label id="setupPasswordLabel" for="setupPassword">Password</label>
+        <div class="input-wrap">
+          <input type="password" id="setupPassword" autocomplete="current-password" />
+          <button class="input-eye" id="togglePassword" tabindex="-1" type="button" aria-label="Show password"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+      </div>
+      <div class="setup-actions setup-actions-split">
+        <button class="setup-link" id="advancedToggle" type="button">Server settings</button>
+        <button class="btn-primary setup-cta" id="setupSaveBtn" type="button">Sign in</button>
+      </div>
+    </section>
+
+    <section class="setup-step" data-step="servers">
+      <h2 class="setup-title">Server settings</h2>
+      <p class="setup-sub">Your provider's help pages list these. Most use SSL on port 993 (IMAP) and STARTTLS on 587 (SMTP).</p>
+      <div class="setup-server">
+        <div class="setup-server-title">Incoming mail (IMAP)</div>
+        <div class="setup-server-grid">
+          <input type="text" id="imapHost" placeholder="imap.example.com" spellcheck="false" autocomplete="off" aria-label="IMAP server" />
+          <input type="number" id="imapPort" value="993" min="1" max="65535" aria-label="IMAP port" />
+          <select id="imapSecurity" class="setup-select"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select>
+        </div>
+      </div>
+      <div class="setup-server">
+        <div class="setup-server-title">Outgoing mail (SMTP)</div>
+        <div class="setup-server-grid">
+          <input type="text" id="smtpHost" placeholder="smtp.example.com" spellcheck="false" autocomplete="off" aria-label="SMTP server" />
+          <input type="number" id="smtpPort" value="587" min="1" max="65535" aria-label="SMTP port" />
+          <select id="smtpSecurity" class="setup-select"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="setupUsername">Username <span class="label-optional">usually your full email address</span></label>
+        <input type="text" id="setupUsername" spellcheck="false" autocomplete="username" />
+      </div>
+      <div class="setup-warning hidden" id="setupPlainWarning">Without encryption your password travels in plain text. Only use this for servers on your own machine or network.</div>
+      <div class="setup-actions"><button class="btn-primary setup-cta" id="setupCheckBtn" type="button">Check connection</button></div>
+    </section>
+
+    <section class="setup-step" data-step="checking">
+      <h2 class="setup-title" id="setupCheckTitle">Connecting…</h2>
+      <p class="setup-sub" id="setupCheckEcho"></p>
+      <div class="setup-checks">
+        <div class="setup-check" id="checkIncoming" data-status="pending"><div><div class="setup-check-name">Incoming mail</div><div class="setup-check-detail"></div></div><span class="setup-check-status"></span></div>
+        <div class="setup-check" id="checkOutgoing" data-status="pending"><div><div class="setup-check-name">Outgoing mail</div><div class="setup-check-detail"></div></div><span class="setup-check-status"></span></div>
+      </div>
+      <div class="setup-fail hidden" id="setupFail">
+        <div class="setup-fail-title">What went wrong</div>
+        <div class="setup-fail-msg" id="setupFailMsg"></div>
+        <div class="setup-actions setup-actions-split">
+          <button class="btn-ghost" id="setupEditServersBtn" type="button">Edit server settings</button>
+          <button class="btn-primary" id="setupRetryBtn" type="button">Try another password</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="setup-step" data-step="personalize">
+      <h2 class="setup-title">You're connected</h2>
+      <p class="setup-sub">Make this account easy to recognise.</p>
+      <div class="form-group">
+        <label for="setupName">Your name <span class="label-optional">shown to people you write to</span></label>
+        <input type="text" id="setupName" autocomplete="name" />
+      </div>
+      <div class="form-group">
+        <label>Colour</label>
+        <div class="setup-colors" id="setupColors" role="radiogroup" aria-label="Account colour"></div>
+      </div>
+      <div class="setup-preview"><span class="setup-preview-pill" id="setupPreviewPill"><span class="setup-preview-dot"></span><span class="setup-preview-label"></span></span></div>
+      <div class="setup-actions"><button class="btn-primary setup-cta" id="setupFinishBtn" type="button">Open inbox</button></div>
+    </section>
+
+    <div class="modal-error hidden" id="setupError" role="alert"></div>
   </div>
 </div>
 
