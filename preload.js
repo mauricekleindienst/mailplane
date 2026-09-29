@@ -17,6 +17,7 @@ const INVOKE_CHANNELS = new Set([
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
   'update:install', 'update:check',
+  'ai:status', 'ai:save', 'ai:models', 'ai:run',
   'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:list', 'caldav:calendars', 'caldav:events',
 ]);
 
@@ -26,6 +27,7 @@ const SEND_CHANNELS = new Set([
   'context-menu:folder',
   'context-menu:account',
   'prefs:notify',
+  'titlebar:theme',
 ]);
 
 const RECEIVE_CHANNELS = new Set([
@@ -76,4 +78,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** App version from package.json — exposed so renderer can display it. */
   appVersion: APP_VERSION,
+
+  /** OS the window chrome is laid out for ('darwin' | 'win32' | 'linux'). */
+  platform: process.env.MAILPLANE_PLATFORM || process.platform,
 });

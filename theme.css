@@ -145,84 +145,155 @@ body {
   color: var(--text-primary) !important;
 }
 
-/* ── Top bar: account switcher (centre) · actions ──────────────────────── */
+/* ── Title bar: account avatars · search (centre) · actions ─────────────────
+   macOS: traffic lights sit top-left, so content starts after them.
+   Windows / Linux: native window buttons are drawn over the right end
+   (Window Controls Overlay); env(titlebar-area-*) tells us how much room they take. */
 .account-bar {
   height: 52px;
   background: transparent;
   border-bottom: none;
-  padding-right: 14px;
+  gap: 6px;
+  padding-right: calc(14px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
   position: relative;
 }
-.account-bar-brand {
+.platform-other .account-bar-drag { width: 12px; }
+
+.account-tabs {
   display: flex;
   align-items: center;
-  -webkit-app-region: drag;
+  gap: 10px;
+  padding: 5px 8px 5px 2px;   /* room for the unread badge */
+  max-width: calc(50% - var(--search-w) / 2 - 90px);
+  overflow-x: auto;
+  overflow-y: visible;
 }
-.account-bar-brand img { border-radius: 7px; opacity: 0.85; filter: grayscale(1) contrast(1.1); }
+.acc-tab {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  justify-content: center;
+  gap: 0;
+  background: transparent;
+  box-shadow: none;
+  flex: none;
+}
+.acc-tab:hover, .acc-tab.active { background: transparent; box-shadow: none; }
+.acc-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--tile);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.acc-avatar svg { display: block; }
+.acc-tab:hover .acc-avatar { background: var(--tile-active); color: var(--text-primary); }
+.acc-tab.active .acc-avatar {
+  background: var(--seg-active);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1.5px var(--text-primary);
+}
+.acc-tab-dot {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--canvas);
+  opacity: 1;
+}
+.acc-tab-label {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.acc-tab-badge, :root.dark .acc-tab-badge {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--lime);
+  color: var(--lime-ink);
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--canvas);
+}
+.acc-tab.active .acc-tab-badge { color: var(--lime-ink); }
+/* Name on hover — faster and calmer than the native tooltip */
+.acc-tab::after {
+  content: attr(data-tip);
+  position: fixed;
+  top: 46px;
+  transform: translateX(calc(-50% + 16px));
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: var(--text-primary);
+  color: var(--canvas);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s 0.25s;
+  z-index: 50;
+}
+.acc-tab:hover::after, .acc-tab:focus-visible::after { opacity: 1; }
+.acc-add-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  border: none;
+  box-shadow: inset 0 0 0 1px var(--tile-active);
+  flex: none;
+}
+.acc-add-btn:hover { background: var(--tile); color: var(--text-primary); box-shadow: none; }
 
-/* One quiet segmented track; the active account sits on a raised chip */
-.account-tabs {
+/* Search, centred in the window */
+:root { --search-w: clamp(240px, 32vw, 440px); }
+.titlebar-search.search-wrap {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  max-width: calc(100% - 440px);
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 12px;
+  width: var(--search-w);
+  height: 32px;
+  margin: 0;
+  padding: 0 10px 0 12px;
+  border-radius: 10px;
   background: var(--tile);
-  overflow-x: auto;
+  -webkit-app-region: no-drag;
 }
-.acc-tab {
-  height: 28px;
-  padding: 0 12px;
-  border-radius: 9px;
-  gap: 7px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 450;
-  letter-spacing: -0.005em;
-  box-shadow: none;
-}
-.acc-tab:hover { background: transparent; color: var(--text-primary); }
-.acc-tab.active {
-  background: var(--seg-active);
-  color: var(--text-primary);
+.titlebar-search .search-input { font-size: 13px; }
+.search-kbd {
+  font-family: inherit;
+  font-size: 11px;
   font-weight: 500;
-  box-shadow: var(--seg-shadow);
-}
-.acc-tab-all { font-weight: 450; }
-.acc-tab-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-.acc-tab-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  box-shadow: none;
-  opacity: 0.9;
-}
-.acc-tab-badge, :root.dark .acc-tab-badge {
-  background: transparent;
+  line-height: 1;
   color: var(--text-tertiary);
-  font-size: 11.5px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  padding: 0;
-  min-width: 0;
-  height: auto;
+  padding: 3px 5px;
+  border-radius: 5px;
+  background: var(--canvas);
+  flex: none;
 }
-.acc-tab.active .acc-tab-badge { color: var(--text-secondary); }
-.acc-add-btn {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--text-tertiary);
-  border: none;
-}
-.acc-add-btn:hover { background: var(--tile-active); color: var(--text-primary); }
+.titlebar-search:focus-within .search-kbd,
+.titlebar-search:has(.search-clear:not(.hidden)) .search-kbd { display: none; }
 
 .account-bar-right { gap: 6px; padding-right: 0; }
 .compose-btn {
@@ -233,10 +304,10 @@ body {
   color: var(--lime-ink);
   font-size: 13px;
   font-weight: 500;
-  letter-spacing: -0.005em;
   gap: 7px;
   box-shadow: none;
 }
+.compose-btn.compose-btn-icon { width: 32px; padding: 0; justify-content: center; }
 .compose-btn:hover { background: var(--lime-deep); }
 .ab-icon-btn { width: 32px; height: 32px; border-radius: 10px; }
 /* Title-bar icons are ghosts — no tile until hovered */
@@ -1200,3 +1271,97 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
   outline: none;
   box-shadow: 0 0 0 2px var(--surface-solid), 0 0 0 4px var(--lime-deep);
 }
+
+/* ══ AI assistant (only rendered when set up in Settings → AI) ═══════════ */
+.detail-action-btn.ai-btn svg { color: var(--text-secondary); }
+.ai-summary {
+  margin: 0 22px 14px;
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-lg, 16px);
+  background: var(--lime-wash);
+  color: var(--text-primary);
+}
+.ai-summary-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.ai-summary-close {
+  margin-left: auto;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  border: none; border-radius: 7px;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.ai-summary-close:hover { background: var(--tile); color: var(--text-primary); }
+.ai-summary-text { font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; user-select: text; max-width: 72ch; }
+.ai-pending { color: var(--text-tertiary); animation: ai-pulse 1.4s ease-in-out infinite; }
+.ai-error { color: var(--danger, #c0392b); }
+@keyframes ai-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .ai-pending { animation: none; } }
+
+.tb-btn.tb-ai { width: auto; gap: 5px; padding: 0 9px; margin-left: auto; font-size: 12px; font-weight: 500; }
+.tb-btn.tb-ai.ai-busy { color: var(--text-tertiary); pointer-events: none; }
+.tb-btn.tb-ai.ai-busy svg { animation: ai-pulse 1.2s ease-in-out infinite; }
+.ai-menu {
+  position: absolute;
+  z-index: 30;
+  width: 290px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-md), 0 0 0 1px var(--glass-edge);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ai-menu.ai-busy { opacity: 0.6; pointer-events: none; }
+.ai-menu-ask { display: flex; gap: 6px; padding: 2px 2px 6px; }
+.ai-menu-ask input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 10px;
+  border: none; border-radius: 9px; outline: none;
+  background: var(--tile); color: var(--text-primary);
+  font: inherit; font-size: 12.5px;
+}
+.ai-menu-ask input:focus { box-shadow: 0 0 0 2px var(--lime); }
+.ai-menu-go {
+  width: 32px; height: 32px; flex: none; border: none; border-radius: 9px;
+  background: var(--lime); color: var(--lime-ink); display: grid; place-items: center; cursor: pointer;
+}
+.ai-menu-label { font-size: 11px; color: var(--text-tertiary); padding: 8px 10px 4px; }
+.ai-menu-item {
+  text-align: left; height: 30px; padding: 0 10px; border: none; border-radius: 8px;
+  background: transparent; color: var(--text-primary); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.ai-menu-item:hover, .ai-menu-item:focus-visible { background: var(--tile); outline: none; }
+.ai-menu-item[data-ai="reply"] { font-weight: 500; }
+.ai-menu-foot {
+  margin-top: 4px; padding: 7px 10px 3px; border-top: 1px solid var(--tile);
+  font-size: 10.5px; color: var(--text-tertiary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Settings → AI */
+.settings-note { font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); margin: 0 0 12px; max-width: 60ch; }
+.settings-input {
+  height: 32px; width: 260px; max-width: 100%; padding: 0 12px;
+  border: none; border-radius: 9px; outline: none;
+  background: var(--tile); color: var(--text-primary);
+  font: inherit; font-size: 12.5px;
+}
+.settings-input:focus { box-shadow: 0 0 0 2px var(--lime); }
+.ai-model-row { display: flex; gap: 8px; align-items: center; }
+.ai-model-row .settings-select { max-width: 220px; }
+.ai-connect { height: 32px; white-space: nowrap; }
+.ai-status { font-size: 12.5px; min-height: 18px; margin: 10px 0 4px; }
+.ai-status.ok { color: var(--text-secondary); }
+.ai-status.ok::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--lime-deep); margin-right: 7px; }
+.ai-status.err { color: var(--danger, #c0392b); }
+.ai-privacy { margin-top: 6px; color: var(--text-tertiary); }

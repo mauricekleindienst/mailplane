@@ -74,6 +74,13 @@ Rich text or plain text, inline images, attachments, per-account signatures, **U
 
 <img src="docs/screenshots/compose.png" alt="Compose" width="100%" />
 
+### AI, only if you want it
+Plug in a model running on your own computer (Ollama, LM Studio) or a cloud service
+(OpenAI, Anthropic, or any OpenAI-compatible API) under **Settings → AI**. Then summarize
+long mail, draft replies from a few words, or rewrite what you wrote: shorter, friendlier,
+more formal, or with the spelling fixed. Nothing is sent until you click an AI action, and
+while AI is off, Mailplane shows no AI features at all.
+
 ### Your layout
 Drag the edges to resize the folder rail and message list, drag them away to hide them,
 use the button at the bottom-left of the sidebar, or press `⌘\` / `⇧⌘\` — like Obsidian.
@@ -92,6 +99,7 @@ Mailplane remembers your layout.
 - `mailto:` links open Mailplane
 
 **Privacy & security**
+- Optional AI with local models (Ollama, LM Studio) or your own API key; off by default
 - Passwords live in the system keychain (macOS Keychain, Windows DPAPI, libsecret) and the Android Keystore
 - Remote images blocked until you ask; HTML mail rendered in a sandbox where scripts never run
 - Links always open in your browser; no analytics, no telemetry
@@ -125,7 +133,7 @@ The mail engine (`android/core`) is plain Kotlin and tested against a real in-me
 | `⌫` | Delete |
 | `U` | Mark read / unread |
 | `S` | Star / unstar |
-| `/` | Search |
+| `⌘K` or `/` | Search |
 | `⌘\` / `⇧⌘\` | Show / hide sidebar / message list |
 | `⇧⌘N` | Refresh |
 | `⌘,` | Settings |

@@ -1,6 +1,12 @@
 // All Electron access goes through the contextBridge-exposed API in preload.js.
 // This file runs in an isolated browser context with no Node.js access.
 const { invoke: _invoke, send: _send, on: _on, md5 } = window.electronAPI;
+// Window chrome differs per OS: traffic lights on the left (macOS) or
+// window buttons on the right (Windows / Linux) — see theme.css "Title bar"
+const PLATFORM = window.electronAPI.platform || 'darwin';
+const IS_MAC = PLATFORM === 'darwin';
+document.documentElement.classList.add(IS_MAC ? 'platform-mac' : 'platform-other');
+document.getElementById('searchKbd').textContent = IS_MAC ? '⌘K' : 'Ctrl K';
 
 // ── Persistent preferences ────────────────────────────────────────────────────
 function getSetting(key, fallback = '') {
@@ -352,6 +358,7 @@ function applyTheme(theme) {
     html.classList.remove('dark', 'light');
     html.classList.toggle('dark', _darkMQ.matches);
   }
+  _send('titlebar:theme', { dark: html.classList.contains('dark') });
   // The HTML mail iframe bakes its colours in at render time — redraw it
   if (S.selectedEmail) refreshDetailIfSelected(S.selectedEmail);
 }
@@ -851,39 +858,53 @@ function renderAccountTabs() {
   const wrap = document.getElementById('accountTabs');
   wrap.innerHTML = '';
 
-  const mkBadge = () => {
+  // Round avatars; the name is in a visually hidden label (screen readers,
+  // tests) and in a hover tip. Unread count sits on the avatar's corner.
+  const mkTab = ({ cls, tip, avatar, color, label }) => {
+    const tab = document.createElement('button');
+    tab.className = cls;
+    tab.dataset.tip = tip;
+    const av = document.createElement('span');
+    av.className = 'acc-avatar';
+    if (typeof avatar === 'string') av.textContent = avatar; else av.appendChild(avatar);
+    const lbl = document.createElement('span');
+    lbl.className = 'acc-tab-label';
+    lbl.textContent = label;
     const badge = document.createElement('span');
     badge.className = 'acc-tab-badge hidden';
-    return badge;
+    tab.append(av, lbl, badge);
+    if (color) {
+      const dot = document.createElement('span');
+      dot.className = 'acc-tab-dot';
+      dot.style.background = color;
+      tab.appendChild(dot);
+    }
+    return tab;
   };
 
-  // "All Mail" entry
-  const allTab = document.createElement('button');
-  allTab.className = 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : '');
-  const allLabel = document.createElement('span');
-  allLabel.className = 'acc-tab-label';
-  allLabel.textContent = 'All Mail';
-  allTab.append(allLabel, mkBadge());
+  const allIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  allIcon.setAttribute('width', '14'); allIcon.setAttribute('height', '14'); allIcon.setAttribute('viewBox', '0 0 24 24');
+  allIcon.setAttribute('fill', 'none'); allIcon.setAttribute('stroke', 'currentColor'); allIcon.setAttribute('stroke-width', '2');
+  allIcon.setAttribute('stroke-linecap', 'round'); allIcon.setAttribute('stroke-linejoin', 'round');
+  allIcon.innerHTML = '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>';
+  const allTab = mkTab({
+    cls: 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : ''),
+    tip: 'All Mail', avatar: allIcon, label: 'All Mail',
+  });
+  allTab.setAttribute('aria-label', 'All Mail');
   allTab.addEventListener('click', () => switchToAll());
   wrap.appendChild(allTab);
 
-  // One entry per account, tinted with the account colour
   S.accounts.forEach(acc => {
     const color = acc.color || colorFor(acc.email);
-    const tab = document.createElement('button');
-    tab.className = 'acc-tab' + (acc.id === S.activeAccountId ? ' active' : '');
+    const name = acc.name || acc.email.split('@')[0];
+    const tab = mkTab({
+      cls: 'acc-tab' + (acc.id === S.activeAccountId ? ' active' : ''),
+      tip: `${name} · ${acc.email}`, avatar: initials(name), color, label: name,
+    });
     tab.dataset.accountId = acc.id;
-    tab.title = acc.email;
+    tab.setAttribute('aria-label', `${name} (${acc.email})`);
     tab.style.setProperty('--acc-color', color);
-
-    const dot = document.createElement('span');
-    dot.className = 'acc-tab-dot';
-    dot.style.background = color;
-    const label = document.createElement('span');
-    label.className = 'acc-tab-label';
-    label.textContent = acc.name || acc.email.split('@')[0];
-    tab.append(dot, label, mkBadge());
-
     tab.addEventListener('click', () => switchAccount(acc.id));
     tab.addEventListener('contextmenu', e => {
       e.preventDefault();
@@ -892,10 +913,10 @@ function renderAccountTabs() {
     wrap.appendChild(tab);
   });
 
-  // Add account + button
   const addBtn = document.createElement('button');
   addBtn.className = 'acc-add-btn';
   addBtn.title = 'Add Account';
+  addBtn.setAttribute('aria-label', 'Add Account');
   addBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
   addBtn.addEventListener('click', () => showSetupModal(true));
   wrap.appendChild(addBtn);
@@ -2068,6 +2089,10 @@ function renderDetail(email, body) {
     mkBtn('Forward', `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>`, '', () => openForward(email, body)),
   );
 
+  if (S.ai.enabled) {
+    grpReply.append(mkBtn('Summarize', AI_ICON, 'ai-btn', () => summarizeEmail(email, body, view)));
+  }
+
   const divider = document.createElement('div');
   divider.className = 'detail-action-divider';
 
@@ -2382,6 +2407,7 @@ let _composeThread = { inReplyTo: null, references: null };
 function openCompose({
   to = '', cc = '', bcc = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message',
   accountId = null, inReplyTo = null, references = null, rawBodyHtml = null, attachments = null,
+  source = null,
 } = {}) {
   if (!S.accounts.length) { toast('Add an account before composing', true); return; }
   // Reset plain-text mode left over from a previous draft
@@ -2390,6 +2416,8 @@ function openCompose({
   renderAttachmentChips();
   setScheduledAt(null);
   _composeThread = { inReplyTo, references };
+  _composeSource = source;   // the message being replied to / forwarded (AI drafts use it)
+  closeAiMenu();
 
   const fromSel = document.getElementById('composeFrom');
   fromSel.innerHTML = S.accounts.map(a =>
@@ -2918,6 +2946,7 @@ function openReply(email, body) {
   const replyTo = body?.from?.address || body?.from?.email || email.fromEmail;
   const quote = getSetting('quote-reply', 'true') === 'true' ? buildQuoteHtml(email, body) : '';
   openCompose({
+    source: { email, body, kind: 'reply' },
     to: replyTo,
     subject: prefixSubject(email.subject, 'Re'),
     bodyHtml: quote,
@@ -2941,6 +2970,7 @@ function openReplyAll(email, body) {
   const ccVal = (body?.cc || []).map(a => a.address).filter(uniq).join(', ');
   const quote = getSetting('quote-reply', 'true') === 'true' ? buildQuoteHtml(email, body) : '';
   openCompose({
+    source: { email, body, kind: 'reply' },
     to: toList,
     cc: ccVal,
     subject: prefixSubject(email.subject, 'Re'),
@@ -2954,6 +2984,7 @@ function openReplyAll(email, body) {
 function openForward(email, body) {
   // Forwarded content is always included — a forward without it is empty
   openCompose({
+    source: { email, body, kind: 'forward' },
     subject: prefixSubject(email.subject, 'Fwd'),
     bodyHtml: buildQuoteHtml(email, body, true),
     title: 'Forward',
@@ -2970,7 +3001,288 @@ function buildQuoteHtml(email, body, isForward = false) {
   const quotedBody = body?.html
     ? `<blockquote style="${bqStyle}">${sanitizeHtml(body.html)}</blockquote>`
     : `<blockquote style="${bqStyle}white-space:pre-wrap;">${escHtml(body?.text || '')}</blockquote>`;
-  return `<div style="color:var(--text-secondary,#6e6e73);font-size:13px;">${header}</div>${quotedBody}`;
+  return `<div class="compose-quote" style="color:var(--text-secondary,#6e6e73);font-size:13px;">${header}</div>${quotedBody}`;
+}
+
+// ── AI assistant (optional) ───────────────────────────────────────────────────
+// Off by default. Until a provider and model are set in Settings → AI, no AI
+// control is rendered anywhere. Requests go through the main process, which
+// holds the API key; nothing is sent unless the user clicks an AI action.
+const AI_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9-4.9-1.9 4.9-1.9z"/><path d="M19 15.5l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8z"/></svg>`;
+S.ai = { enabled: false };
+let _composeSource = null;
+
+async function loadAiStatus() {
+  const st = await ipc('ai:status').catch(() => null);
+  S.ai = st || { enabled: false };
+  applyAiVisibility();
+}
+
+function applyAiVisibility() {
+  document.documentElement.classList.toggle('ai-on', !!S.ai.enabled);
+  document.getElementById('tbAiBtn').classList.toggle('hidden', !S.ai.enabled);
+  if (!S.ai.enabled) closeAiMenu();
+  if (S.selectedEmail) refreshDetailIfSelected(S.selectedEmail);
+}
+
+function htmlToPlain(html) {
+  const doc = new DOMParser().parseFromString(
+    String(html || '').replace(/<(br|\/p|\/div|\/li|\/tr|\/h\d)[^>]*>/gi, '$&\n'), 'text/html');
+  doc.querySelectorAll('style, script, head').forEach(n => n.remove());
+  return (doc.body?.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function mailPlainText(body) {
+  return (body?.text && body.text.trim()) ? body.text : htmlToPlain(body?.html);
+}
+
+function textToHtml(text) {
+  return String(text).trim().split(/\n{2,}/)
+    .map(p => `<p>${escHtml(p).replace(/\n/g, '<br>')}</p>`).join('');
+}
+
+async function summarizeEmail(email, body, view) {
+  let card = view.querySelector('.ai-summary');
+  if (!card) {
+    card = document.createElement('div');
+    card.className = 'ai-summary';
+    view.querySelector('.detail-header')?.after(card);
+  }
+  card.innerHTML = `<div class="ai-summary-head">${AI_ICON}<span>Summary</span>
+    <button class="ai-summary-close" title="Close" aria-label="Close summary">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button></div><div class="ai-summary-text ai-pending">Summarizing…</div>`;
+  card.querySelector('.ai-summary-close').addEventListener('click', () => card.remove());
+  const res = await ipc('ai:run', {
+    task: 'summarize',
+    input: { from: `${email.fromName || ''} <${email.fromEmail || ''}>`.trim(), subject: email.subject, text: mailPlainText(body) },
+  }).catch(err => ({ success: false, error: err.message }));
+  if (!card.isConnected) return;
+  const out = card.querySelector('.ai-summary-text');
+  out.classList.remove('ai-pending');
+  out.classList.toggle('ai-error', !res.success);
+  out.textContent = res.success ? res.text : res.error;
+}
+
+// Compose: the part the user writes is everything before the signature / quote
+function composeAuthoredNodes(bodyEl) {
+  const nodes = [];
+  for (const n of bodyEl.childNodes) {
+    if (n.nodeType === 1 && n.matches('.compose-signature, .compose-quote, blockquote')) break;
+    nodes.push(n);
+  }
+  return nodes;
+}
+
+function composeAuthoredText(bodyEl) {
+  const tmp = document.createElement('div');
+  composeAuthoredNodes(bodyEl).forEach(n => tmp.appendChild(n.cloneNode(true)));
+  return htmlToPlain(tmp.innerHTML);
+}
+
+function replaceComposeAuthored(bodyEl, html) {
+  const nodes = composeAuthoredNodes(bodyEl);
+  const stop = nodes.length ? nodes[nodes.length - 1].nextSibling : bodyEl.firstChild;
+  nodes.forEach(n => n.remove());
+  const frag = document.createRange().createContextualFragment(html + (stop ? '<p><br></p>' : ''));
+  bodyEl.insertBefore(frag, stop);
+}
+
+const AI_COMPOSE_ACTIONS = [
+  ['improve', 'Improve writing'],
+  ['shorter', 'Make shorter'],
+  ['formal', 'More formal'],
+  ['friendly', 'Friendlier'],
+  ['fix', 'Fix spelling & grammar'],
+];
+
+function closeAiMenu() {
+  document.getElementById('aiMenu')?.classList.add('hidden');
+}
+
+function openAiMenu() {
+  const menu = document.getElementById('aiMenu');
+  const replying = _composeSource?.kind === 'reply';
+  menu.innerHTML = `
+    <form class="ai-menu-ask" id="aiAskForm">
+      <input type="text" id="aiAskInput" placeholder="${replying ? 'What should the reply say?' : 'Tell AI what to write or change…'}" autocomplete="off" />
+      <button type="submit" class="ai-menu-go" title="Go">${AI_ICON}</button>
+    </form>
+    ${replying ? '<button class="ai-menu-item" data-ai="reply">Draft a reply</button>' : ''}
+    <div class="ai-menu-label">Rewrite ${'<span id="aiScope">your text</span>'}</div>
+    ${AI_COMPOSE_ACTIONS.map(([id, label]) => `<button class="ai-menu-item" data-ai="${id}">${label}</button>`).join('')}
+    <div class="ai-menu-foot">${escHtml(S.ai.providerLabel || '')} · ${escHtml(S.ai.model || '')}</div>`;
+  const sel = window.getSelection();
+  const bodyEl = document.getElementById('composeBody');
+  _aiSavedRange = (sel.rangeCount && !sel.isCollapsed && bodyEl.contains(sel.anchorNode) && bodyEl.contains(sel.focusNode))
+    ? sel.getRangeAt(0).cloneRange() : null;
+  menu.querySelector('#aiScope').textContent = _aiSavedRange ? 'selection' : 'your text';
+  menu.querySelectorAll('[data-ai]').forEach(b => b.addEventListener('click', () => runComposeAi(b.dataset.ai)));
+  menu.querySelector('#aiAskForm').addEventListener('submit', e => {
+    e.preventDefault();
+    const v = menu.querySelector('#aiAskInput').value.trim();
+    if (v) runComposeAi('ask', v);
+  });
+  // Anchor under the toolbar button (the toolbar itself clips overflow)
+  const btnRect = document.getElementById('tbAiBtn').getBoundingClientRect();
+  const hostRect = document.getElementById('composeFloat').getBoundingClientRect();
+  menu.classList.remove('hidden');
+  const left = Math.min(btnRect.left - hostRect.left, hostRect.width - menu.offsetWidth - 10);
+  menu.style.left = Math.max(10, left) + 'px';
+  menu.style.top = (btnRect.bottom - hostRect.top + 6) + 'px';
+  menu.querySelector('#aiAskInput').focus();
+}
+let _aiSavedRange = null;
+
+// Keep the selection in the editor when clicking the toolbar button
+document.getElementById('tbAiBtn').addEventListener('mousedown', e => e.preventDefault());
+document.getElementById('tbAiBtn').addEventListener('click', () => {
+  if (isHidden('aiMenu')) openAiMenu(); else closeAiMenu();
+});
+document.addEventListener('mousedown', e => {
+  if (!isHidden('aiMenu') && !e.target.closest('#aiMenu, #tbAiBtn')) closeAiMenu();
+});
+
+async function runComposeAi(action, instruction = '') {
+  const bodyEl = document.getElementById('composeBody');
+  const range = _aiSavedRange;
+  const authored = composeAuthoredText(bodyEl);
+  const acc = S.accounts.find(a => a.id === document.getElementById('composeFrom').value);
+  const me = acc?.name || acc?.email || '';
+  const src = _composeSource;
+  const subject = document.getElementById('composeSubject').value;
+  const srcInput = src ? {
+    from: `${src.email.fromName || ''} <${src.email.fromEmail || ''}>`.trim(),
+    subject: src.email.subject, text: mailPlainText(src.body),
+  } : {};
+
+  let task, input;
+  const selectedText = range ? range.toString().trim() : '';
+  if (action === 'reply' || (action === 'ask' && !selectedText && !authored && src?.kind === 'reply')) {
+    task = 'reply'; input = { ...srcInput, notes: instruction || authored, me };
+  } else if (action === 'ask' && !selectedText && !authored) {
+    task = 'write'; input = { instruction, subject, me };
+  } else {
+    const text = selectedText || authored;
+    if (!text) { showComposeError('Write something first, or select the text AI should change.'); return; }
+    task = 'rewrite';
+    input = action === 'ask' ? { instruction, text } : { mode: action, text };
+  }
+
+  const btn = document.getElementById('tbAiBtn');
+  const menu = document.getElementById('aiMenu');
+  btn.classList.add('ai-busy');
+  btn.disabled = true;
+  menu.classList.add('ai-busy');
+  document.getElementById('composeError').classList.add('hidden');
+  const res = await ipc('ai:run', { task, input }).catch(err => ({ success: false, error: err.message }));
+  btn.classList.remove('ai-busy');
+  btn.disabled = false;
+  menu.classList.remove('ai-busy');
+  if (!res.success) { showComposeError(res.error); return; }
+  closeAiMenu();
+
+  if (task === 'rewrite' && selectedText && range) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('insertText', false, res.text);
+  } else {
+    replaceComposeAuthored(bodyEl, textToHtml(res.text));
+  }
+  bodyEl.focus();
+}
+
+function renderSettingsAi() {
+  const content = document.getElementById('settingsPanelContent');
+  content.innerHTML = '<div class="settings-section"><div class="ai-pending">Loading…</div></div>';
+  ipc('ai:status').then(st => {
+    const draft = { provider: st.provider, baseUrl: st.baseUrl, model: st.model, models: st.model ? [st.model] : [] };
+    const providers = st.providers || [];
+    const info = () => providers.find(p => p.id === draft.provider);
+    let statusMsg = st.enabled ? { ok: true, text: `AI is on · ${st.model}` } : null;
+
+    const render = () => {
+      const p = info();
+      const savedKey = st.hasKey && st.provider === draft.provider;
+      const showUrl = p && (p.local || p.id === 'custom');
+      const showKey = p && (p.needsKey || p.id === 'custom');
+      content.innerHTML = `
+        <div class="settings-section">
+          <div class="settings-section-title">Assistant</div>
+          <p class="settings-note">Summarize long mail, draft replies and polish your writing with an AI model you choose — one running on this computer (Ollama, LM Studio) or a cloud service. While AI is off, Mailplane shows no AI features.</p>
+          ${makePrefRow('Provider', '', `<select class="settings-select" id="aiProvider">
+            <option value="off"${draft.provider === 'off' ? ' selected' : ''}>Off</option>
+            ${providers.map(o => `<option value="${o.id}"${o.id === draft.provider ? ' selected' : ''}>${escHtml(o.label)}</option>`).join('')}
+          </select>`)}
+          ${p ? `
+            ${showUrl ? makePrefRow('Server address', p.local ? 'Where the local AI app listens' : 'OpenAI-compatible API, ending in /v1',
+              `<input class="settings-input" id="aiBaseUrl" type="url" spellcheck="false" value="${escHtml(draft.baseUrl || p.baseUrl)}" placeholder="https://…/v1" />`) : ''}
+            ${showKey ? makePrefRow('API key', savedKey ? 'Saved in your system keychain. Enter a new one to replace it.' : (p.needsKey ? 'Stored encrypted in your system keychain' : 'Only if your server needs one'),
+              `<input class="settings-input" id="aiKey" type="password" autocomplete="off" spellcheck="false" placeholder="${savedKey ? '•••••••• saved' : 'Paste key'}" />`) : ''}
+            ${makePrefRow('Model', draft.models.length ? '' : 'Connect to load the models this provider offers',
+              `<div class="ai-model-row">
+                <select class="settings-select" id="aiModel" ${draft.models.length ? '' : 'disabled'}>
+                  ${draft.models.length ? '' : '<option>—</option>'}
+                  ${draft.models.map(m => `<option value="${escHtml(m)}"${m === draft.model ? ' selected' : ''}>${escHtml(m)}</option>`).join('')}
+                </select>
+                <button class="btn-secondary ai-connect" id="aiConnect">${draft.models.length ? 'Reload' : 'Connect'}</button>
+              </div>`)}
+            <p class="settings-note ai-privacy">${p.local
+              ? 'Everything stays on this computer: mail is only sent to the local AI app.'
+              : `When you use an AI action, the message you're working on is sent to ${escHtml(p.label)}. Nothing is sent automatically.`}</p>
+          ` : ''}
+          <div class="ai-status ${statusMsg ? (statusMsg.ok ? 'ok' : 'err') : ''}" id="aiStatus">${statusMsg ? escHtml(statusMsg.text) : ''}</div>
+        </div>`;
+
+      content.querySelector('#aiProvider').addEventListener('change', async e => {
+        draft.provider = e.target.value;
+        draft.baseUrl = info()?.baseUrl || '';
+        draft.models = []; draft.model = '';
+        statusMsg = null;
+        if (draft.provider === 'off') {
+          const r = await ipc('ai:save', { provider: 'off' });
+          S.ai = { ...S.ai, ...r.status }; applyAiVisibility();
+          Object.assign(st, r.status, { hasKey: false });
+          statusMsg = { ok: true, text: 'AI is off' };
+        }
+        render();
+      });
+      const connect = content.querySelector('#aiConnect');
+      connect?.addEventListener('click', async () => {
+        const keyVal = content.querySelector('#aiKey')?.value.trim();
+        draft.baseUrl = content.querySelector('#aiBaseUrl')?.value.trim() || draft.baseUrl;
+        connect.disabled = true;
+        connect.textContent = 'Connecting…';
+        const r = await ipc('ai:models', { provider: draft.provider, baseUrl: draft.baseUrl, apiKey: keyVal || undefined });
+        if (!r.success) { statusMsg = { ok: false, text: r.error }; render(); return; }
+        if (!r.models.length) { statusMsg = { ok: false, text: 'Connected, but the server lists no models. Install or load a model first.' }; render(); return; }
+        draft.models = r.models;
+        if (!r.models.includes(draft.model)) draft.model = r.models[0];
+        const saved = await ipc('ai:save', { provider: draft.provider, baseUrl: draft.baseUrl, model: draft.model, apiKey: keyVal || undefined });
+        if (!saved.success) { statusMsg = { ok: false, text: saved.error }; render(); return; }
+        Object.assign(st, saved.status);
+        S.ai = { ...S.ai, ...saved.status }; applyAiVisibility();
+        statusMsg = { ok: true, text: `Connected · AI is on · ${draft.model}` };
+        render();
+      });
+      content.querySelector('#aiModel')?.addEventListener('change', async e => {
+        draft.model = e.target.value;
+        const saved = await ipc('ai:save', { provider: draft.provider, baseUrl: draft.baseUrl, model: draft.model });
+        if (saved.success) { S.ai = { ...S.ai, ...saved.status }; applyAiVisibility(); statusMsg = { ok: true, text: `AI is on · ${draft.model}` }; }
+        render();
+      });
+    };
+    render();
+    // Reopening settings: fetch the full model list quietly so the model can be switched
+    if (st.enabled) {
+      ipc('ai:models', { provider: st.provider, baseUrl: st.baseUrl }).then(r => {
+        if (!r.success || draft.provider !== st.provider || !content.querySelector('#aiModel')) return;
+        draft.models = r.models.includes(draft.model) ? r.models : [draft.model, ...r.models];
+        render();
+      });
+    }
+  });
 }
 
 // ── Settings modal ────────────────────────────────────────────────────────────
@@ -2987,7 +3299,7 @@ function switchSettingsPanel(panel) {
   const titles = {
     accounts: 'Accounts', general: 'General', notifications: 'Notifications',
     reading: 'Reading', composing: 'Composing', calendar: 'Calendar',
-    apps: 'Apps', appearance: 'Appearance', shortcuts: 'Keyboard shortcuts',
+    apps: 'Apps', appearance: 'Appearance', ai: 'AI assistant', shortcuts: 'Keyboard shortcuts',
     about: 'About',
   };
   document.getElementById('settingsPanelTitle').textContent = titles[panel] || panel;
@@ -2999,6 +3311,7 @@ function switchSettingsPanel(panel) {
   else if (panel === 'calendar') renderSettingsCalendar();
   else if (panel === 'apps') renderSettingsApps();
   else if (panel === 'appearance') renderSettingsAppearance();
+  else if (panel === 'ai') renderSettingsAi();
   else if (panel === 'about') renderSettingsAbout();
   else renderSettingsShortcuts();
 }
@@ -3635,7 +3948,7 @@ function renderSettingsShortcuts() {
     ['Move around', [
       [['↑'], 'Previous message', ['K']],
       [['↓'], 'Next message', ['J']],
-      [['/'], 'Search'],
+      [['⌘', 'K'], 'Search', ['/']],
       [['Esc'], 'Close / dismiss'],
     ]],
     ['Act on a message', [
@@ -4185,6 +4498,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (overlayOpen) return; // folder dialogs handle their own Escape
     if (autocompleteDropdown) { removeAutocomplete(); return; }
+    if (!isHidden('aiMenu')) { closeAiMenu(); return; }
     if (!isHidden('sendLaterPicker')) { document.getElementById('sendLaterPicker').classList.add('hidden'); return; }
     if (!isHidden('addAppModal')) { document.getElementById('addAppModal').classList.add('hidden'); return; }
     if (!isHidden('caldavModal')) { closeCaldavModal(); return; }
@@ -4209,6 +4523,13 @@ document.addEventListener('keydown', e => {
     if (key === 'n' && !e.shiftKey) { e.preventDefault(); openCompose(); return; }
     if (e.code === 'Backslash') { e.preventDefault(); togglePane(e.shiftKey ? 'list' : 'sidebar'); return; }
     if (key === ',') { e.preventDefault(); showSettingsModal(); return; }
+    if (key === 'k' && !(composeOpen && inInput)) {
+      e.preventDefault();
+      const input = document.getElementById('searchInput');
+      input.focus();
+      input.select();
+      return;
+    }
     if (!inInput && sel && key === 'r') {
       e.preventDefault();
       getEmailBody(sel).then(b => (e.shiftKey ? openReplyAll : openReply)(sel, b));
@@ -4532,6 +4853,7 @@ async function init() {
 
   // Push notification preferences to main process
   syncNotifyPrefs();
+  await loadAiStatus();
 
   // Show real app version in settings sidebar
   const verEl = document.getElementById('settingsVersion');

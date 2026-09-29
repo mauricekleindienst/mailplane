@@ -112,10 +112,23 @@ function defaultMailboxes() {
 // network-facing functions of imap-manager / smtp-manager so the real IPC
 // handlers, SQLite cache and renderer run end-to-end against a fake mailbox.
 function installFakeBackend({ shell, ipcMain, session }, { mailboxes, folders }) {
-  const { imapManager: imap, smtpManager: smtp } = global.__mailplaneModules;
+  const { imapManager: imap, smtpManager: smtp, aiClient } = global.__mailplaneModules;
 
   const state = { mailboxes, folders, sent: [], opened: [], contextMenus: 0 };
   global.__fake = state;
+
+  // Fake AI model: records requests, answers with state.ai.reply (or echoes the task)
+  state.ai = { calls: [], models: ['llama3.2', 'qwen2.5'], reply: null, fail: null };
+  aiClient.listModels = async (cfg) => {
+    if (state.ai.fail) throw new Error(state.ai.fail);
+    state.ai.lastConfig = { provider: cfg.provider, baseUrl: cfg.baseUrl, hasKey: !!cfg.apiKey };
+    return state.ai.models;
+  };
+  aiClient.complete = async (cfg, req) => {
+    state.ai.calls.push({ provider: cfg.provider, model: cfg.model, system: req.system, prompt: req.prompt });
+    if (state.ai.fail) throw new Error(state.ai.fail);
+    return state.ai.reply || 'AI answer';
+  };
 
   const box = (acc, folder) => {
     state.mailboxes[acc.id] = state.mailboxes[acc.id] || {};

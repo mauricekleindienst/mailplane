@@ -38,6 +38,7 @@ const jmapManager = require('./src/jmap-manager');
 const smtpManager = require('./src/smtp-manager');
 const emailCache = require('./src/email-cache');
 const caldavManager = require('./src/caldav-manager');
+const aiClient = require('./src/ai-client');
 
 // Expose safeStorage helpers to the store (called only from main process)
 accountStore.setSafeStorage(safeStorage);
@@ -45,7 +46,7 @@ accountStore.setSafeStorage(safeStorage);
 // E2E tests (test/e2e) swap the network-facing managers for an in-memory fake.
 // Only exposed when explicitly requested via env — never in normal runs.
 if (process.env.MAILPLANE_E2E === '1') {
-  global.__mailplaneModules = { accountStore, imapManager, jmapManager, smtpManager, emailCache, caldavManager };
+  global.__mailplaneModules = { accountStore, imapManager, jmapManager, smtpManager, emailCache, caldavManager, aiClient };
 }
 
 function mgr(account) {
@@ -229,6 +230,24 @@ function startIdleForAccount(account) {
   }
 }
 
+// macOS keeps its traffic lights top-left; Windows and Linux get native
+// minimise / maximise / close buttons drawn over the right end of our title bar
+// (Window Controls Overlay). MAILPLANE_PLATFORM lets tests render another layout.
+const UI_PLATFORM = process.env.MAILPLANE_PLATFORM || process.platform;
+const TITLEBAR_HEIGHT = 52;
+function overlayColors(dark) {
+  return dark ? { color: '#121413', symbolColor: '#e7eae8' } : { color: '#e2e6e3', symbolColor: '#262a28' };
+}
+function titleBarOptions() {
+  if (UI_PLATFORM === 'darwin') return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 20 } };
+  if (process.platform === 'darwin') return { titleBarStyle: 'hidden' };
+  return { titleBarStyle: 'hidden', titleBarOverlay: { ...overlayColors(nativeTheme.shouldUseDarkColors), height: TITLEBAR_HEIGHT } };
+}
+ipcMain.on('titlebar:theme', (_, { dark } = {}) => {
+  if (!mainWindow || mainWindow.isDestroyed() || UI_PLATFORM === 'darwin') return;
+  try { mainWindow.setTitleBarOverlay?.({ ...overlayColors(!!dark), height: TITLEBAR_HEIGHT }); } catch { /* no overlay on this system */ }
+});
+
 function createWindow() {
   const Store = require('electron-store');
   const winStore = new Store({ name: 'window', defaults: { bounds: null } });
@@ -241,8 +260,7 @@ function createWindow() {
     y: saved?.y,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 18, y: 20 },   // centred in the 52px title bar
+    ...titleBarOptions(),
     vibrancy: nativeTheme.shouldUseDarkColors ? 'under-window' : 'sidebar',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff',
     title: 'Mailplane',
@@ -762,6 +780,86 @@ ipcMain.handle('folder:delete', async (_, { accountId, path }) => {
 });
 
 // ── CalDAV ────────────────────────────────────────────────────────────────────
+
+// ── AI assistant (optional) ───────────────────────────────────────────────────
+// Off until the user picks a provider in Settings → AI. The API key is
+// encrypted with safeStorage and never sent to the renderer.
+let _aiStore = null;
+function aiStore() {
+  if (!_aiStore) {
+    const Store = require('electron-store');
+    _aiStore = new Store({ name: 'ai', defaults: { provider: 'off', baseUrl: '', model: '', keyEncrypted: '' } });
+  }
+  return _aiStore;
+}
+function aiKey() {
+  const blob = aiStore().get('keyEncrypted');
+  if (!blob) return '';
+  try {
+    return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(blob, 'base64')) : '';
+  } catch { return ''; }
+}
+function aiConfig() {
+  const { provider, baseUrl, model } = aiStore().store;
+  return { provider, baseUrl, model, apiKey: aiKey() };
+}
+function aiStatus() {
+  const { provider, baseUrl, model } = aiStore().store;
+  const info = aiClient.providerInfo(provider);
+  return {
+    enabled: !!info && !!model,
+    provider: info ? provider : 'off',
+    providerLabel: info?.label || '',
+    baseUrl: baseUrl || info?.baseUrl || '',
+    model,
+    hasKey: !!aiStore().get('keyEncrypted'),
+    local: info ? (info.local || aiClient.isLocalUrl(baseUrl || info.baseUrl)) : false,
+  };
+}
+
+ipcMain.handle('ai:status', () => ({
+  ...aiStatus(),
+  providers: Object.entries(aiClient.PROVIDERS).map(([id, p]) => ({ id, label: p.label, baseUrl: p.baseUrl, needsKey: p.needsKey, local: p.local })),
+}));
+
+// apiKey: undefined keeps the saved key, '' removes it
+ipcMain.handle('ai:save', (_, { provider, baseUrl = '', model = '', apiKey } = {}) => {
+  const store = aiStore();
+  if (!provider || provider === 'off') {
+    store.set({ provider: 'off', baseUrl: '', model: '', keyEncrypted: '' });
+    return { success: true, status: aiStatus() };
+  }
+  if (!aiClient.providerInfo(provider)) return { success: false, error: 'Unknown AI provider' };
+  if (provider !== store.get('provider') && apiKey === undefined) store.set('keyEncrypted', '');
+  store.set({ provider, baseUrl: aiClient.normalizeBaseUrl(baseUrl), model: String(model || '') });
+  if (apiKey !== undefined) {
+    if (!apiKey) store.set('keyEncrypted', '');
+    else if (safeStorage.isEncryptionAvailable()) store.set('keyEncrypted', safeStorage.encryptString(apiKey).toString('base64'));
+    else return { success: false, error: 'This system has no secure storage for the API key.' };
+  }
+  return { success: true, status: aiStatus() };
+});
+
+// Also the connection test. Uses the saved key unless a new one is given.
+ipcMain.handle('ai:models', async (_, { provider, baseUrl = '', apiKey } = {}) => {
+  try {
+    const key = apiKey !== undefined ? apiKey : (provider === aiStore().get('provider') ? aiKey() : '');
+    const models = await aiClient.listModels({ provider, baseUrl, apiKey: key });
+    return { success: true, models };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('ai:run', async (_, { task, input } = {}) => {
+  if (!aiStatus().enabled) return { success: false, error: 'AI is turned off. Set it up in Settings → AI.' };
+  try {
+    const text = await aiClient.complete(aiConfig(), aiClient.buildTask(task, input));
+    return { success: true, text };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
 
 ipcMain.handle('caldav:test', async (_, { serverUrl, email, password }) => {
   return caldavManager.testCalDavConnection(serverUrl, email, password);
