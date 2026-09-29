@@ -54,10 +54,21 @@ jobs:
           node-version: '20'
       - name: Resolve version
         id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.bump }}" == "current" ]]; then
             VERSION=$(node -p "require('./package.json').version")
-            if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+              # Rebuilding a release that was never published: move its tag to this commit
+              DRAFT=$(gh release view "v$VERSION" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+              if [[ "$DRAFT" == "false" ]]; then
+                echo "::error::v$VERSION is already published. Bump the version to release again."
+                exit 1
+              fi
+              git tag -f "v$VERSION"
+              git push -f origin "v$VERSION"
+            else
               git tag "v$VERSION"
               git push origin "v$VERSION"
             fi
@@ -120,7 +131,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npx electron-builder ${{ matrix.platform }} --publish always
+        run: |
+          # Unset secrets that aren't configured: electron-builder treats an empty
+          # CSC_LINK as a file path and fails, instead of building unsigned
+          for v in CSC_LINK CSC_KEY_PASSWORD WIN_CSC_LINK WIN_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          npx electron-builder ${{ matrix.platform }} --publish always
 
   android:
     needs: prepare
@@ -143,6 +160,8 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
             echo "MAILPLANE_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No ANDROID_KEYSTORE_BASE64 secret: the APK is signed with a throwaway debug key, so it can't update an earlier install in place."
           fi
       - name: Test engine and build release APK
         working-directory: android

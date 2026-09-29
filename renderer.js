@@ -141,30 +141,56 @@ function parseMailto(url) {
   };
 }
 
-// ── Update status (feeds into Settings → General) ─────────────────────────────
+// ── Updates (GitHub Releases) ─────────────────────────────────────────────────
+// Main decides whether the app can install updates itself ("auto") or only
+// offer the download ("manual", unsigned macOS builds). Status feeds the banner
+// and Settings → About.
 _on('update:status', (status = {}) => {
   S.updateStatus = status;
   const row = document.getElementById('updateStatusText');
   if (row) _renderUpdateStatus(row, status);
+  document.getElementById('updateActionBtn')?.classList.toggle('hidden', !updateAction(status));
+  if (status.state === 'manual' || (status.state === 'available' && !status.downloading)) showUpdateBanner(status);
 });
 
-// ── Update available notification ─────────────────────────────────────────────
-_on('update-ready', ({ version } = {}) => {
-  const existing = document.getElementById('update-banner');
-  if (existing) return;
+_on('update-ready', ({ version } = {}) => showUpdateBanner({ state: 'ready', version }));
+
+// What the "update" button should do for a status, if anything
+function updateAction(status) {
+  if (status?.state === 'ready') return { label: 'Restart to update', run: () => _invoke('update:install') };
+  if (status?.state === 'manual') return { label: 'Download', run: () => _invoke('shell:open', status.downloadUrl) };
+  if (status?.state === 'available' && !status.downloading) {
+    return { label: 'Download', run: () => { _invoke('update:download'); document.getElementById('update-banner')?.remove(); } };
+  }
+  return null;
+}
+
+function showUpdateBanner(status) {
+  const key = `${status.state}:${status.version}`;
+  let dismissed = '';
+  try { dismissed = localStorage.getItem('mailplane-update-dismissed') || ''; } catch { /* ignore */ }
+  if (dismissed === key) return;
+  const action = updateAction(status);
+  if (!action) return;
+  document.getElementById('update-banner')?.remove();
   const banner = document.createElement('div');
   banner.id = 'update-banner';
+  const text = status.state === 'ready'
+    ? `Mailplane ${status.version ? `${status.version} ` : ''}is ready to install.`
+    : `Mailplane ${escHtml(status.version || '')} is available.`;
   banner.innerHTML = `
-    <span>Mailplane ${version ? `v${version} ` : ''}is ready to install.</span>
-    <button id="update-install-btn">Restart Now</button>
-    <button id="update-dismiss-btn" aria-label="Dismiss">✕</button>
-  `;
+    <span>${text}</span>
+    <button id="update-install-btn">${action.label}</button>
+    ${status.pageUrl ? '<button class="update-notes-btn" id="update-notes-btn">What’s new</button>' : ''}
+    <button id="update-dismiss-btn" aria-label="Dismiss">✕</button>`;
   document.body.appendChild(banner);
-  document.getElementById('update-install-btn').addEventListener('click', () => {
-    _invoke('update:install');
+  banner.querySelector('#update-install-btn').addEventListener('click', action.run);
+  banner.querySelector('#update-notes-btn')?.addEventListener('click', () => _invoke('shell:open', status.pageUrl));
+  banner.querySelector('#update-dismiss-btn').addEventListener('click', () => {
+    try { localStorage.setItem('mailplane-update-dismissed', key); } catch { /* ignore */ }
+    banner.remove();
   });
-  document.getElementById('update-dismiss-btn').addEventListener('click', () => banner.remove());
-});
+}
 
 // ── Context menu actions ──────────────────────────────────────────────────────
 _on('context-menu:action', async (action) => {
@@ -3375,6 +3401,8 @@ function applyPrefChange(key, value) {
     renderEmailList(S.isSearching);
   } else if (key === 'spell-check') {
     applySpellcheck();
+  } else if (key === 'auto-update') {
+    _send('update:config', { auto: value === 'true' });
   }
 }
 
@@ -3388,11 +3416,14 @@ function _renderUpdateStatus(el, status) {
   const map = {
     checking:    'Checking for updates…',
     upToDate:    'Mailplane is up to date.',
-    available:   `Downloading update${status.version ? ` v${status.version}` : ''}…`,
+    available:   status.downloading === false
+      ? `Version ${status.version} is available.`
+      : `Downloading version ${status.version || ''}…`,
     downloading: `Downloading… ${status.percent ?? 0}%`,
-    ready:       `v${status.version} ready — click Restart Now to install.`,
+    ready:       `Version ${status.version} is ready — restart Mailplane to install it.`,
+    manual:      `Version ${status.version} is available. Download it and replace the app to update.`,
     error:       `Update error: ${status.message || 'unknown'}`,
-    unavailable: 'Auto-update not available in development builds.',
+    unavailable: 'Updates are checked in installed builds only.',
   };
   el.textContent = map[status.state] || '';
 }
@@ -3889,7 +3920,17 @@ function renderSettingsAbout() {
               <div class="settings-pref-name">Software update</div>
               <div class="settings-pref-desc" id="updateStatusText"></div>
             </div>
-            <div class="settings-pref-control"><button class="btn-secondary" id="checkUpdateBtn">Check now</button></div>
+            <div class="settings-pref-control about-links">
+              <button class="btn-primary hidden" id="updateActionBtn"></button>
+              <button class="btn-secondary" id="checkUpdateBtn">Check now</button>
+            </div>
+          </div>
+          <div class="settings-pref-row hidden" id="autoUpdateRow">
+            <div class="settings-pref-info">
+              <div class="settings-pref-name">Install updates automatically</div>
+              <div class="settings-pref-desc">Download new versions in the background and install them when you quit</div>
+            </div>
+            <div class="settings-pref-control">${makeToggle('auto-update', 'true')}</div>
           </div>
           <div class="settings-pref-row">
             <div class="settings-pref-info">
@@ -3918,14 +3959,29 @@ function renderSettingsAbout() {
 
   const statusEl = content.querySelector('#updateStatusText');
   _renderUpdateStatus(statusEl, S.updateStatus);
-  if (!statusEl.textContent) statusEl.textContent = 'Updates install automatically in the background';
+  if (!statusEl.textContent) statusEl.textContent = 'New versions come from GitHub Releases';
+  const actionBtn = content.querySelector('#updateActionBtn');
+  const syncAction = () => {
+    const a = updateAction(S.updateStatus);
+    actionBtn.classList.toggle('hidden', !a);
+    if (a) actionBtn.textContent = a.label;
+  };
+  syncAction();
+  actionBtn.addEventListener('click', () => { updateAction(S.updateStatus)?.run(); });
+  _on('update:status', syncAction);
+  _invoke('update:info').then(info => {
+    // Only builds that install updates themselves get the automatic toggle
+    content.querySelector('#autoUpdateRow')?.classList.toggle('hidden', info?.mode !== 'auto');
+    if (info?.mode === 'manual' && !S.updateStatus) statusEl.textContent = 'Mailplane checks GitHub for new versions and offers the download';
+  }).catch(() => {});
+  bindPrefControls(content);
 
   content.querySelector('#checkUpdateBtn').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
     btn.textContent = 'Checking…';
-    const res = await _invoke('update:check').catch(() => null);
-    if (res?.state === 'unavailable' || res?.state === 'error') _renderUpdateStatus(statusEl, res);
+    const res = await _invoke('update:check').catch(err => ({ state: 'error', message: err.message }));
+    if (res) { S.updateStatus = res; _renderUpdateStatus(statusEl, res); syncAction(); }
     btn.disabled = false;
     btn.textContent = 'Check now';
   });
@@ -4853,6 +4909,7 @@ async function init() {
 
   // Push notification preferences to main process
   syncNotifyPrefs();
+  _send('update:config', { auto: getSetting('auto-update', 'true') === 'true' });
   await loadAiStatus();
 
   // Show real app version in settings sidebar

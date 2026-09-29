@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import app.mailplane.android.data.AccountRepository
 import app.mailplane.android.data.AppSettings
+import app.mailplane.android.data.AppUpdater
 import app.mailplane.android.data.CredentialStore
 import app.mailplane.android.data.MailRepository
 import app.mailplane.android.sync.SyncWorker
@@ -14,10 +15,12 @@ class MailplaneApplication : Application() {
     lateinit var settings: AppSettings private set
     lateinit var accounts: AccountRepository private set
     lateinit var mail: MailRepository private set
+    lateinit var updater: AppUpdater private set
 
     override fun onCreate() {
         super.onCreate()
         settings = AppSettings(this)
+        updater = AppUpdater(this)
         accounts = AccountRepository(this, CredentialStore(this))
         mail = MailRepository(accounts)
 

@@ -201,6 +201,7 @@ private fun MessageList(
 
     LazyColumn(state = listState, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+        item(key = "update") { UpdateCard(vm) }
         items(messages, key = { "${it.folder}:${it.uid}" }) { m ->
             SwipeRow(m, onArchive = { vm.archive(m) }, onDelete = { vm.delete(m) }) {
                 MessageRow(m, onClick = { onOpen(m) }, onStar = { vm.toggleFlag(m) })
@@ -361,3 +362,25 @@ internal fun shortDate(m: MessageSummary): String {
     }
 }
 
+/** Shown above the list when GitHub has a newer release (until dismissed). */
+@Composable
+private fun UpdateCard(vm: MailViewModel) {
+    val state by vm.updater.state.collectAsState()
+    var hidden by remember { mutableStateOf(false) }
+    val release = (state as? app.mailplane.android.data.UpdateState.Available)?.release ?: return
+    if (hidden || vm.updater.dismissed(release)) return
+    app.mailplane.android.ui.components.InfoCard(
+        title = "Mailplane ${release.version} is available",
+        body = "Download and install it straight from GitHub.",
+        modifier = Modifier.padding(bottom = 4.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.material3.TextButton(onClick = { vm.installUpdate(release) }) {
+                Text("Update", color = Frost.colors.ink, style = MaterialTheme.typography.labelLarge)
+            }
+            androidx.compose.material3.TextButton(onClick = { vm.updater.dismiss(release); hidden = true }) {
+                Text("Later", color = Frost.colors.inkSecondary, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}

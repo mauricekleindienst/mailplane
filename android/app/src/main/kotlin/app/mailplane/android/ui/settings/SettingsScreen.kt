@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +52,8 @@ import androidx.compose.ui.unit.dp
 import app.mailplane.android.BuildConfig
 import app.mailplane.android.data.Accents
 import app.mailplane.android.data.ThemeMode
+import app.mailplane.android.data.UpdateState
+import app.mailplane.android.ui.components.AccentButton
 import app.mailplane.android.ui.MailViewModel
 import app.mailplane.android.ui.components.AccountDot
 import app.mailplane.android.ui.components.BrandMark
@@ -67,6 +70,7 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
     val accent by vm.settings.accent.collectAsState()
     val notifications by vm.settings.notifications.collectAsState()
     val blockImages by vm.settings.blockImages.collectAsState()
+    val update by vm.updater.state.collectAsState()
     var confirmRemove by remember { mutableStateOf<Account?>(null) }
 
     Scaffold(
@@ -139,6 +143,38 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                 ToggleRow("New mail notifications", "Checked about every 15 minutes", notifications, vm.settings::setNotifications)
                 HorizontalDivider(color = c.tile)
                 ToggleRow("Block remote images", "Stops senders from tracking when you open a message", blockImages, vm.settings::setBlockImages)
+            }
+
+            SectionLabel("Updates")
+            Group {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val u = update
+                    Text(
+                        when (u) {
+                            is UpdateState.Available -> "Mailplane ${u.release.version} is available."
+                            is UpdateState.Downloading -> "Downloading ${u.release.version}… ${u.percent}%"
+                            is UpdateState.Failed -> u.message
+                            UpdateState.Checking -> "Checking GitHub for a new version…"
+                            UpdateState.UpToDate -> "You have the latest version (${BuildConfig.VERSION_NAME})."
+                            UpdateState.Idle -> "New versions come from GitHub Releases. Android asks you to confirm each install."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (u is UpdateState.Failed) c.danger else c.inkSecondary,
+                    )
+                    when (u) {
+                        is UpdateState.Available -> AccentButton("Update to ${u.release.version}", { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
+                        is UpdateState.Downloading -> LinearProgressIndicator(
+                            progress = { u.percent / 100f }, modifier = Modifier.fillMaxWidth(), color = c.accentDeep, trackColor = c.tile,
+                        )
+                        is UpdateState.Failed -> if (u.release != null) {
+                            AccentButton("Try again", { vm.installUpdate(u.release) }, Modifier.fillMaxWidth())
+                        } else {
+                            TextButton(onClick = { vm.checkForUpdate() }) { Text("Check again", color = c.ink) }
+                        }
+                        UpdateState.Checking -> {}
+                        else -> TextButton(onClick = { vm.checkForUpdate() }) { Text("Check for updates", color = c.ink) }
+                    }
+                }
             }
 
             Column(Modifier.fillMaxWidth().padding(vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally,

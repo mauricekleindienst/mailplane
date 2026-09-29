@@ -795,7 +795,16 @@ body {
 .toast.error { background: var(--danger); }
 .undo-send-btn { border: none; border-radius: 8px; background: var(--lime); color: var(--lime-ink); font-weight: 500; }
 .undo-send-btn:hover { background: var(--lime-deep); }
-#update-banner { border-radius: 12px; }
+#update-banner {
+  border-radius: 14px;
+  background: var(--text-primary);
+  color: var(--canvas);
+  padding: 8px 8px 8px 16px;
+  box-shadow: var(--shadow-md);
+}
+#update-banner #update-install-btn { background: var(--lime); color: var(--lime-ink); padding: 6px 12px; }
+#update-banner .update-notes-btn { background: transparent; color: var(--canvas); opacity: 0.75; }
+#update-banner #update-dismiss-btn { color: var(--canvas); opacity: 0.6; }
 .scheduled-outbox { border-radius: 16px; box-shadow: var(--shadow-md); }
 
 /* ── Calendar ──────────────────────────────────────────────────────────── */

@@ -70,6 +70,10 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 | `ai:save` | invoke | `{provider,baseUrl,model,apiKey?}` → `{success,status}` (`provider:'off'` clears; `apiKey` undefined keeps the saved key) |
 | `ai:models` | invoke | `{provider,baseUrl,apiKey?}` → `{success,models[]}` — also the connection test |
 | `ai:run` | invoke | `{task:'summarize'\|'reply'\|'write'\|'rewrite', input}` → `{success,text}` |
+| `update:config` | send | `{auto}` — renderer prefs; the first one starts update checks (startup + every 6 h) |
+| `update:info` | invoke | → `{mode:'auto'\|'manual', version, status, packaged}` |
+| `update:check` / `update:download` / `update:install` | invoke | check now / download (when auto-download is off) / quit and install |
+| `update:status` | main→renderer | `{state:'checking'\|'upToDate'\|'available'\|'downloading'\|'ready'\|'manual'\|'error', version?, downloadUrl?, pageUrl?}` |
 | `titlebar:theme` | send | `{dark}` — recolours the Windows/Linux window buttons |
 | `shell:open` | invoke | `url` |
 | `badge:set` | send | `count` |
@@ -95,6 +99,7 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 - **Theming**: change the look in `theme.css` (tokens at the top, light + `.dark` + system dark). The account colour only appears as a small dot (tab pill, account tag in All Mail) via `--acc-color`; `--lime` is the only accent — use it sparingly, always with `--lime-ink` on top. The accent is user-selectable (Settings → Appearance: presets in `ACCENTS` + custom picker, stored in `localStorage['mailplane-accent']`); `applyAccent()` sets `--lime`/`--lime-deep`/`--lime-ink` inline on `<html>`, and every tint (selection wash, `--selected-bg`, background glow) is derived from `--lime` via `color-mix`, so never hard-code accent rgba values.
 - **Title bar** (C1): account avatars left (`.acc-tab` with a visually hidden `.acc-tab-label`, unread badge on the corner, name in a hover tip), search centred (`#searchInput`, ⌘K), compose icon + settings right. macOS: `hiddenInset` traffic lights on the left. Windows/Linux: `titleBarOverlay` draws native window buttons on the right; `.account-bar` pads by `env(titlebar-area-*)`, and `titlebar:theme` keeps their colours in sync. `<html>` gets `platform-mac` / `platform-other`; `MAILPLANE_PLATFORM` overrides the OS (README screenshots use `darwin`).
 - **AI is opt-in and invisible when off**: `S.ai.enabled` gates every AI control (Summarize in the reading pane, `#tbAiBtn` + `#aiMenu` in compose). Requests run in main (`ai:run`), the key is safeStorage-encrypted in `ai.json` and never reaches the renderer, and nothing is sent without a click. Compose AI replaces only the user's own text (nodes before `.compose-signature` / `.compose-quote` / blockquote) or the current selection.
+- **Updates** (`src/update-check.js` + main.js "Updates via GitHub Releases"): mode `auto` uses electron-updater (Windows NSIS, Linux AppImage/deb, signed macOS); mode `manual` (unsigned macOS, dev) asks the GitHub API for the latest release and offers the matching download (`pickAsset`). Banner + Settings → About; dismissing hides that version's banner. Android: `AppUpdater` checks daily, downloads the APK into `cache/updates` and opens the system installer (needs the same signing key for every release → set the `ANDROID_KEYSTORE_*` secrets).
 - **Settings only show options that work** — don't add placebo toggles.
 - **Account setup** (renderer.js "Account setup", `#setupModal` sections by `data-step`): welcome (first run only) → email (live preset detection, autodiscover on continue, guess `imap.<domain>` as last resort) → password (`PROVIDER_HELP` gives app-password steps + link per provider family) → optional server form (security select switches default ports; "None" warns) → checking (`accounts:test` for IMAP then SMTP, live status, `parseSetupError` explains failures per server) → personalise (name derived from address, colour) → `accounts:add` with `verified: true`.
 - **Pane layout** (`PANES` in renderer.js): sidebar + message list widths live in CSS vars `--sidebar-w` / `--list-w` set by `applyLayout()`; state `{w, collapsed}` persists in `localStorage['mailplane-layout']`. Drag a handle to resize, below 55 % of the minimum to collapse (width is kept for re-expanding), double-click to reset, ←/→/Enter on a focused handle. ⌘\ toggles the sidebar, ⇧⌘\ the list. The reading pane keeps ≥ 380px. Overlays (apps, calendar, expanded compose) position themselves from `--sidebar-w`.
@@ -194,11 +199,11 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] CalDAV / calendar integration (PROPFIND discovery, REPORT fetch, monthly grid view)
 - [x] Auto-update with persistent restart banner (electron-updater, Restart Now button)
 - [x] Optional AI assistant (Ollama, LM Studio, OpenAI, Anthropic, OpenAI-compatible): summarize, draft reply, rewrite
+- [x] Updates from GitHub Releases (desktop auto-install / download offer, Android in-app APK update)
 - [x] Platform-aware title bar (native window buttons on Windows/Linux)
 - [x] contextBridge security boundary (preload.js, channel allowlists, sandbox: false)
 
 ## Pending / future
-- [ ] Auto-update publish config (needs GitHub Releases owner/repo filled in package.json)
 - [ ] Crash reporting (Sentry — needs DSN from account)
 - [ ] Code signing + notarization (needs Apple Developer ID cert)
 - [ ] Email rules / filters

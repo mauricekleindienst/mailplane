@@ -33,9 +33,14 @@ Outlook, iCloud, Yahoo, Fastmail and any IMAP/SMTP server — on the desktop and
 `<version>` is the release number, e.g. `Mailplane-0.1.0-mac-arm64.dmg`.
 
 All files are on the **[latest release](https://github.com/mauricekleindienst/mailplane/releases/latest)** page.
-The desktop apps update themselves.
 
-> The builds are not code-signed yet. On macOS, right-click the app → **Open** the first time;
+**Updates** come from GitHub Releases too. Windows and Linux install them in the background
+and ask you to restart. On macOS (until the app is code-signed) and Android, Mailplane tells
+you when a new version is out and downloads it for you. On Android you confirm the install.
+Check any time under **Settings → About** (Android: **Settings → Updates**).
+
+> The builds are not code-signed yet. On macOS, right-click the app → **Open** the first time
+> (if macOS says the app is damaged, run `xattr -cr /Applications/Mailplane.app` once);
 > on Windows, choose **More info → Run anyway**; on Android, allow installing from your browser.
 
 ---

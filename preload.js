@@ -16,7 +16,7 @@ const INVOKE_CHANNELS = new Set([
   'email:scheduled:list', 'email:scheduled:cancel',
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
-  'update:install', 'update:check',
+  'update:install', 'update:check', 'update:info', 'update:download',
   'ai:status', 'ai:save', 'ai:models', 'ai:run',
   'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:list', 'caldav:calendars', 'caldav:events',
 ]);
@@ -28,6 +28,7 @@ const SEND_CHANNELS = new Set([
   'context-menu:account',
   'prefs:notify',
   'titlebar:theme',
+  'update:config',
 ]);
 
 const RECEIVE_CHANNELS = new Set([

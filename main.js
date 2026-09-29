@@ -86,47 +86,105 @@ app.on('open-url', (event, url) => {
   handleMailto(url);
 });
 
-// ── Auto-updater ──────────────────────────────────────────────────────────────
-// Only active in packaged builds. Set publish.url in package.json to enable.
+// ── Updates via GitHub Releases ───────────────────────────────────────────────
+// "auto":   electron-updater downloads and installs (Windows NSIS, Linux AppImage/deb,
+//           signed macOS builds). "manual": unsigned macOS builds can't replace
+//           themselves, so we check GitHub and offer the right download instead.
+// Development builds only check when asked.
+const updateCheck = require('./src/update-check');
 let _autoUpdater = null;
-if (app.isPackaged) {
+let _updateMode = 'manual';
+let _updateStatus = null;
+let _updateTimer = null;
+let _updatePrefs = { auto: true };
+let _updaterReady = Promise.resolve();
+
+function sendUpdateStatus(payload) {
+  _updateStatus = payload;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update:status', payload);
+}
+
+function macBuildIsSigned() {
+  return new Promise(resolve => {
+    const bundle = path.resolve(process.execPath, '../../..');
+    require('child_process').execFile('codesign', ['-dv', '--verbose=2', bundle], (err, _out, stderr) => {
+      resolve(!err && /Authority=Developer ID Application/.test(String(stderr)));
+    });
+  });
+}
+
+async function setupUpdater() {
+  if (!app.isPackaged || process.env.MAILPLANE_E2E === '1') { _updateMode = 'manual'; return; }
+  if (process.platform === 'darwin' && !(await macBuildIsSigned())) { _updateMode = 'manual'; return; }
   try {
     const { autoUpdater } = require('electron-updater');
     _autoUpdater = autoUpdater;
-    autoUpdater.autoDownload = true;
+    _updateMode = 'auto';
+    autoUpdater.autoDownload = _updatePrefs.auto;
     autoUpdater.autoInstallOnAppQuit = true;
-
-    const sendStatus = (payload) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update:status', payload);
-      }
-    };
-    autoUpdater.on('checking-for-update',  ()     => sendStatus({ state: 'checking' }));
-    autoUpdater.on('update-available',     (info) => sendStatus({ state: 'available', version: info.version }));
-    autoUpdater.on('update-not-available', ()     => sendStatus({ state: 'upToDate' }));
-    autoUpdater.on('download-progress',    (p)    => sendStatus({ state: 'downloading', percent: Math.round(p.percent) }));
-    autoUpdater.on('error',                (err)  => sendStatus({ state: 'error', message: err.message }));
+    autoUpdater.on('checking-for-update',  ()     => sendUpdateStatus({ state: 'checking' }));
+    autoUpdater.on('update-available',     (info) => sendUpdateStatus({ state: 'available', version: info.version, downloading: autoUpdater.autoDownload }));
+    autoUpdater.on('update-not-available', ()     => sendUpdateStatus({ state: 'upToDate' }));
+    autoUpdater.on('download-progress',    (p)    => sendUpdateStatus({ state: 'downloading', percent: Math.round(p.percent) }));
     autoUpdater.on('update-downloaded',    (info) => {
-      sendStatus({ state: 'ready', version: info.version });
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-ready', { version: info.version });
-      }
+      sendUpdateStatus({ state: 'ready', version: info.version });
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-ready', { version: info.version });
     });
-  } catch {}
+    autoUpdater.on('error', async (err) => {
+      // Installing failed (e.g. no permission): fall back to offering the download
+      const fallback = await manualUpdateCheck().catch(() => null);
+      if (!fallback?.available) sendUpdateStatus({ state: 'error', message: err.message });
+    });
+  } catch {
+    _updateMode = 'manual';
+  }
 }
 
-ipcMain.handle('update:install', () => {
-  if (_autoUpdater) _autoUpdater.quitAndInstall();
+async function manualUpdateCheck() {
+  sendUpdateStatus({ state: 'checking' });
+  const res = await updateCheck.checkForUpdate(app.getVersion());
+  if (res.available) {
+    sendUpdateStatus({ state: 'manual', version: res.latest.version, downloadUrl: res.latest.downloadUrl, pageUrl: res.latest.pageUrl, fileName: res.latest.fileName });
+  } else {
+    sendUpdateStatus({ state: 'upToDate' });
+  }
+  return res;
+}
+
+async function checkForUpdates() {
+  try {
+    if (_updateMode === 'auto' && _autoUpdater) {
+      await _autoUpdater.checkForUpdates();
+    } else {
+      await manualUpdateCheck();
+    }
+  } catch (err) {
+    sendUpdateStatus({ state: 'error', message: err.message });
+  }
+  return _updateStatus;
+}
+
+// The renderer sends its preferences once it has loaded; that starts the checks
+ipcMain.on('update:config', async (_, prefs = {}) => {
+  await _updaterReady;
+  _updatePrefs = { ..._updatePrefs, ...prefs };
+  if (_autoUpdater) _autoUpdater.autoDownload = !!_updatePrefs.auto;
+  if (!_updateTimer && app.isPackaged && process.env.MAILPLANE_E2E !== '1') {
+    checkForUpdates();
+    _updateTimer = setInterval(checkForUpdates, 6 * 60 * 60 * 1000);   // every 6 hours
+  }
 });
 
-ipcMain.handle('update:check', async () => {
-  if (!_autoUpdater) return { state: 'unavailable' };
-  try {
-    await _autoUpdater.checkForUpdates();
-    return { state: 'ok' };
-  } catch (err) {
-    return { state: 'error', message: err.message };
-  }
+ipcMain.handle('update:info', async () => ({
+  ...(await _updaterReady, {}), mode: _updateMode, version: app.getVersion(), status: _updateStatus, packaged: app.isPackaged }));
+ipcMain.handle('update:check', async () => { await _updaterReady; return checkForUpdates(); });
+ipcMain.handle('update:download', async () => {
+  if (_updateMode !== 'auto' || !_autoUpdater) return { success: false };
+  await _autoUpdater.downloadUpdate().catch(err => sendUpdateStatus({ state: 'error', message: err.message }));
+  return { success: true };
+});
+ipcMain.handle('update:install', () => {
+  if (_autoUpdater) _autoUpdater.quitAndInstall();
 });
 
 function buildAppMenu() {
@@ -960,8 +1018,8 @@ app.whenReady().then(() => {
     console.error('[Mailplane] CalDAV loadStoredAccounts failed:', err.message);
   }
   emailCache.pruneOldEntries(30);
-  // Check after window is ready so status events reach the renderer
-  if (_autoUpdater) _autoUpdater.checkForUpdatesAndNotify().catch(() => {});
+  // Update checks start once the renderer sends 'update:config'
+  _updaterReady = setupUpdater();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

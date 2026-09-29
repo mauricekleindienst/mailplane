@@ -70,6 +70,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = mplane.mail
     val accounts: StateFlow<List<Account>> = mplane.accounts.accounts
     val settings = mplane.settings
+    val updater = mplane.updater
 
     private val _activeId = MutableStateFlow(accounts.value.firstOrNull()?.id)
     val activeAccountId: StateFlow<String?> = _activeId
@@ -95,7 +96,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     val activeAccount: Account? get() = accounts.value.firstOrNull { it.id == _activeId.value } ?: accounts.value.firstOrNull()
 
-    init { reloadAll() }
+    init {
+        reloadAll()
+        viewModelScope.launch { updater.check() }   // at most once a day
+    }
+
+    fun checkForUpdate() = viewModelScope.launch { updater.check(force = true) }
+    fun installUpdate(release: app.mailplane.android.data.AppRelease) = viewModelScope.launch { updater.install(release) }
 
     fun reloadAll() {
         val acc = activeAccount ?: return
