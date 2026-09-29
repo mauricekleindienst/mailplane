@@ -352,6 +352,8 @@ function applyTheme(theme) {
     html.classList.remove('dark', 'light');
     html.classList.toggle('dark', _darkMQ.matches);
   }
+  // The HTML mail iframe bakes its colours in at render time — redraw it
+  if (S.selectedEmail) refreshDetailIfSelected(S.selectedEmail);
 }
 
 applyTheme(localStorage.getItem('mailplane-theme') || 'system');
@@ -2211,8 +2213,9 @@ function renderDetail(email, body) {
     const imgBlockCss = S.imagesBlocked ? 'img[data-src]{display:none!important;}' : '';
     const isDark = document.documentElement.classList.contains('dark');
     const iframeColors = isDark
-      ? { bg: '#1c1c1e', text: '#f5f5f7', link: '#0a84ff', bqBorder: '#3a3a3c', bqText: '#aeaeb2', preBg: '#2c2c2e', scheme: 'dark' }
-      : { bg: '#ffffff', text: '#1a1a1a', link: '#007aff', bqBorder: '#d0d0d5', bqText: '#6e6e73', preBg: '#f5f5f7', scheme: 'light' };
+      // Frost palette (theme.css) so mail bodies sit naturally in the reading pane
+      ? { bg: '#1e211f', text: '#e7eae8', link: '#c9e36a', bqBorder: '#363a37', bqText: '#9ba19d', preBg: '#272a28', scheme: 'dark' }
+      : { bg: '#ffffff', text: '#262a28', link: '#4f6b1d', bqBorder: '#d5dad6', bqText: '#6b716d', preBg: '#f1f3f2', scheme: 'light' };
     const htmlContent = `<!DOCTYPE html><html><head>
       <base target="_blank">
       <meta name="color-scheme" content="${iframeColors.scheme}">
@@ -2455,20 +2458,18 @@ function openCompose({
     }
   };
 
-  setTimeout(() => {
-    // Don't steal focus if the user already clicked/typed into the compose window
-    if (panel.contains(document.activeElement)) return;
-    if (!to) { document.getElementById('composeTo').focus(); return; }
-    if (!subject) { document.getElementById('composeSubject').focus(); return; }
-    // Reply / mailto with subject: put the caret at the top of the body
-    bodyEl.focus();
-    const range = document.createRange();
-    range.setStart(bodyEl.firstChild || bodyEl, 0);
-    range.collapse(true);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-  }, 60);
+  // Focus right away (the panel is already visible): a delayed focus let the
+  // first typed characters fall through to the list shortcuts (e.g. "s" = star).
+  if (!to) { document.getElementById('composeTo').focus(); return; }
+  if (!subject) { document.getElementById('composeSubject').focus(); return; }
+  // Reply / mailto with subject: put the caret at the top of the body
+  bodyEl.focus();
+  const range = document.createRange();
+  range.setStart(bodyEl.firstChild || bodyEl, 0);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function closeCompose(skipConfirm = false) {

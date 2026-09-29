@@ -1,177 +1,194 @@
 <div align="center">
-  <img src="assets/icon.svg" width="96" height="96" alt="Mailplane" />
+  <img src="assets/icon.png" width="112" height="112" alt="Mailplane" />
   <h1>Mailplane</h1>
-  <p>A native macOS email client — clean, fast, and provider-agnostic.</p>
+  <p><strong>Calm, fast email for every account you have.</strong><br/>
+  macOS · Windows · Linux · Android</p>
 
   <p>
-    <img src="https://img.shields.io/badge/macOS-12%2B-black?logo=apple&logoColor=white" alt="macOS 12+" />
-    <img src="https://img.shields.io/badge/Electron-30-47848F?logo=electron&logoColor=white" alt="Electron 30" />
-    <img src="https://img.shields.io/badge/Node-20%2B-339933?logo=nodedotjs&logoColor=white" alt="Node 20+" />
-    <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" />
+    <a href="https://github.com/mauricekleindienst/mailplane/releases/latest"><img src="https://img.shields.io/github/v/release/mauricekleindienst/mailplane?label=download&color=262a28" alt="Latest release" /></a>
+    <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-262a28?logo=apple&logoColor=white" alt="macOS" />
+    <img src="https://img.shields.io/badge/Windows-10%2B-262a28?logo=windows&logoColor=white" alt="Windows" />
+    <img src="https://img.shields.io/badge/Linux-AppImage%20%7C%20deb-262a28?logo=linux&logoColor=white" alt="Linux" />
+    <img src="https://img.shields.io/badge/Android-8.0%2B-262a28?logo=android&logoColor=white" alt="Android" />
   </p>
 </div>
 
+<p align="center">
+  <img src="docs/screenshots/inbox-light.png" alt="Mailplane inbox" width="100%" />
+</p>
+
+Mailplane is an open-source email client that stays out of your way: quiet grey-green surfaces,
+one accent colour, no tracking pixels, and keyboard shortcuts for everything. It works with Gmail,
+Outlook, iCloud, Yahoo, Fastmail and any IMAP/SMTP server — on the desktop and on Android.
+
+## Download
+
+| Platform | Get it |
+|---|---|
+| **macOS** (Apple Silicon / Intel) | `Mailplane-<version>-mac-arm64.dmg` / `-mac-x64.dmg` |
+| **Windows** 10+ | `Mailplane-<version>-windows-setup.exe` |
+| **Linux** | `Mailplane-<version>-linux-x64.AppImage` or `-linux-amd64.deb` |
+| **Android** 8.0+ | `Mailplane-<version>-android.apk` |
+
+All files are on the **[latest release](https://github.com/mauricekleindienst/mailplane/releases/latest)** page.
+The desktop apps update themselves.
+
+> The builds are not code-signed yet. On macOS, right-click the app → **Open** the first time;
+> on Windows, choose **More info → Run anyway**; on Android, allow installing from your browser.
+
 ---
 
-Mailplane is a three-panel email client for macOS built on Electron. It speaks IMAP/SMTP with any provider and JMAP with Fastmail. Passwords are stored in the macOS Keychain via Electron's `safeStorage`. The renderer has no direct Node access — a `contextBridge` preload enforces an explicit IPC channel allowlist.
+## Highlights
+
+### Set up in a minute
+Type your address and Mailplane finds the servers — built-in settings for the big providers,
+Mozilla's provider directory and your domain's autoconfig for everything else. If your provider
+needs an *app password* (Gmail, iCloud, Yahoo, …) you get the exact steps and a direct link.
+Incoming and outgoing mail are checked separately, so when something fails you know which one and why.
+
+<p align="center">
+  <img src="docs/screenshots/onboarding-welcome.png" alt="Welcome" width="49%" />
+  <img src="docs/screenshots/onboarding-password.png" alt="App password guidance" width="49%" />
+</p>
+
+### All your accounts, one calm inbox
+Switch accounts from the pills in the title bar, or open **All Mail** to see every inbox at once —
+each message tagged with a small dot in its account's colour.
+
+<img src="docs/screenshots/all-mail.png" alt="All Mail across accounts" width="100%" />
+
+### Light, dark, and your colour
+Automatic, light or dark theme, and seven accent colours (or any colour you like).
+Everything tinted — buttons, badges, the selection glow — follows your choice.
+
+<p align="center">
+  <img src="docs/screenshots/inbox-dark.png" alt="Dark mode" width="49%" />
+  <img src="docs/screenshots/settings-accent.png" alt="Accent colour settings" width="49%" />
+</p>
+
+### Write without friction
+Rich text or plain text, inline images, attachments, per-account signatures, **Undo Send**,
+**Send Later**, replies that thread correctly and never stack "Re: Re: AW:".
+
+<img src="docs/screenshots/compose.png" alt="Compose" width="100%" />
+
+### Your layout
+Drag the edges to resize the folder rail and message list, drag them away to hide them,
+or press `⌘\` / `⇧⌘\` — like Obsidian. Mailplane remembers it.
+
+<img src="docs/screenshots/focus-mode.png" alt="Sidebar hidden" width="100%" />
 
 ## Features
 
 **Mail**
-- Multiple accounts — Gmail, Outlook, Yahoo, iCloud, Fastmail (JMAP), or any IMAP/SMTP server
-- Rich-text compose with inline images, file attachments, Cc/Bcc, per-account HTML signatures
-- Thread grouping with expand/collapse
-- Server-side IMAP SEARCH across subject, sender, and body
-- Push notifications via IMAP IDLE
-- Undo Send — 8-second cancellable window before SMTP fires
-- Drag emails onto sidebar folders to move them
-- Multi-select + bulk delete / archive / move / mark read
-- Archive action distinct from delete (moves to the server's archive folder)
-- Right-click context menu on email rows
-- Swipe left to delete, swipe right to toggle read
+- IMAP/SMTP with any provider; Fastmail via JMAP on the desktop
+- Server-side search, thread grouping, stars, read/unread, archive, move by drag and drop
+- Delete moves to Trash (and only deletes for good from Trash)
+- Multi-select with bulk actions, right-click menu, trackpad swipes
+- Push notifications for new mail (IMAP IDLE on desktop, background sync on Android)
+- `mailto:` links open Mailplane
 
-**Accounts & folders**
-- Per-account color, icon, and signature
-- Create, rename, and delete IMAP folders
-- Automatic folder role detection (Inbox, Sent, Drafts, Trash, Spam, Archive)
+**Privacy & security**
+- Passwords live in the system keychain (macOS Keychain, Windows DPAPI, libsecret) and the Android Keystore
+- Remote images blocked until you ask; HTML mail rendered in a sandbox where scripts never run
+- Links always open in your browser; no analytics, no telemetry
 
-**Offline & performance**
-- SQLite cache (WAL mode, `better-sqlite3`) — serves emails instantly and keeps reading working offline
-- Background refresh: stale cache served immediately, live update pushed silently
+**Offline**
+- Local SQLite cache — mail you've seen stays readable without a connection
 
-**Calendar**
-- CalDAV account support — PROPFIND discovery, REPORT event fetch
-- Monthly grid view with event overlays
+**Extras (desktop)**
+- CalDAV calendars with a month view
+- Pin any web app next to your inbox
+- Unread badge on the dock icon, auto-update
 
-**App**
-- Dark / Light / System theme
-- Embedded apps sidebar — pin any web app alongside your inbox
-- `mailto:` protocol handler — links in the browser open Mailplane's compose window
-- Auto-update via electron-updater (GitHub Releases)
-- Dock badge for unread count
-- macOS Keychain password encryption (`safeStorage`)
+## Android
 
-## Requirements
+A native Kotlin / Jetpack Compose app with the same look: guided account setup, account pills,
+folder drawer, swipe right to archive and left to delete, pull to refresh, a sandboxed reader,
+reply / reply all / forward, accent colours and dark mode, and quiet new-mail notifications.
+Passwords are encrypted with a key that never leaves the phone's Keystore.
 
-- macOS 12 Monterey or later (Apple Silicon and Intel)
-- Node.js 20+ and npm (development only)
-
-## Quick start
-
-```bash
-# 1. Install dependencies (also rebuilds better-sqlite3 for Electron)
-npm install
-
-# 2. Launch
-npm start
-
-# Open DevTools at any time with Cmd+Option+I, or pass --inspect
-npm start -- --inspect
-```
-
-## Provider setup
-
-### Gmail
-
-Gmail blocks plain-password IMAP. You need an **App Password**:
-
-1. Enable 2-Step Verification at [myaccount.google.com → Security](https://myaccount.google.com/security)
-2. Go to **Security → 2-Step Verification → App passwords**
-3. Generate a 16-character password
-4. Enter that password (not your Google password) in Mailplane's Add Account dialog
-
-Mailplane auto-fills the correct IMAP/SMTP settings when it detects a `@gmail.com` address.
-
-### Other providers
-
-| Provider | Notes |
-|---|---|
-| Outlook / Hotmail / Live | Enable IMAP in Outlook settings; use your regular password or an app password if MFA is on |
-| Yahoo Mail | Requires an app password from the Yahoo account security page |
-| iCloud / Me.com | Requires an app-specific password from appleid.apple.com |
-| Fastmail | Connected via JMAP for faster sync; uses your regular Fastmail password |
-| Custom IMAP | Enter host, port (993 for TLS, 587 for STARTTLS), and credentials manually |
+The mail engine (`android/core`) is plain Kotlin and tested against a real in-memory IMAP/SMTP server.
 
 ## Keyboard shortcuts
 
-| Key | Action |
+| Keys | Action |
 |---|---|
 | `⌘N` | New message |
-| `⌘R` | Reply |
-| `⇧⌘R` | Reply All |
+| `⌘R` / `⇧⌘R` | Reply / Reply all |
 | `⌘F` | Forward |
-| `↓` / `j` | Next email |
-| `↑` / `k` | Previous email |
-| `⌫` | Delete selected email |
-| `U` | Toggle read / unread |
+| `↑` `↓` or `k` `j` | Previous / next message |
+| `E` | Archive |
+| `⌫` | Delete |
+| `U` | Mark read / unread |
 | `S` | Star / unstar |
-| `/` | Focus search |
-| `⌘,` | Open Settings |
-| `Esc` | Close compose / dismiss modal |
-| `⌘⇧R` | Refresh |
-| `⌘⇧A` | Archive |
+| `/` | Search |
+| `⌘\` / `⇧⌘\` | Show / hide sidebar / message list |
+| `⇧⌘N` | Refresh |
+| `⌘,` | Settings |
+| `Esc` | Close / go back |
 
-## Building for distribution
+On Windows and Linux use `Ctrl` instead of `⌘`. Single-key shortcuts never fire while you're typing.
+
+## Provider notes
+
+| Provider | What you need |
+|---|---|
+| Gmail | An [app password](https://myaccount.google.com/apppasswords) (requires 2-Step Verification) |
+| iCloud | An app-specific password from your [Apple Account](https://account.apple.com/account/manage) |
+| Yahoo / AOL | An app password from the account security page |
+| Outlook / Hotmail | Your password, or an app password with two-step verification. Work accounts that only allow browser sign-in (OAuth) aren't supported yet |
+| Fastmail | An [API token](https://app.fastmail.com/settings/security/tokens) (desktop connects via JMAP) |
+| GMX / WEB.DE | Turn on *POP3/IMAP access* in the web mail settings first |
+| Anything else | Just your address and password — Mailplane looks up the servers, or you can enter them yourself |
+
+Mailplane walks you through all of this during setup.
+
+## Development
 
 ```bash
-npm run build:mac   # produces DMG + ZIP for arm64 and x64 in dist/
+npm install          # also rebuilds better-sqlite3 for Electron
+npm start            # run the desktop app (⌥⌘I for DevTools)
+
+npm run lint
+npm test             # unit tests
+npm run test:e2e     # end-to-end + UI tests (Playwright driving the real app)
 ```
 
-### Code signing and notarization
+The E2E suite runs the real Electron app against an in-memory fake mailbox, so no mail account is needed.
 
-Set these environment variables before building:
+**Android** (Android Studio or the SDK command-line tools):
 
-| Variable | Purpose |
-|---|---|
-| `CSC_LINK` | Path or base64-encoded `.p12` Apple Developer ID certificate |
-| `CSC_KEY_PASSWORD` | Password for the certificate |
-| `APPLE_ID` | Apple ID for notarization |
-| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization |
-| `APPLE_TEAM_ID` | Apple Developer team ID |
+```bash
+cd android
+./gradlew :core:test         # mail engine tests — no Android SDK required
+./gradlew :app:assembleDebug # APK in app/build/outputs/apk/debug/
+```
 
-### Releasing
+**Icons**: `assets/icon.svg` is the source; `npm run build:icons` renders `icon.png` and `icon.icns`.
 
-1. Bump `version` in `package.json`
-2. Run `npm run build:mac`
-3. Create a GitHub Release tagged `v<version>` on `sarius/mailplane`
-4. Attach the files from `dist/` — electron-updater will serve them automatically
+## Releasing
 
-### Crash reporting
+```bash
+npm run release:patch   # or release:minor / release:major
+```
 
-Set `SENTRY_DSN` to your Sentry DSN to enable crash reporting in production builds. The variable is read at startup; dev builds skip it if it's unset.
+This bumps the version, tags `vX.Y.Z` and pushes. GitHub Actions then builds macOS, Windows,
+Linux and Android in parallel, uploads everything to a draft release and publishes it once all
+platforms succeeded. You can also start it from **Actions → Release → Run workflow**.
+
+Optional signing via repository secrets — macOS: `CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` · Windows: `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD` ·
+Android: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 
 ## Architecture
 
-| Layer | Technology |
-|---|---|
-| Shell | Electron 30 (Node 20, Chromium 124) |
-| IMAP | imapflow — promise-based, IDLE support, exponential-backoff reconnect |
-| SMTP | nodemailer with TLS 1.2+ enforcement |
-| JMAP | Custom client for Fastmail |
-| Storage | electron-store (accounts.json) + SQLite WAL cache (better-sqlite3) |
-| Passwords | `safeStorage` — macOS Keychain / DPAPI / libsecret |
-| Email parsing | mailparser (`simpleParser`) |
-| Calendar | CalDAV via raw HTTP — no external library |
-| Auto-update | electron-updater |
-| UI | Vanilla JS + CSS custom properties — no framework |
+| | Desktop | Android |
+|---|---|---|
+| UI | Electron 30, vanilla JS + CSS | Kotlin, Jetpack Compose, Material 3 |
+| Mail | imapflow, nodemailer, mailparser, JMAP client | javax.mail (android-mail) in `android/core` |
+| Storage | electron-store, SQLite cache (better-sqlite3) | SharedPreferences + Android Keystore |
+| Secrets | Electron `safeStorage` | AES-GCM key in the Android Keystore |
+| Updates | electron-updater (GitHub Releases) | new APK per release |
 
-**Security boundary:** `contextBridge` in `preload.js` exposes an `electronAPI` object with explicit `INVOKE_CHANNELS`, `SEND_CHANNELS`, and `RECEIVE_CHANNELS` allowlists. The renderer process has `nodeIntegration: false` and `contextIsolation: true` — it cannot call Node APIs directly.
-
-**State:** The renderer holds all UI state in a single plain `S` object. Mutations call a render function. There is no virtual DOM or reactivity system.
-
-**Connection pool:** `imap-manager.js` keeps one `ImapFlow` client per account ID. Each operation locks the mailbox, runs, then releases. A separate IDLE client per account handles push notifications with exponential-backoff reconnect (15 s → 15 min).
-
-## Contributing
-
-Pull requests are welcome. For significant changes, open an issue first to discuss the approach.
-
-```bash
-npm run lint        # ESLint
-npm run lint:fix    # ESLint with auto-fix
-npm run format      # Prettier
-npm test            # Node built-in test runner
-```
-
-## License
-
-MIT © 2026 Mailplane
+The desktop renderer has no Node access — a `contextBridge` preload exposes an explicit allowlist of IPC channels.

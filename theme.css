@@ -507,7 +507,7 @@ body {
 .detail-action-btn:hover, :root.dark .detail-action-btn:hover { background: var(--tile-active); color: var(--text-primary); }
 .detail-action-btn.primary, :root.dark .detail-action-btn.primary { background: var(--lime); color: var(--lime-ink); }
 .detail-action-btn.primary:hover { background: var(--lime-deep); color: var(--lime-ink); }
-.detail-action-icon { width: 32px; height: 32px; border-radius: 10px; padding: 0; }
+.detail-action-icon, :root.dark .detail-action-icon { width: 32px; height: 32px; border-radius: 10px; padding: 0; justify-content: center; }
 .detail-action-btn.flagged-active, :root.dark .detail-action-btn.flagged-active { background: var(--lime) !important; color: var(--lime-ink) !important; }
 .detail-action-btn.delete-btn:hover, :root.dark .detail-action-btn.delete-btn:hover { background: var(--danger) !important; color: #fff !important; }
 

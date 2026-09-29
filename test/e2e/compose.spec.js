@@ -200,3 +200,14 @@ test('signature is inserted above the quoted text and follows the From account',
   await page.selectOption('#composeFrom', 'acc-b');
   await expect(page.locator('#composeBody .compose-signature')).toHaveText('Bob Sig');
 });
+
+test('typing right after clicking Reply lands in the message, not in shortcuts', async () => {
+  ctx = await launchApp();
+  const { page, fake } = ctx;
+  await emailItem(page, 'Lunch?').click();
+  await expect(page.locator('.detail-subject')).toHaveText('Lunch?');
+  await page.locator('.detail-action-btn', { hasText: 'Reply' }).first().click();
+  await page.keyboard.type('Sure, see you');
+  await expect(page.locator('#composeBody')).toContainText('Sure, see you');
+  expect(await fake(s => s.mailboxes['acc-a'].INBOX.find(m => m.subject === 'Lunch?').flagged)).toBe(false);
+});

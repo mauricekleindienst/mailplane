@@ -380,3 +380,21 @@ test('settings only offer options that work: preview lines hides snippets', asyn
     }
   }
 });
+
+test('switching theme redraws an open HTML mail and keeps icon buttons intact', async () => {
+  const boxes = defaultMailboxes();
+  boxes['acc-a'].INBOX.push(msg({ subject: 'Styled', minutesAgo: 1, html: '<p id="p">Hello</p>' }));
+  ctx = await launchApp({ mailboxes: boxes });
+  const { page } = ctx;
+  await emailItem(page, 'Styled').click();
+  const frameBg = () => page.frameLocator('iframe.email-iframe').locator('body').evaluate(b => getComputedStyle(b).backgroundColor);
+  await expect.poll(frameBg).toBe('rgb(255, 255, 255)');
+  await page.locator('#settingsBtn').click();
+  await page.locator('.settings-nav-item[data-panel="appearance"]').click();
+  await page.locator('.theme-option-btn[data-theme="dark"]').click();
+  await page.keyboard.press('Escape');
+  await expect.poll(frameBg).toBe('rgb(30, 33, 31)');
+  // Icon-only toolbar buttons keep their icon size in dark mode
+  const svg = await page.locator('.detail-action-icon[title="Archive"] svg').boundingBox();
+  expect(svg.width).toBeGreaterThanOrEqual(12);
+});

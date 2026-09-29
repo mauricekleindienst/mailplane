@@ -13,3 +13,4 @@ yarn-error.log*
 *.key
 test-results/
 playwright-report/
+.claude/worktrees/

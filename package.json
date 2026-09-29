@@ -1,7 +1,7 @@
 {
   "name": "mailplane",
   "productName": "Mailplane",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A calm, fast email client for macOS, Windows, Linux and Android",
   "author": {
     "name": "Mailplane",
@@ -30,7 +30,8 @@
     "release:major": "npm version major && git push --follow-tags",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
+    "build:linux": "electron-builder --linux",
+    "screenshots": "playwright test --config playwright.config.js scripts/readme-screenshots.spec.js"
   },
   "dependencies": {
     "@sentry/electron": "^7.13.0",
