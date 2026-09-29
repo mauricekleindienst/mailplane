@@ -34,6 +34,8 @@ class MailRepository(private val accounts: AccountRepository) {
         io { client(account).fetchMessages(folder, limit, offset) }
     suspend fun search(account: Account, folder: String, query: String): List<MessageSummary> =
         io { client(account).search(folder, query) }
+    suspend fun starred(account: Account): List<MessageSummary> = io { client(account).flagged() }
+    suspend fun quota(account: Account): app.mailplane.core.StorageQuota? = io { client(account).quota() }
     suspend fun body(account: Account, m: MessageSummary): MessageBody = io { client(account).fetchBody(m.folder, m.uid) }
     suspend fun attachment(account: Account, m: MessageSummary, index: Int): ByteArray =
         io { client(account).fetchAttachment(m.folder, m.uid, index) }

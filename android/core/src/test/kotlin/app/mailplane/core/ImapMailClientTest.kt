@@ -180,6 +180,30 @@ class ImapMailClientTest {
         assertEquals(listOf("Lunch?"), client.search("INBOX", "dave@friend.test").map { it.subject })
     }
 
+    @Test fun `starred collects flagged mail from all folders except trash`() {
+        deliver("Keep me", minutesAgo = 5)
+        deliver("Also me", minutesAgo = 1)
+        deliver("Deleted one")
+        val inbox = client.fetchMessages("INBOX").messages
+        client.setFlagged("INBOX", inbox.first { it.subject == "Keep me" }.uid, true)
+        val also = inbox.first { it.subject == "Also me" }
+        client.setFlagged("INBOX", also.uid, true)
+        client.move("INBOX", also.uid, "Projects")
+        val deleted = inbox.first { it.subject == "Deleted one" }
+        client.setFlagged("INBOX", deleted.uid, true)
+        client.delete("INBOX", deleted.uid)
+
+        val starred = client.flagged()
+        assertEquals(setOf("Also me", "Keep me"), starred.map { it.subject }.toSet())
+        assertEquals(setOf("INBOX", "Projects"), starred.map { it.folder }.toSet())
+        assertTrue(starred.all { it.flagged })
+    }
+
+    @Test fun `quota is null or a sane value`() {
+        val q = client.quota()
+        if (q != null) assertTrue(q.limitKb > 0 && q.fraction in 0f..1f)
+    }
+
     @Test fun `latest uid grows with new mail`() {
         assertEquals(0L, client.latestUid("INBOX"))
         deliver("First")

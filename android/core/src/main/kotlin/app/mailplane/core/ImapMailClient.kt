@@ -11,6 +11,7 @@ import javax.mail.MessagingException
 import javax.mail.UIDFolder
 import javax.mail.internet.InternetAddress
 import javax.mail.search.BodyTerm
+import javax.mail.search.FlagTerm
 import javax.mail.search.FromStringTerm
 import javax.mail.search.OrTerm
 import javax.mail.search.SubjectTerm
@@ -145,6 +146,43 @@ class ImapMailClient(
             })
             hits.reversed().map { summarize(folder, it) }
         }
+
+    /**
+     * Starred (flagged) mail from every folder except Trash, Spam and Drafts,
+     * newest first. Powers the "Starred" smart folder.
+     */
+    @Synchronized
+    fun flagged(limit: Int = 200): List<MessageSummary> {
+        val folders = (folderCache ?: listFolders(withUnreadCounts = false))
+            .filter { it.role != FolderRole.TRASH && it.role != FolderRole.SPAM && it.role != FolderRole.DRAFTS }
+            .take(25)
+        val out = mutableListOf<MessageSummary>()
+        for (f in folders) {
+            runCatching {
+                withFolder(f.path, Folder.READ_ONLY) { folder ->
+                    val hits = folder.search(FlagTerm(Flags(Flags.Flag.FLAGGED), true)).takeLast(limit).toTypedArray()
+                    folder.fetch(hits, FetchProfile().apply {
+                        add(FetchProfile.Item.ENVELOPE)
+                        add(FetchProfile.Item.FLAGS)
+                        add(FetchProfile.Item.CONTENT_INFO)
+                        add(UIDFolder.FetchProfileItem.UID)
+                    })
+                    hits.forEach { out += summarize(folder, it) }
+                }
+            }
+        }
+        return out.sortedByDescending { it.date }.take(limit)
+    }
+
+    /** Mailbox storage from IMAP QUOTA, or null when the server doesn't report it. */
+    @Synchronized
+    fun quota(): StorageQuota? = runCatching {
+        val s = connect()
+        if (!s.hasCapability("QUOTA")) return@runCatching null
+        s.getQuota("INBOX").flatMap { it.resources?.toList().orEmpty() }
+            .firstOrNull { it.name.equals("STORAGE", ignoreCase = true) && it.limit > 0 }
+            ?.let { StorageQuota(usedKb = it.usage, limitKb = it.limit) }
+    }.getOrNull()
 
     /** Highest UID in the folder — used by background sync to detect new mail. */
     @Synchronized

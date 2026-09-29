@@ -1,4 +1,4 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 
 package app.mailplane.android.ui.inbox
 
@@ -7,40 +7,44 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Drafts
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Report
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarOutline
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.outlined.TaskAlt
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -55,6 +59,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -77,20 +82,59 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import app.mailplane.android.data.AppRelease
+import app.mailplane.android.data.UpdateState
+import app.mailplane.android.ui.ListState
 import app.mailplane.android.ui.MailViewModel
-import app.mailplane.android.ui.components.Avatar
+import app.mailplane.android.ui.STARRED
+import app.mailplane.android.ui.components.AccountChip
 import app.mailplane.android.ui.components.BrandMark
-import app.mailplane.android.ui.components.Pill
-import app.mailplane.android.ui.components.accentWash
+import app.mailplane.android.ui.components.DayHeader
+import app.mailplane.android.ui.components.EmptyMessage
+import app.mailplane.android.ui.components.InfoCard
+import app.mailplane.android.ui.components.SenderAvatar
+import app.mailplane.android.ui.components.StorageBar
 import app.mailplane.android.ui.theme.Frost
+import app.mailplane.core.Account
+import app.mailplane.core.Days
 import app.mailplane.core.FolderRole
 import app.mailplane.core.MailFolder
 import app.mailplane.core.MessageSummary
+import app.mailplane.core.StorageQuota
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
+
+/** Everything the inbox shows — built from the ViewModel, or from sample data in screenshot tests. */
+data class InboxUi(
+    val accounts: List<Account>,
+    val activeId: String?,
+    val unread: Map<String, Int>,
+    val list: ListState,
+    val compact: Boolean = false,
+    val quota: StorageQuota? = null,
+    val update: AppRelease? = null,
+    val recentSearches: List<String> = emptyList(),
+)
+
+class InboxActions(
+    val onOpen: (MessageSummary) -> Unit = {},
+    val onCompose: () -> Unit = {},
+    val onAccount: (String) -> Unit = {},
+    val onFolder: (String) -> Unit = {},
+    val onRefresh: () -> Unit = {},
+    val onLoadMore: () -> Unit = {},
+    val onSearch: (String) -> Unit = {},
+    val onArchive: (MessageSummary) -> Unit = {},
+    val onDelete: (MessageSummary) -> Unit = {},
+    val onStar: (MessageSummary) -> Unit = {},
+    val onAddAccount: () -> Unit = {},
+    val onSettings: () -> Unit = {},
+    val onUpdate: (AppRelease) -> Unit = {},
+    val onDismissUpdate: (AppRelease) -> Unit = {},
+)
 
 @Composable
 fun InboxScreen(
@@ -101,24 +145,50 @@ fun InboxScreen(
     onAddAccount: () -> Unit,
     onSettings: () -> Unit,
 ) {
-    val c = Frost.colors
     val accounts by vm.accounts.collectAsState()
     val activeId by vm.activeAccountId.collectAsState()
     val st by vm.list.collectAsState()
     val unread by vm.unread.collectAsState()
-    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val compact by vm.settings.compact.collectAsState()
+    val quota by vm.quota.collectAsState()
+    val recent by vm.settings.recentSearches.collectAsState()
+    val update by vm.updater.state.collectAsState()
+    var dismissed by remember { mutableStateOf<String?>(null) }
+    val release = (update as? UpdateState.Available)?.release
+        ?.takeIf { it.version != dismissed && !vm.updater.dismissed(it) }
+
+    InboxContent(
+        ui = InboxUi(accounts, activeId, unread, st, compact, quota, release, recent),
+        actions = InboxActions(
+            onOpen = onOpen, onCompose = onCompose, onAccount = vm::switchAccount, onFolder = vm::openFolder,
+            onRefresh = vm::refresh, onLoadMore = { vm.loadMessages() }, onSearch = vm::search,
+            onArchive = vm::archive, onDelete = vm::delete, onStar = vm::toggleFlag,
+            onAddAccount = onAddAccount, onSettings = onSettings,
+            onUpdate = { vm.installUpdate(it) },
+            onDismissUpdate = { vm.updater.dismiss(it); dismissed = it.version },
+        ),
+        snackbar = snackbar,
+    )
+}
+
+@Composable
+fun InboxContent(ui: InboxUi, actions: InboxActions, snackbar: SnackbarHostState = remember { SnackbarHostState() },
+                 initialSearchOpen: Boolean = false, initialDrawerOpen: Boolean = false) {
+    val c = Frost.colors
+    val st = ui.list
+    val drawer = rememberDrawerState(if (initialDrawerOpen) DrawerValue.Open else DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var searchOpen by remember { mutableStateOf(false) }
+    var searchOpen by remember { mutableStateOf(initialSearchOpen || st.query.isNotEmpty()) }
 
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
             ModalDrawerSheet(drawerContainerColor = c.surface, drawerShape = RoundedCornerShape(topEnd = 24.dp, bottomEnd = 24.dp)) {
                 FolderDrawer(
-                    folders = st.folders, current = st.folderPath,
-                    onFolder = { vm.openFolder(it); scope.launch { drawer.close() } },
-                    onAddAccount = { scope.launch { drawer.close() }; onAddAccount() },
-                    onSettings = { scope.launch { drawer.close() }; onSettings() },
+                    folders = st.folders, current = st.folderPath, quota = ui.quota,
+                    onFolder = { actions.onFolder(it); scope.launch { drawer.close() } },
+                    onAddAccount = { scope.launch { drawer.close() }; actions.onAddAccount() },
+                    onSettings = { scope.launch { drawer.close() }; actions.onSettings() },
                 )
             }
         },
@@ -128,58 +198,78 @@ fun InboxScreen(
             snackbarHost = { SnackbarHost(snackbar) },
             floatingActionButton = {
                 ExtendedFloatingActionButton(
-                    onClick = onCompose, containerColor = c.accent, contentColor = c.onAccent,
+                    onClick = actions.onCompose, containerColor = c.accent, contentColor = c.onAccent,
                     shape = RoundedCornerShape(16.dp),
                     icon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                     text = { Text("New message") },
                 )
             },
         ) { padding ->
-            Column(Modifier.fillMaxSize().padding(padding).background(accentWash())) {
-                // Header: menu · folder title · search
-                Row(Modifier.fillMaxWidth().statusBarsPadding().padding(start = 4.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Scaffold's padding already includes the status bar
+            Column(Modifier.fillMaxSize().padding(top = padding.calculateTopPadding())) {
+                Row(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Outlined.Menu, "Folders", tint = c.ink) }
                     if (searchOpen) {
                         TextField(
-                            value = st.query, onValueChange = vm::search, singleLine = true,
-                            placeholder = { Text("Search ${st.folder?.name ?: ""}") },
-                            modifier = Modifier.weight(1f).padding(end = 4.dp), shape = RoundedCornerShape(14.dp),
+                            value = st.query, onValueChange = actions.onSearch, singleLine = true,
+                            placeholder = { Text("Search ${if (st.isStarred) "Inbox" else st.title}") },
+                            leadingIcon = { Icon(Icons.Outlined.Search, null, tint = c.inkTertiary) },
+                            modifier = Modifier.weight(1f), shape = RoundedCornerShape(14.dp),
                             colors = TextFieldDefaults.colors(focusedContainerColor = c.tile, unfocusedContainerColor = c.tile,
                                 focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, cursorColor = c.ink),
                         )
-                        IconButton(onClick = { searchOpen = false; vm.search("") }) { Icon(Icons.Outlined.Close, "Close search", tint = c.ink) }
+                        IconButton(onClick = { searchOpen = false; actions.onSearch("") }) { Icon(Icons.Outlined.Close, "Close search", tint = c.ink) }
                     } else {
                         Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                            Text(st.folder?.name ?: "Inbox", style = MaterialTheme.typography.headlineSmall, color = c.ink)
-                            val u = st.folder?.let { if (it.role == FolderRole.INBOX) unread[activeId] ?: it.unread else it.unread } ?: 0
+                            Text(st.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, color = c.ink)
+                            val u = if (st.isStarred) 0 else st.folder?.let {
+                                if (it.role == FolderRole.INBOX) ui.unread[ui.activeId] ?: it.unread else it.unread
+                            } ?: 0
                             if (u > 0) Text("$u unread", style = MaterialTheme.typography.bodySmall, color = c.inkSecondary)
                         }
                         IconButton(onClick = { searchOpen = true }) { Icon(Icons.Outlined.Search, "Search", tint = c.ink) }
                     }
                 }
-                // Account pills (like the desktop title bar)
-                if (accounts.size > 1) {
-                    LazyRow(
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(accounts, key = { it.id }) { acc ->
-                            Pill(acc.name.ifBlank { acc.email }, selected = acc.id == activeId, dotHex = acc.color,
-                                badge = unread[acc.id] ?: 0) { vm.switchAccount(acc.id) }
+                if (searchOpen && st.query.isEmpty() && ui.recentSearches.isNotEmpty()) {
+                    FlowRow(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ui.recentSearches.forEach { q ->
+                            Row(Modifier.clip(RoundedCornerShape(10.dp)).background(c.tile).clickable { actions.onSearch(q) }
+                                .padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Icon(Icons.Outlined.History, null, tint = c.inkTertiary, modifier = Modifier.size(14.dp))
+                                Text(q, style = MaterialTheme.typography.labelMedium, color = c.ink)
+                            }
                         }
                     }
                 }
-                PullToRefreshBox(isRefreshing = st.refreshing, onRefresh = vm::refresh, modifier = Modifier.fillMaxSize()) {
-                    when {
-                        st.loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = c.inkSecondary, strokeWidth = 2.dp)
+                if (ui.accounts.size > 1 && !searchOpen) {
+                    LazyRow(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(ui.accounts, key = { it.id }) { acc ->
+                            AccountChip(acc.name.ifBlank { acc.email.substringBefore('@') }, acc.color, active = acc.id == ui.activeId,
+                                badge = ui.unread[acc.id] ?: 0) { actions.onAccount(acc.id) }
                         }
-                        st.error != null && st.messages.isEmpty() -> EmptyState("Couldn't load mail", st.error!!, "Try again") { vm.refresh() }
-                        st.messages.isEmpty() -> EmptyState(
-                            if (st.searching) "No results" else "All caught up",
-                            if (st.searching) "Nothing matches “${st.query}”" else "Nothing in ${st.folder?.name ?: "this folder"}",
-                        )
-                        else -> MessageList(vm, st.messages, st.canLoadMore, st.loadingMore, onOpen)
+                    }
+                }
+                // The list sits on one frosted sheet, like the desktop's list panel
+                Box(Modifier.fillMaxSize().padding(top = 4.dp).clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)).background(c.surface)) {
+                    PullToRefreshBox(isRefreshing = st.refreshing, onRefresh = actions.onRefresh, modifier = Modifier.fillMaxSize()) {
+                        when {
+                            st.loading -> SkeletonList()
+                            st.error != null && st.messages.isEmpty() -> ScrollableEmpty {
+                                EmptyMessage(Icons.Outlined.CloudOff, "Couldn’t load mail", st.error.orEmpty(), "Try again", actions.onRefresh)
+                            }
+                            st.messages.isEmpty() -> ScrollableEmpty {
+                                when {
+                                    st.searching -> EmptyMessage(Icons.Outlined.SearchOff, "No results", "Nothing matches “${st.query}” in ${st.title}.")
+                                    st.isStarred -> EmptyMessage(Icons.Outlined.StarOutline, "Nothing starred", "Star a message to keep it here, whatever folder it’s in.")
+                                    st.folder?.role == FolderRole.INBOX -> EmptyMessage(Icons.Outlined.TaskAlt, "All caught up",
+                                        "Nothing left in your inbox. New mail shows up here.", "New message", actions.onCompose)
+                                    else -> EmptyMessage(Icons.Outlined.Inbox, "No messages", "${st.title} is empty.")
+                                }
+                            }
+                            else -> MessageList(ui, actions)
+                        }
                     }
                 }
             }
@@ -188,35 +278,77 @@ fun InboxScreen(
 }
 
 @Composable
-private fun MessageList(
-    vm: MailViewModel,
-    messages: List<MessageSummary>,
-    canLoadMore: Boolean,
-    loadingMore: Boolean,
-    onOpen: (MessageSummary) -> Unit,
-) {
+private fun ScrollableEmpty(content: @Composable () -> Unit) {
+    // Scrollable so pull-to-refresh still works on an empty list
+    LazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, contentPadding = PaddingValues(top = 96.dp)) {
+        item { content() }
+    }
+}
+
+@Composable
+private fun SkeletonList() {
+    val c = Frost.colors
+    Column(Modifier.fillMaxSize().padding(top = 18.dp)) {
+        repeat(7) { i ->
+            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Box(Modifier.size(40.dp).clip(RoundedCornerShape(20.dp)).background(c.tile))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.fillMaxWidth(if (i % 2 == 0) 0.45f else 0.6f).height(10.dp).clip(RoundedCornerShape(5.dp)).background(c.tile))
+                    Box(Modifier.fillMaxWidth(if (i % 3 == 0) 0.8f else 0.7f).height(10.dp).clip(RoundedCornerShape(5.dp)).background(c.tile))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageList(ui: InboxUi, actions: InboxActions) {
+    val st = ui.list
+    val messages = st.messages
     val listState = rememberLazyListState()
-    val nearEnd by remember { derivedStateOf { (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= messages.size - 5 } }
-    LaunchedEffect(nearEnd, messages.size) { if (nearEnd && canLoadMore) vm.loadMessages() }
+    val nearEnd by remember { derivedStateOf { (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= listState.layoutInfo.totalItemsCount - 5 } }
+    LaunchedEffect(nearEnd, messages.size) { if (nearEnd && st.canLoadMore) actions.onLoadMore() }
+    val folderNames = remember(st.folders) { st.folders.associate { it.path to it.name } }
 
-    LazyColumn(state = listState, contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 96.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-        item(key = "update") { UpdateCard(vm) }
-        items(messages, key = { "${it.folder}:${it.uid}" }) { m ->
-            SwipeRow(m, onArchive = { vm.archive(m) }, onDelete = { vm.delete(m) }) {
-                MessageRow(m, onClick = { onOpen(m) }, onStar = { vm.toggleFlag(m) })
+    LazyColumn(state = listState, contentPadding = PaddingValues(top = 6.dp, bottom = 104.dp), modifier = Modifier.fillMaxSize()) {
+        ui.update?.let { r ->
+            item(key = "update") {
+                InfoCard(
+                    title = "Mailplane ${r.version} is available",
+                    body = "Download and install it straight from GitHub.",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { actions.onUpdate(r) }) { Text("Update", color = Frost.colors.ink, style = MaterialTheme.typography.labelLarge) }
+                        TextButton(onClick = { actions.onDismissUpdate(r) }) { Text("Later", color = Frost.colors.inkSecondary, style = MaterialTheme.typography.labelLarge) }
+                    }
+                }
             }
         }
-        if (loadingMore) item {
+        var lastDay: String? = null
+        messages.forEach { m ->
+            val day = if (st.searching) null else Days.label(m.date)
+            if (day != null && day != lastDay) {
+                lastDay = day
+                item(key = "day:$day:${m.folder}:${m.uid}") { DayHeader(day) }
+            }
+            item(key = "${m.folder}:${m.uid}") {
+                SwipeRow(onArchive = { actions.onArchive(m) }, onDelete = { actions.onDelete(m) }) {
+                    MessageRow(m, compact = ui.compact, folderLabel = if (st.isStarred) folderNames[m.folder] ?: m.folder else null,
+                        onClick = { actions.onOpen(m) }, onStar = { actions.onStar(m) })
+                }
+            }
+        }
+        if (st.loadingMore) item(key = "more") {
             Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Frost.colors.inkSecondary)
+                androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Frost.colors.inkSecondary)
             }
         }
     }
 }
 
 @Composable
-private fun SwipeRow(m: MessageSummary, onArchive: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
+private fun SwipeRow(onArchive: () -> Unit, onDelete: () -> Unit, content: @Composable () -> Unit) {
     val c = Frost.colors
     val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
         when (v) {
@@ -230,39 +362,44 @@ private fun SwipeRow(m: MessageSummary, onArchive: () -> Unit, onDelete: () -> U
         backgroundContent = {
             val toArchive = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
             Row(
-                Modifier.fillMaxSize().clip(RoundedCornerShape(16.dp)).background(if (toArchive) c.accent else c.danger).padding(horizontal = 22.dp),
+                Modifier.fillMaxSize().background(if (toArchive) c.accent else c.danger).padding(horizontal = 24.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = if (toArchive) Arrangement.Start else Arrangement.End,
             ) {
-                Icon(if (toArchive) Icons.Outlined.Archive else Icons.Outlined.Delete, contentDescription = null,
+                Icon(if (toArchive) Icons.Outlined.Archive else Icons.Outlined.Delete, contentDescription = if (toArchive) "Archive" else "Delete",
                     tint = if (toArchive) c.onAccent else Color.White)
             }
         },
-    ) { content() }
+    ) { Box(Modifier.background(c.surface)) { content() } }
 }
 
 @Composable
-private fun MessageRow(m: MessageSummary, onClick: () -> Unit, onStar: () -> Unit) {
+private fun MessageRow(m: MessageSummary, compact: Boolean, folderLabel: String?, onClick: () -> Unit, onStar: () -> Unit) {
     val c = Frost.colors
+    val unread = !m.seen
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface).clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 6.dp, top = 12.dp, bottom = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick)
+            .padding(start = 20.dp, end = 8.dp, top = if (compact) 9.dp else 12.dp, bottom = if (compact) 9.dp else 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = if (compact) Alignment.CenterVertically else Alignment.Top,
     ) {
-        Avatar(m.fromName, 40.dp)
-        Column(Modifier.weight(1f)) {
+        if (!compact) SenderAvatar(m.fromName, m.fromEmail, 40.dp)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(m.fromName, style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (m.seen) FontWeight.Normal else FontWeight.SemiBold,
-                    color = if (m.seen) c.inkSecondary else c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Text(shortDate(m), style = MaterialTheme.typography.labelSmall, color = if (m.seen) c.inkTertiary else c.inkSecondary)
+                    fontWeight = if (unread) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (unread) c.ink else c.inkSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(listTime(m), style = MaterialTheme.typography.labelSmall, color = if (unread) c.inkSecondary else c.inkTertiary)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (!m.seen) Box(Modifier.size(7.dp).clip(CircleShape).background(c.accentDeep))
                 Text(m.subject, style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = if (m.seen) FontWeight.Normal else FontWeight.Medium,
-                    color = if (m.seen) c.inkSecondary else c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                if (m.hasAttachments) Icon(Icons.Outlined.AttachFile, "Has attachment", tint = c.inkTertiary, modifier = Modifier.size(14.dp))
+                    fontWeight = if (unread) FontWeight.Medium else FontWeight.Normal,
+                    color = if (unread) c.ink else c.inkSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            }
+            if (!compact && (m.hasAttachments || folderLabel != null)) {
+                Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (folderLabel != null) Tag(Icons.Outlined.Folder, folderLabel)
+                    if (m.hasAttachments) Tag(Icons.Outlined.AttachFile, "Attachment")
+                }
             }
         }
         IconButton(onClick = onStar, modifier = Modifier.size(36.dp)) {
@@ -273,24 +410,12 @@ private fun MessageRow(m: MessageSummary, onClick: () -> Unit, onStar: () -> Uni
 }
 
 @Composable
-private fun EmptyState(title: String, body: String, action: String? = null, onAction: () -> Unit = {}) {
+private fun Tag(icon: ImageVector, text: String) {
     val c = Frost.colors
-    // Scrollable so pull-to-refresh still works on an empty list
-    LazyColumn(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, contentPadding = PaddingValues(top = 120.dp)) {
-        item {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(32.dp)) {
-                Box(Modifier.size(56.dp).clip(RoundedCornerShape(16.dp)).background(c.tile), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Outlined.Inbox, null, tint = c.inkSecondary)
-                }
-                Text(title, style = MaterialTheme.typography.titleLarge, color = c.ink)
-                Text(body, style = MaterialTheme.typography.bodyMedium, color = c.inkTertiary)
-                if (action != null) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(action, color = c.ink, style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.tile).clickable(onClick = onAction).padding(horizontal = 16.dp, vertical = 10.dp))
-                }
-            }
-        }
+    Row(Modifier.clip(RoundedCornerShape(6.dp)).background(c.tile).padding(horizontal = 7.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Icon(icon, null, tint = c.inkTertiary, modifier = Modifier.size(11.dp))
+        Text(text, style = MaterialTheme.typography.labelSmall, color = c.inkSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -298,50 +423,71 @@ private fun EmptyState(title: String, body: String, action: String? = null, onAc
 private fun FolderDrawer(
     folders: List<MailFolder>,
     current: String,
+    quota: StorageQuota?,
     onFolder: (String) -> Unit,
     onAddAccount: () -> Unit,
     onSettings: () -> Unit,
 ) {
     val c = Frost.colors
-    LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        item {
-            Row(Modifier.padding(start = 8.dp, top = 12.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                BrandMark(32.dp)
-                Text("Mailplane", style = MaterialTheme.typography.titleLarge, color = c.ink)
+    val system = folders.filter { it.role != null }
+    val custom = folders.filter { it.role == null }
+    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            item {
+                Row(Modifier.padding(start = 8.dp, top = 12.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BrandMark(30.dp)
+                    Text("Mailplane", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = c.ink)
+                }
+            }
+            system.forEachIndexed { i, f ->
+                item(key = f.path) {
+                    DrawerRow(roleIcon(f.role), f.name, selected = f.path == current,
+                        badge = if (f.role == FolderRole.INBOX) f.unread else 0, accentBadge = true) { onFolder(f.path) }
+                }
+                // Starred sits right under the inbox
+                if (i == 0) item(key = STARRED) {
+                    DrawerRow(Icons.Outlined.Star, "Starred", selected = current == STARRED) { onFolder(STARRED) }
+                }
+            }
+            if (custom.isNotEmpty()) {
+                item { Text("Folders", style = MaterialTheme.typography.labelMedium, color = c.inkTertiary, modifier = Modifier.padding(start = 12.dp, top = 16.dp, bottom = 6.dp)) }
+                items(custom, key = { it.path }) { f ->
+                    DrawerRow(Icons.Outlined.Folder, f.name, selected = f.path == current, badge = f.unread) { onFolder(f.path) }
+                }
             }
         }
-        items(folders, key = { it.path }) { f ->
-            DrawerRow(roleIcon(f.role), f.name, selected = f.path == current, badge = if (f.role == FolderRole.INBOX || f.role == null) f.unread else 0) { onFolder(f.path) }
+        Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            if (quota != null) StorageBar(quota, Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp))
+            DrawerRow(Icons.Outlined.Add, "Add account", selected = false, onClick = onAddAccount)
+            DrawerRow(Icons.Outlined.Settings, "Settings", selected = false, onClick = onSettings)
         }
-        item { Spacer(Modifier.height(12.dp)) }
-        item { DrawerRow(Icons.Outlined.Add, "Add account", selected = false, onClick = onAddAccount) }
-        item { DrawerRow(Icons.Outlined.Settings, "Settings", selected = false, onClick = onSettings) }
     }
 }
 
 @Composable
-private fun DrawerRow(icon: ImageVector, label: String, selected: Boolean, badge: Int = 0, onClick: () -> Unit) {
+private fun DrawerRow(icon: ImageVector, label: String, selected: Boolean, badge: Int = 0, accentBadge: Boolean = false, onClick: () -> Unit) {
     val c = Frost.colors
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(if (selected) c.raised else Color.Transparent)
-            .clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp)).background(if (selected) c.raised else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Box(Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(if (selected) c.tileActive else c.tile), contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = null, tint = if (selected) c.ink else c.inkSecondary, modifier = Modifier.size(18.dp))
-        }
+        Icon(icon, contentDescription = null, tint = if (selected) c.ink else c.inkTertiary, modifier = Modifier.size(20.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium, color = if (selected) c.ink else c.inkSecondary,
             fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal, modifier = Modifier.weight(1f))
-        if (badge > 0) Text(badge.toString(), style = MaterialTheme.typography.labelMedium, color = c.onAccent,
-            modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(c.accent).padding(horizontal = 8.dp, vertical = 2.dp))
-        Spacer(Modifier.width(4.dp))
+        if (badge > 0) {
+            if (accentBadge) Text(badge.toString(), style = MaterialTheme.typography.labelMedium, color = c.onAccent,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(c.accent).padding(horizontal = 8.dp, vertical = 2.dp))
+            else Text(badge.toString(), style = MaterialTheme.typography.labelMedium, color = c.inkSecondary)
+        }
+        Spacer(Modifier.width(2.dp))
     }
 }
 
 private fun roleIcon(role: FolderRole?): ImageVector = when (role) {
     FolderRole.INBOX -> Icons.Outlined.Inbox
-    FolderRole.SENT -> Icons.Outlined.Send
+    FolderRole.SENT -> Icons.AutoMirrored.Outlined.Send
     FolderRole.DRAFTS -> Icons.Outlined.Drafts
     FolderRole.TRASH -> Icons.Outlined.Delete
     FolderRole.SPAM -> Icons.Outlined.Report
@@ -352,6 +498,13 @@ private fun roleIcon(role: FolderRole?): ImageVector = when (role) {
 private val timeFmt = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
 private val dayFmt = DateTimeFormatter.ofPattern("d MMM")
 
+/** Time under a day header: clock time this week, short date before that. */
+internal fun listTime(m: MessageSummary): String {
+    val d = m.date?.atZone(ZoneId.systemDefault()) ?: return ""
+    return if (d.toLocalDate().isAfter(LocalDate.now().minusDays(7))) d.format(timeFmt) else d.format(dayFmt)
+}
+
+/** Kept for other screens (message header etc.). */
 internal fun shortDate(m: MessageSummary): String {
     val d = m.date?.atZone(ZoneId.systemDefault()) ?: return ""
     val today = LocalDate.now()
@@ -359,28 +512,5 @@ internal fun shortDate(m: MessageSummary): String {
         today -> d.format(timeFmt)
         today.minusDays(1) -> "Yesterday"
         else -> d.format(dayFmt)
-    }
-}
-
-/** Shown above the list when GitHub has a newer release (until dismissed). */
-@Composable
-private fun UpdateCard(vm: MailViewModel) {
-    val state by vm.updater.state.collectAsState()
-    var hidden by remember { mutableStateOf(false) }
-    val release = (state as? app.mailplane.android.data.UpdateState.Available)?.release ?: return
-    if (hidden || vm.updater.dismissed(release)) return
-    app.mailplane.android.ui.components.InfoCard(
-        title = "Mailplane ${release.version} is available",
-        body = "Download and install it straight from GitHub.",
-        modifier = Modifier.padding(bottom = 4.dp),
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            androidx.compose.material3.TextButton(onClick = { vm.installUpdate(release) }) {
-                Text("Update", color = Frost.colors.ink, style = MaterialTheme.typography.labelLarge)
-            }
-            androidx.compose.material3.TextButton(onClick = { vm.updater.dismiss(release); hidden = true }) {
-                Text("Later", color = Frost.colors.inkSecondary, style = MaterialTheme.typography.labelLarge)
-            }
-        }
     }
 }

@@ -35,6 +35,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Newspaper
+import androidx.compose.material.icons.outlined.NotificationsNone
+import androidx.compose.material.icons.outlined.SupportAgent
+import androidx.compose.material.icons.outlined.VerifiedUser
 import app.mailplane.android.ui.theme.Frost
 
 /** The Mailplane mark (same geometry as assets/icon.svg), coloured by theme + accent. */
@@ -164,5 +170,117 @@ fun Pill(text: String, selected: Boolean, dotHex: String? = null, badge: Int = 0
         Text(text, style = MaterialTheme.typography.labelMedium, color = if (selected) c.ink else c.inkSecondary,
             maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (badge > 0) Text(badge.toString(), style = MaterialTheme.typography.labelSmall, color = c.inkTertiary)
+    }
+}
+
+// ── Sender pictures ────────────────────────────────────────────────────────────
+
+/**
+ * Sender avatar: initials for people; for automated senders (receipts,
+ * notifications, newsletters, …) a placeholder picture that says what they are.
+ */
+@Composable
+fun SenderAvatar(name: String, email: String, size: Dp = 40.dp) {
+    val c = Frost.colors
+    val kind = app.mailplane.core.Senders.kindOf(email)
+    if (kind == app.mailplane.core.SenderKind.PERSON) {
+        Box(Modifier.size(size).clip(CircleShape).background(c.avatar), contentAlignment = Alignment.Center) {
+            Text(app.mailplane.core.Senders.initials(name.ifBlank { email }), color = c.inkSecondary,
+                fontSize = (size.value * 0.36f).sp, fontWeight = FontWeight.Medium)
+        }
+        return
+    }
+    val bg = if (kind == app.mailplane.core.SenderKind.BILLING) lerpColor(c.tile, c.accent, 0.35f) else c.tileActive
+    val icon = when (kind) {
+        app.mailplane.core.SenderKind.BILLING -> Icons.AutoMirrored.Outlined.ReceiptLong
+        app.mailplane.core.SenderKind.SECURITY -> Icons.Outlined.VerifiedUser
+        app.mailplane.core.SenderKind.SUPPORT -> Icons.Outlined.SupportAgent
+        app.mailplane.core.SenderKind.NEWS -> Icons.Outlined.Newspaper
+        else -> Icons.Outlined.NotificationsNone
+    }
+    Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
+        androidx.compose.material3.Icon(icon, contentDescription = null, tint = c.inkSecondary, modifier = Modifier.size(size * 0.46f))
+    }
+}
+
+private fun lerpColor(a: Color, b: Color, t: Float) = Color(
+    red = a.red + (b.red - a.red) * t, green = a.green + (b.green - a.green) * t, blue = a.blue + (b.blue - a.blue) * t, alpha = 1f,
+)
+
+/** Account switcher avatar: the active one shows its name (like the desktop title bar). */
+@Composable
+fun AccountChip(name: String, colorHex: String, active: Boolean, badge: Int, onClick: () -> Unit) {
+    val c = Frost.colors
+    Row(
+        Modifier.clip(RoundedCornerShape(20.dp)).background(if (active) c.tile else Color.Transparent)
+            .clickable(onClick = onClick).padding(start = 3.dp, end = if (active) 12.dp else 3.dp, top = 3.dp, bottom = 3.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box {
+            Box(Modifier.size(30.dp).clip(CircleShape).background(if (active) c.raised else c.tile), contentAlignment = Alignment.Center) {
+                Text(app.mailplane.core.Senders.initials(name), color = if (active) c.ink else c.inkSecondary,
+                    fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Box(Modifier.align(Alignment.BottomStart).size(10.dp).clip(CircleShape).background(c.canvas).padding(2.dp)) {
+                AccountDot(colorHex, 6.dp)
+            }
+            if (badge > 0 && !active) {
+                Text(if (badge > 99) "99+" else badge.toString(), fontSize = 9.sp, fontWeight = FontWeight.SemiBold, color = c.onAccent,
+                    modifier = Modifier.align(Alignment.BottomEnd).clip(RoundedCornerShape(8.dp)).background(c.accent).padding(horizontal = 4.dp))
+            }
+        }
+        if (active) {
+            Text(name, style = MaterialTheme.typography.labelLarge, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (badge > 0) Text(badge.toString(), style = MaterialTheme.typography.labelSmall, color = c.onAccent,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(c.accent).padding(horizontal = 6.dp, vertical = 1.dp))
+        }
+    }
+}
+
+/** Day header in the message list: TODAY · YESTERDAY · MONDAY … */
+@Composable
+fun DayHeader(label: String) {
+    Text(label.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp,
+        color = Frost.colors.inkTertiary, modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 6.dp))
+}
+
+/** Storage bar (IMAP QUOTA) for the folder drawer. */
+@Composable
+fun StorageBar(quota: app.mailplane.core.StorageQuota, modifier: Modifier = Modifier) {
+    val c = Frost.colors
+    val full = quota.fraction >= 0.9f
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("${formatKb(quota.usedKb)} of ${formatKb(quota.limitKb)} used", style = MaterialTheme.typography.labelSmall,
+            color = if (full) c.danger else c.inkTertiary)
+        Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(c.tile)) {
+            Box(Modifier.fillMaxWidth(quota.fraction).height(4.dp).clip(RoundedCornerShape(2.dp))
+                .background(if (full) c.danger else c.inkTertiary))
+        }
+    }
+}
+
+fun formatKb(kb: Long): String = when {
+    kb >= 1024L * 1024 -> String.format(java.util.Locale.ROOT, "%.1f GB", kb / 1048576.0)
+    kb >= 1024 -> "${kb / 1024} MB"
+    else -> "$kb KB"
+}
+
+/** Friendly empty / error state with an optional next step. */
+@Composable
+fun EmptyMessage(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, body: String,
+                 action: String? = null, onAction: () -> Unit = {}) {
+    val c = Frost.colors
+    Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(accentWash()).background(c.tile.copy(alpha = 0.7f)), contentAlignment = Alignment.Center) {
+            androidx.compose.material3.Icon(icon, null, tint = c.ink, modifier = Modifier.size(22.dp))
+        }
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = c.ink)
+        Text(body, style = MaterialTheme.typography.bodyMedium, color = c.inkSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        if (action != null) {
+            Text(action, color = c.ink, style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(12.dp)).background(c.tile).clickable(onClick = onAction)
+                    .padding(horizontal = 16.dp, vertical = 10.dp))
+        }
     }
 }

@@ -70,6 +70,9 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
     val accent by vm.settings.accent.collectAsState()
     val notifications by vm.settings.notifications.collectAsState()
     val blockImages by vm.settings.blockImages.collectAsState()
+    val compact by vm.settings.compact.collectAsState()
+    val recent by vm.settings.recentSearches.collectAsState()
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val update by vm.updater.state.collectAsState()
     var confirmRemove by remember { mutableStateOf<Account?>(null) }
 
@@ -138,6 +141,21 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                 }
             }
 
+            SectionLabel("Reading")
+            Group {
+                ToggleRow("Compact list", "One line per message, no pictures — fits more on screen", compact, vm.settings::setCompact)
+                if (recent.isNotEmpty()) {
+                    HorizontalDivider(color = c.tile)
+                    Row(Modifier.fillMaxWidth().clickable { vm.settings.clearRecentSearches() }.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Clear recent searches", style = MaterialTheme.typography.bodyMedium, color = c.ink)
+                            Text("${recent.size} saved on this phone", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+                        }
+                    }
+                }
+            }
+
             SectionLabel("Mail")
             Group {
                 ToggleRow("New mail notifications", "Checked about every 15 minutes", notifications, vm.settings::setNotifications)
@@ -181,6 +199,14 @@ fun SettingsScreen(vm: MailViewModel, onBack: () -> Unit, onAddAccount: () -> Un
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 BrandMark(44.dp)
                 Text("Mailplane ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = c.inkTertiary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { uriHandler.openUri("https://github.com/mauricekleindienst/mailplane") }) {
+                        Text("Source code", color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
+                    }
+                    TextButton(onClick = { uriHandler.openUri("https://github.com/mauricekleindienst/mailplane/issues") }) {
+                        Text("Report a problem", color = c.inkSecondary, style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
         }
     }

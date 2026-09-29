@@ -105,4 +105,9 @@ data class OutgoingMessage(
     val attachments: List<OutgoingAttachment> = emptyList(),
 )
 
+/** Mailbox storage in kilobytes, as IMAP QUOTA reports it. */
+data class StorageQuota(val usedKb: Long, val limitKb: Long) {
+    val fraction: Float get() = if (limitKb <= 0) 0f else (usedKb.toFloat() / limitKb).coerceIn(0f, 1f)
+}
+
 class MailException(message: String, cause: Throwable? = null) : Exception(message, cause)

@@ -1,0 +1,50 @@
+name: Android screenshots
+
+# Renders the Android screens (Robolectric + Roborazzi) and attaches the PNGs
+# to a temporary pre-release "android-screenshots" for review.
+# Run again with action = delete to remove that pre-release and its tag.
+# It never touches real releases (the update checks only look at the latest
+# full release, and a pre-release never counts as that).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: publish or delete
+        required: true
+        default: publish
+        type: choice
+        options: [publish, delete]
+
+permissions:
+  contents: write
+
+jobs:
+  screenshots:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: android-screenshots
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove the previous screenshots
+        run: gh release delete "$TAG" --cleanup-tag -y || true
+      - if: inputs.action == 'publish'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - if: inputs.action == 'publish'
+        uses: gradle/actions/setup-gradle@v4
+      - name: Render screens
+        if: inputs.action == 'publish'
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew --no-daemon :app:testDebugUnitTest
+      - name: Publish as a temporary pre-release
+        if: inputs.action == 'publish'
+        run: |
+          gh release create "$TAG" android/app/build/outputs/roborazzi/*.png \
+            --prerelease --target "$GITHUB_SHA" --title "Android screenshots (temporary)" \
+            --notes "Rendered from $GITHUB_SHA for review. Removed again with the 'delete' action."

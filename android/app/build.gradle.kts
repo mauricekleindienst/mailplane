@@ -60,6 +60,15 @@ android {
         buildConfig = true
     }
 
+    // Screenshot tests: Robolectric renders the Compose screens on the JVM and
+    // Roborazzi writes PNGs to build/outputs/roborazzi (CI uploads them)
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all { it.systemProperty("roborazzi.test.record", "true") }
+        }
+    }
+
     packaging {
         resources {
             excludes += setOf(
@@ -90,4 +99,12 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.32.2")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.32.2")
+    testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

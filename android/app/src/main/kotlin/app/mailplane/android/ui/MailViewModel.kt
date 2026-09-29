@@ -26,6 +26,9 @@ import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
+/** Path of the "Starred" smart folder (flagged mail from every folder). */
+const val STARRED = "__starred__"
+
 data class ListState(
     val folders: List<MailFolder> = emptyList(),
     val folderPath: String = "INBOX",
@@ -39,7 +42,9 @@ data class ListState(
     val searching: Boolean = false,
 ) {
     val folder: MailFolder? get() = folders.firstOrNull { it.path == folderPath }
-    val canLoadMore: Boolean get() = !searching && messages.size < total
+    val isStarred: Boolean get() = folderPath == STARRED
+    val title: String get() = if (isStarred) "Starred" else folder?.name ?: "Inbox"
+    val canLoadMore: Boolean get() = !searching && !isStarred && messages.size < total
 }
 
 data class ReaderState(
@@ -48,6 +53,8 @@ data class ReaderState(
     val loading: Boolean = false,
     val error: String? = null,
     val imagesAllowed: Boolean = false,
+    /** Other messages of the same conversation in the loaded list, oldest first. */
+    val thread: List<MessageSummary> = emptyList(),
 )
 
 data class Draft(
@@ -84,6 +91,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val _draft = MutableStateFlow(Draft())
     val draft: StateFlow<Draft> = _draft
 
+    private val _quota = MutableStateFlow<app.mailplane.core.StorageQuota?>(null)
+    /** Storage of the active mailbox (null when the server doesn't report it). */
+    val quota: StateFlow<app.mailplane.core.StorageQuota?> = _quota
+
     private val _unread = MutableStateFlow<Map<String, Int>>(emptyMap())
     /** Inbox unread per account, for the account pills. */
     val unread: StateFlow<Map<String, Int>> = _unread
@@ -108,6 +119,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val acc = activeAccount ?: return
         _activeId.value = acc.id
         loadFolders(acc)
+        loadQuota(acc)
         loadMessages(reset = true)
     }
 
@@ -115,7 +127,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         if (id == _activeId.value) return
         _activeId.value = id
         _list.value = ListState(loading = true)
-        activeAccount?.let { loadFolders(it) }
+        activeAccount?.let { loadFolders(it); loadQuota(it) }
         loadMessages(reset = true)
     }
 
@@ -129,11 +141,17 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         loadMessages(reset = true, pull = true)
     }
 
+    private fun loadQuota(acc: Account) = viewModelScope.launch {
+        _quota.value = null
+        val q = runCatching { repo.quota(acc) }.getOrNull()
+        if (_activeId.value == acc.id) _quota.value = q
+    }
+
     private fun loadFolders(acc: Account) = viewModelScope.launch {
         runCatching { repo.folders(acc) }
             .onSuccess { folders ->
                 _list.update { st ->
-                    val path = if (folders.any { it.path == st.folderPath }) st.folderPath
+                    val path = if (st.folderPath == STARRED || folders.any { it.path == st.folderPath }) st.folderPath
                     else folders.firstOrNull { it.role == FolderRole.INBOX }?.path ?: "INBOX"
                     st.copy(folders = folders, folderPath = path)
                 }
@@ -155,11 +173,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
         loadJob = viewModelScope.launch {
             val offset = if (reset) 0 else _list.value.messages.size
-            runCatching { repo.messages(acc, folder, offset) }
+            runCatching {
+                if (folder == STARRED) repo.starred(acc).let { app.mailplane.core.MessagePage(it, it.size, it.count { m -> !m.seen }) }
+                else repo.messages(acc, folder, offset)
+            }
                 .onSuccess { page ->
                     if (_activeId.value != accountId || _list.value.folderPath != folder) return@onSuccess
                     _list.update {
-                        val merged = if (reset) page.messages else (it.messages + page.messages).distinctBy { m -> m.uid }
+                        val merged = if (reset) page.messages else (it.messages + page.messages).distinctBy { m -> m.folder to m.uid }
                         it.copy(messages = merged, total = page.total, loading = false, refreshing = false, loadingMore = false)
                     }
                     if (_list.value.folder?.role == FolderRole.INBOX) _unread.update { it + (accountId to page.unread) }
@@ -175,12 +196,15 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val acc = activeAccount ?: return
         if (query.isBlank()) { _list.update { it.copy(searching = false) }; loadMessages(reset = true); return }
         loadJob?.cancel()
-        val folder = _list.value.folderPath
+        val folder = _list.value.folderPath.let { if (it == STARRED) "INBOX" else it }
         _list.update { it.copy(searching = true, loading = true, error = null) }
         loadJob = viewModelScope.launch {
             kotlinx.coroutines.delay(350) // debounce typing
             runCatching { repo.search(acc, folder, query.trim()) }
-                .onSuccess { hits -> _list.update { it.copy(messages = hits, total = hits.size, loading = false) } }
+                .onSuccess { hits ->
+                    _list.update { it.copy(messages = hits, total = hits.size, loading = false) }
+                    if (query.trim().length >= 2) settings.rememberSearch(query.trim())
+                }
                 .onFailure { e -> _list.update { it.copy(loading = false, error = e.message) } }
         }
     }
@@ -189,7 +213,11 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(m: MessageSummary) {
         val acc = activeAccount ?: return
-        _reader.value = ReaderState(summary = m, loading = true, imagesAllowed = !settings.blockImages.value)
+        val norm = app.mailplane.core.Subjects.base(m.subject).lowercase()
+        val thread = if (norm.isBlank()) emptyList() else _list.value.messages
+            .filter { it != m && app.mailplane.core.Subjects.base(it.subject).lowercase() == norm }
+            .sortedBy { it.date }
+        _reader.value = ReaderState(summary = m, loading = true, imagesAllowed = !settings.blockImages.value, thread = thread)
         viewModelScope.launch {
             runCatching { repo.body(acc, m) }
                 .onSuccess { body -> if (_reader.value.summary?.uid == m.uid) _reader.update { it.copy(body = body, loading = false) } }
@@ -206,7 +234,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         if (!quiet) _messages.tryEmit(if (seen) "Marked as read" else "Marked as unread")
     }
 
-    fun toggleFlag(m: MessageSummary) = mutate(m, { it.copy(flagged = !m.flagged) }) { acc -> repo.setFlagged(acc, m, !m.flagged) }
+    fun toggleFlag(m: MessageSummary) {
+        if (m.flagged && _list.value.isStarred) {
+            remove(m, "Removed from Starred") { acc -> repo.setFlagged(acc, m, false) }
+            return
+        }
+        mutate(m, { it.copy(flagged = !m.flagged) }) { acc -> repo.setFlagged(acc, m, !m.flagged) }
+    }
 
     fun delete(m: MessageSummary) = remove(m, "Moved to Trash") { acc -> repo.delete(acc, m) }
     fun archive(m: MessageSummary) = remove(m, "Archived") { acc -> repo.archive(acc, m) }
@@ -227,12 +261,18 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun remove(m: MessageSummary, done: String, call: suspend (Account) -> Unit) {
         val acc = activeAccount ?: return
-        val before = _list.value.messages
         _list.update { st -> st.copy(messages = st.messages.filterNot { it.uid == m.uid && it.folder == m.folder }, total = (st.total - 1).coerceAtLeast(0)) }
         viewModelScope.launch {
             runCatching { call(acc) }
                 .onSuccess { _messages.tryEmit(done) }
-                .onFailure { e -> _list.update { it.copy(messages = before) }; _messages.tryEmit(e.message ?: "Something went wrong") }
+                .onFailure { e ->
+                    // Put just this message back (other changes since then stay)
+                    _list.update { st ->
+                        if (st.messages.any { it.uid == m.uid && it.folder == m.folder }) st
+                        else st.copy(messages = (st.messages + m).sortedByDescending { it.date }, total = st.total + 1)
+                    }
+                    _messages.tryEmit(e.message ?: "Something went wrong")
+                }
         }
     }
 

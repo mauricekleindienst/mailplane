@@ -36,6 +36,21 @@ class AppSettings(context: Context) {
     private val _blockImages = MutableStateFlow(prefs.getBoolean("blockImages", true))
     val blockImages: StateFlow<Boolean> = _blockImages
 
+    private val _compact = MutableStateFlow(prefs.getBoolean("compact", false))
+    /** Compact list: one line per message, no avatars. */
+    val compact: StateFlow<Boolean> = _compact
+
+    private val _recentSearches = MutableStateFlow(prefs.getString("recentSearches", "").orEmpty().split('\n').filter { it.isNotBlank() })
+    val recentSearches: StateFlow<List<String>> = _recentSearches
+
+    fun setCompact(on: Boolean) { prefs.edit().putBoolean("compact", on).apply(); _compact.value = on }
+    fun rememberSearch(q: String) {
+        val list = (listOf(q) + _recentSearches.value.filter { it != q }).take(5)
+        prefs.edit().putString("recentSearches", list.joinToString("\n")).apply()
+        _recentSearches.value = list
+    }
+    fun clearRecentSearches() { prefs.edit().remove("recentSearches").apply(); _recentSearches.value = emptyList() }
+
     fun setTheme(mode: ThemeMode) { prefs.edit().putString("theme", mode.name).apply(); _theme.value = mode }
     fun setAccent(argb: Long) { prefs.edit().putLong("accent", argb).apply(); _accent.value = argb }
     fun setNotifications(on: Boolean) { prefs.edit().putBoolean("notifications", on).apply(); _notifications.value = on }

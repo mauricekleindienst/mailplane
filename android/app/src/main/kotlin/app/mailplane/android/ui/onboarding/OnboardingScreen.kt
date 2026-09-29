@@ -22,7 +22,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -98,7 +97,8 @@ fun OnboardingScreen(onDone: (accountId: String) -> Unit, onCancel: (() -> Unit)
     BackHandler(enabled = true) { if (!vm.back()) onCancel?.invoke() }
 
     Box(Modifier.fillMaxSize().background(c.canvas).background(accentWash())) {
-        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+        // safeDrawing already includes the keyboard (IME) inset
+        Column(Modifier.fillMaxSize().safeDrawingPadding()) {
             if (s.step != SetupStep.WELCOME) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { if (!vm.back()) onCancel?.invoke() }) {
@@ -141,13 +141,13 @@ fun OnboardingScreen(onDone: (accountId: String) -> Unit, onCancel: (() -> Unit)
 @Composable
 private fun Title(title: String, subtitle: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)) {
-        Text(title, style = MaterialTheme.typography.headlineMedium, color = Frost.colors.ink)
+        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = Frost.colors.ink)
         if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = Frost.colors.inkSecondary)
     }
 }
 
 @Composable
-private fun Welcome(onStart: () -> Unit) {
+internal fun Welcome(onStart: () -> Unit) {
     val c = Frost.colors
     Spacer(Modifier.height(48.dp))
     BrandMark(84.dp)
