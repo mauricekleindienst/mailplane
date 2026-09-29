@@ -398,3 +398,50 @@ test('switching theme redraws an open HTML mail and keeps icon buttons intact', 
   const svg = await page.locator('.detail-action-icon[title="Archive"] svg').boundingBox();
   expect(svg.width).toBeGreaterThanOrEqual(12);
 });
+
+test('German interface: UI text, folders and menus are translated, mail content is not', async () => {
+  const boxes = defaultMailboxes();
+  boxes['acc-a'].INBOX.push(msg({ subject: 'Archive', fromName: 'Settings', text: 'Reply', minutesAgo: 1 }));
+  ctx = await launchApp({ mailboxes: boxes, prefs: { language: 'de' } });
+  const { page, app } = ctx;
+  await page.locator('.acc-tab', { hasText: 'Alice Example' }).click();
+  await expect(page.locator('html')).toHaveAttribute('lang', 'de');
+  await expect(page.locator('#listTitle')).toHaveText('Posteingang');
+  await expect(page.locator('.folder-btn[data-folder="archive"]')).toContainText('Archiv');
+  await expect(page.locator('.folder-btn[data-folder="trash"]')).toContainText('Papierkorb');
+  await expect(page.locator('#searchInput')).toHaveAttribute('placeholder', /durchsuchen/);
+  await expect(page.locator('#listEmpty, .list-day').first()).toBeAttached();
+  await expect(page.locator('.list-day').first()).toHaveText(/heute/i);
+
+  // A message whose subject / sender happen to be UI words stays as written
+  const odd = page.locator('#emailList .email-item').first();
+  await expect(odd).toContainText('Archive');
+  await expect(odd).toContainText('Settings');
+  await odd.click();
+  await expect(page.locator('.detail-subject')).toHaveText('Archive');
+  await expect(page.locator('.detail-action-btn.primary')).toContainText('Antworten');
+
+  // Compose
+  await page.locator('#composeTrigger').click();
+  await expect(page.locator('#composeSendBtn')).toContainText('Senden');
+  await expect(page.locator('#composeCancelBtn')).toHaveText('Verwerfen');
+  await page.keyboard.press('Escape');
+
+  // Menus follow the language too
+  await expect.poll(() => app.evaluate(({ Menu }) =>
+    Menu.getApplicationMenu().items.flatMap(i => i.submenu ? i.submenu.items.map(x => x.label) : []))).toContain('Neue Nachricht');
+});
+
+test('switching the language in Settings applies it right away', async () => {
+  ctx = await launchApp({ prefs: { language: 'en' } });
+  const { page } = ctx;
+  const pick = async (lang) => {
+    await page.locator('#settingsBtn').click();
+    await page.locator('.settings-nav-item[data-panel="general"]').click();
+    await page.locator('select[data-pref="language"]').selectOption(lang);
+  };
+  await pick('de');
+  await expect(page.locator('#listTitle')).toHaveText(/Posteingang|Alle Mails/, { timeout: 10_000 });
+  await pick('en');
+  await expect(page.locator('#listTitle')).toHaveText(/Inbox|All Mail/, { timeout: 10_000 });
+});

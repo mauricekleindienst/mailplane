@@ -1,6 +1,18 @@
 // All Electron access goes through the contextBridge-exposed API in preload.js.
 // This file runs in an isolated browser context with no Node.js access.
 const { invoke: _invoke, send: _send, on: _on, md5 } = window.electronAPI;
+
+// Interface language (src/i18n.js): Settings → General → Language, "system" follows the OS.
+// The DOM translator swaps English UI text as it is rendered; mail content is never touched.
+const I18N = window.MailplaneI18n;
+let _langPref = 'system';
+try { _langPref = localStorage.getItem('mailplane-pref-language') || 'system'; } catch {}
+const LANG = I18N.resolveLocale(_langPref, navigator.language);
+const t = I18N.translator(LANG);
+// Dates and times follow the interface language (system language when set to System)
+const LOCALE_TAG = _langPref === 'system' ? undefined : LANG;
+document.documentElement.lang = LANG;
+I18N.installDomTranslator(document, t);
 // Window chrome differs per OS: traffic lights on the left (macOS) or
 // window buttons on the right (Windows / Linux) — see theme.css "Title bar"
 const PLATFORM = window.electronAPI.platform || 'darwin';
@@ -117,7 +129,7 @@ function renderScheduledOutbox() {
 
     const info = document.createElement('div');
     info.className = 'sob-info';
-    const time = new Date(s.scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const time = new Date(s.scheduledAt).toLocaleString(LOCALE_TAG, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     info.innerHTML = `<span class="sob-subj">${escHtml(s.subject)}</span><span class="sob-time">${escHtml(time)}</span>`;
 
     const cancelBtn = document.createElement('button');
@@ -1045,10 +1057,10 @@ function fmtDate(d) {
   const date = new Date(d);
   const now = new Date();
   const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
-  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString(LOCALE_TAG, { hour: '2-digit', minute: '2-digit' });
   if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  if (now - date < 6 * 86400000) return date.toLocaleDateString([], { weekday: 'short' });
-  return date.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  if (now - date < 6 * 86400000) return date.toLocaleDateString(LOCALE_TAG, { weekday: 'short' });
+  return date.toLocaleDateString(LOCALE_TAG, { day: 'numeric', month: 'short' });
 }
 
 // Group label for the message list: Today · Yesterday · Monday · 12 Sep · 12 Sep 2024
@@ -1060,8 +1072,8 @@ function dayLabel(d) {
   const days = Math.round((startOf(now) - startOf(date)) / 86400000);
   if (days <= 0) return 'Today';
   if (days === 1) return 'Yesterday';
-  if (days < 7) return date.toLocaleDateString([], { weekday: 'long' });
-  return date.toLocaleDateString([], date.getFullYear() === now.getFullYear()
+  if (days < 7) return date.toLocaleDateString(LOCALE_TAG, { weekday: 'long' });
+  return date.toLocaleDateString(LOCALE_TAG, date.getFullYear() === now.getFullYear()
     ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
@@ -1070,12 +1082,12 @@ function fmtListTime(d) {
   if (!d) return '';
   const date = new Date(d);
   const days = (Date.now() - date.getTime()) / 86400000;
-  return days < 7 ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : fmtDate(d);
+  return days < 7 ? date.toLocaleTimeString(LOCALE_TAG, { hour: '2-digit', minute: '2-digit' }) : fmtDate(d);
 }
 
 function fmtFull(d) {
   if (!d) return '';
-  return new Date(d).toLocaleString([], { weekday: 'long', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(d).toLocaleString(LOCALE_TAG, { weekday: 'long', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function fmtBytes(b) {
@@ -1222,7 +1234,7 @@ function renderAccountTabs() {
   allIcon.innerHTML = '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>';
   const allTab = mkTab({
     cls: 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : ''),
-    tip: 'All Mail', avatar: allIcon, label: 'All Mail',
+    tip: t('All Mail'), avatar: allIcon, label: t('All Mail'),
   });
   allTab.setAttribute('aria-label', 'All Mail');
   allTab.addEventListener('click', () => switchToAll());
@@ -2494,7 +2506,7 @@ function snoozePresets(now = new Date()) {
   out.push(['nextweek', 'Next week', at(plusDays(((8 - day) % 7) || 7), 8)]);
   return out;
 }
-const fmtSnooze = d => d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+const fmtSnooze = d => d.toLocaleString(LOCALE_TAG, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 
 function doSnooze(email, until) {
   return removeEmail(email, 'email:snooze', `Snoozed until ${fmtSnooze(until)}`, 'Snooze failed',
@@ -2869,7 +2881,7 @@ function renderDetail(email, body) {
     ? `<span class="detail-from-name">${escHtml(email.fromName)}</span> <span class="detail-from-addr">&lt;${escHtml(email.fromEmail)}&gt;</span>`
     : `<span class="detail-from-name">${escHtml(email.fromEmail)}</span>`;
   meta.innerHTML = `<div class="detail-from-row">${nameHtml}</div>
-    ${toStr ? `<div class="detail-recipients">to ${escHtml(toStr)}</div>` : ''}`;
+    ${toStr ? `<div class="detail-recipients">${t('to')} ${escHtml(toStr)}</div>` : ''}`;
 
   const badges = authBadgesEl(body?.auth);
   if (badges) meta.querySelector('.detail-from-row').appendChild(badges);
@@ -3585,7 +3597,7 @@ function setScheduledAt(iso) {
   const btnText = document.getElementById('composeBtnText');
   if (iso) {
     const d = new Date(iso);
-    btnText.textContent = 'Send ' + d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    btnText.textContent = 'Send ' + d.toLocaleString(LOCALE_TAG, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   } else {
     btnText.textContent = 'Send';
   }
@@ -3739,7 +3751,7 @@ document.getElementById('composeSendBtn').addEventListener('click', async () => 
         if (r.success && r.scheduledId) {
           S.scheduledSends.push({ id: r.scheduledId, subject: subject || '(no subject)', scheduledAt, accountId });
           renderScheduledOutbox();
-          const time = new Date(scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          const time = new Date(scheduledAt).toLocaleString(LOCALE_TAG, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           toast('Scheduled for ' + time);
         } else if (r.success) {
           // Main process sent it right away (time already reached)
@@ -4312,6 +4324,9 @@ function applyPrefChange(key, value) {
     renderEmailList(S.isSearching);
   } else if (key === 'spell-check') {
     applySpellcheck();
+  } else if (key === 'language') {
+    _send('app:locale', value);
+    setTimeout(() => location.reload(), 60);   // every view re-renders in the new language
   } else if (key === 'auto-update') {
     _send('update:config', { auto: value === 'true' });
   }
@@ -4342,6 +4357,14 @@ function _renderUpdateStatus(el, status) {
 function renderSettingsGeneral() {
   const content = document.getElementById('settingsPanelContent');
   content.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-title">Language</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Language', 'System follows your computer’s language',
+          makeSelect('language', 'system', [['system', 'System'], ...I18N.available().map(l => [l.code, l.name])])
+        )}
+      </div>
+    </div>
     <div class="settings-section">
       <div class="settings-section-title">Checking for mail</div>
       <div class="settings-pref-group">
@@ -4863,7 +4886,7 @@ function renderSettingsAbout() {
       <div class="about-hero">
         ${BRAND_MARK_SVG}
         <div class="about-name">Mailplane</div>
-        <div class="about-tagline">Open-source email for macOS · Version ${escHtml(version)}</div>
+        <div class="about-tagline">Open-source email · Version ${escHtml(version)}</div>
       </div>
 
       <div class="settings-section">
@@ -5717,7 +5740,7 @@ function showEventDetail(ev) {
   const fmt = iso => {
     if (!iso) return '';
     const d = new Date(iso);
-    return isNaN(d) ? iso : d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return isNaN(d) ? iso : d.toLocaleString(LOCALE_TAG, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
   el.innerHTML = `
     <button class="cal-detail-close" id="calDetailClose">
@@ -5874,6 +5897,7 @@ async function init() {
   // Push notification preferences to main process
   syncNotifyPrefs();
   _send('update:config', { auto: getSetting('auto-update', 'true') === 'true' });
+  _send('app:locale', getSetting('language', 'system'));
   await loadAiStatus();
 
   // Show real app version in settings sidebar

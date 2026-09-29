@@ -204,10 +204,10 @@ function buildAppMenu() {
   const send = (ch) => mainWindow?.webContents.send(ch);
   const template = [
     {
-      label: 'Mailplane',
+      label: T('Mailplane'),
       submenu: [
         {
-          label: 'About Mailplane',
+          label: T('About Mailplane'),
           click() {
             app.setAboutPanelOptions({
               applicationName: 'Mailplane',
@@ -218,7 +218,7 @@ function buildAppMenu() {
           },
         },
         { type: 'separator' },
-        { label: 'Preferences…', accelerator: 'CmdOrCtrl+,', click: () => send('open-settings') },
+        { label: T('Preferences…'), accelerator: 'CmdOrCtrl+,', click: () => send('open-settings') },
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -230,33 +230,33 @@ function buildAppMenu() {
       ],
     },
     {
-      label: 'Mail',
+      label: T('Mail'),
       submenu: [
-        { label: 'New Message', accelerator: 'CmdOrCtrl+N', click: () => send('new-message') },
-        { label: 'Reply', accelerator: 'CmdOrCtrl+R', click: () => send('reply') },
-        { label: 'Reply All', accelerator: 'Shift+CmdOrCtrl+R', click: () => send('reply-all') },
-        { label: 'Forward', accelerator: 'CmdOrCtrl+F', click: () => send('forward') },
+        { label: T('New Message'), accelerator: 'CmdOrCtrl+N', click: () => send('new-message') },
+        { label: T('Reply'), accelerator: 'CmdOrCtrl+R', click: () => send('reply') },
+        { label: T('Reply All'), accelerator: 'Shift+CmdOrCtrl+R', click: () => send('reply-all') },
+        { label: T('Forward'), accelerator: 'CmdOrCtrl+F', click: () => send('forward') },
         { type: 'separator' },
-        { label: 'Refresh', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('refresh') },
+        { label: T('Refresh'), accelerator: 'CmdOrCtrl+Shift+N', click: () => send('refresh') },
         { type: 'separator' },
-        { label: 'Archive', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('archive-email') },
+        { label: T('Archive'), accelerator: 'CmdOrCtrl+Shift+A', click: () => send('archive-email') },
         // No accelerators on the single-key actions below: menu accelerators
         // swallow keystrokes app-wide (typing "s" in compose would star the
         // selected email, Backspace would delete it). The renderer's keydown
         // handler implements ⌫ / U / S when no text field is focused.
-        { label: 'Delete Message  ⌫', click: () => send('delete-email') },
-        { label: 'Mark as Read / Unread  U', click: () => send('mark-read') },
-        { label: 'Star / Unstar  S', click: () => send('toggle-star') },
+        { label: T('Delete Message  ⌫'), click: () => send('delete-email') },
+        { label: T('Mark as Read / Unread  U'), click: () => send('mark-read') },
+        { label: T('Star / Unstar  S'), click: () => send('toggle-star') },
       ],
     },
     { role: 'editMenu' },
     {
-      label: 'View',
+      label: T('View'),
       submenu: [
         // Handled in the renderer (keydown) so they also work while typing;
         // registerAccelerator: false shows the shortcut without double-firing.
-        { label: 'Show / Hide Sidebar', accelerator: 'CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-sidebar') },
-        { label: 'Show / Hide Message List', accelerator: 'Shift+CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-list') },
+        { label: T('Show / Hide Sidebar'), accelerator: 'CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-sidebar') },
+        { label: T('Show / Hide Message List'), accelerator: 'Shift+CmdOrCtrl+\\', registerAccelerator: false, click: () => send('toggle-list') },
         { type: 'separator' },
         // Default ⌘R would collide with Mail → Reply
         { role: 'reload', accelerator: 'CmdOrCtrl+Alt+R' },
@@ -273,6 +273,25 @@ function buildAppMenu() {
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
+
+// ── Interface language (src/i18n.js) ──────────────────────────────────────────
+// The renderer reports the Settings choice ('system' | 'en' | 'de'); menus and
+// notifications follow it. Saved so menus built before the window loads match.
+const i18n = require('./src/i18n');
+let T = i18n.translator('en');
+function applyLocale(pref) {
+  const code = i18n.resolveLocale(pref, app.getLocale());
+  if (T.locale === code) return false;
+  T = i18n.translator(code);
+  return true;
+}
+ipcMain.on('app:locale', (_, pref) => {
+  try { new (require('electron-store'))({ name: 'window' }).set('language', pref || 'system'); } catch {}
+  if (!applyLocale(pref)) return;
+  buildAppMenu();
+  setupAppIconMenu();
+  syncTray();
+});
 
 // Notification preferences set by the renderer (via prefs:notify IPC)
 const _notifyPrefs = { enabled: true, sound: true, sender: true, subject: true };
@@ -291,23 +310,23 @@ function notifyNewMail(accountId, info = []) {
   const list = Array.isArray(info) ? info : [info];
   const one = list.length === 1 ? list[0] : null;
   let title = 'Mailplane';
-  let body = 'New email received';
+  let body = T('New email received');
   if (one) {
     if (_notifyPrefs.sender && one.fromName) title = one.fromName;
     if (_notifyPrefs.subject && one.subject) body = one.subject;
     else if (one.fromName && title === 'Mailplane' && _notifyPrefs.sender) body = one.fromName;
-    if (one.snoozed) { title = 'Back from snooze'; body = [_notifyPrefs.sender && one.fromName, _notifyPrefs.subject && one.subject].filter(Boolean).join(' — ') || 'A snoozed message is back'; }
+    if (one.snoozed) { title = T('Back from snooze'); body = [_notifyPrefs.sender && one.fromName, _notifyPrefs.subject && one.subject].filter(Boolean).join(' — ') || T('A snoozed message is back'); }
   } else if (list.length > 1) {
-    title = `${list.length} new messages`;
+    title = T(`${list.length} new messages`);
     if (_notifyPrefs.sender) body = [...new Set(list.map(m => m.fromName).filter(Boolean))].slice(0, 3).join(', ') || body;
   }
   const account = accountStore.getAccounts().find(a => a.id === accountId);
   const actionable = !!(one?.uid && account && account.protocol !== 'jmap');
   const opts = { title, body, silent: !_notifyPrefs.sound };
   if (actionable && process.platform === 'darwin') {
-    opts.actions = [{ type: 'button', text: 'Archive' }, { type: 'button', text: 'Mark as Read' }];
+    opts.actions = [{ type: 'button', text: T('Archive') }, { type: 'button', text: T('Mark as Read') }];
     opts.hasReply = true;
-    opts.replyPlaceholder = 'Reply…';
+    opts.replyPlaceholder = T('Reply…');
   } else if (actionable && process.platform === 'win32') {
     opts.toastXml = notificationToastXml(title, body, accountId, one);
   }
@@ -338,7 +357,7 @@ function notificationToastXml(title, body, accountId, m) {
     `<action content="${xmlEsc(label)}" activationType="protocol" arguments="${xmlEsc(notificationUrl(action, accountId, m))}"/>`;
   return `<toast launch="${xmlEsc(notificationUrl('open', accountId, m))}" activationType="protocol">` +
     `<visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>` +
-    `<actions>${act('Archive', 'archive')}${act('Mark as read', 'read')}${act('Reply', 'reply')}</actions></toast>`;
+    `<actions>${act(T('Archive'), 'archive')}${act(T('Mark as read'), 'read')}${act(T('Reply'), 'reply')}</actions></toast>`;
 }
 
 // mailplane://notification?action=…&account=…&folder=…&uid=… (Windows toast buttons)
@@ -389,7 +408,7 @@ async function runNotificationAction(action, accountId, m, text) {
       mainWindow?.webContents.send('notification-reply', { accountId, folder, uid: m.uid });
     }
   } catch (err) {
-    fail(`Couldn’t ${action === 'read' ? 'mark as read' : action}: ${err.message}`);
+    fail(`${T('Action failed')}: ${err.message}`);
   }
 }
 
@@ -559,11 +578,11 @@ function syncTray() {
   _tray = new Tray(icon);
   _tray.setToolTip('Mailplane');
   _tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open Mailplane', click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
-    { label: 'New message', click: () => runLaunchAction('--new-message') },
-    { label: 'Check for new mail', click: () => runLaunchAction('--check-mail') },
+    { label: T('Open Mailplane'), click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
+    { label: T('New message'), click: () => runLaunchAction('--new-message') },
+    { label: T('Check for new mail'), click: () => runLaunchAction('--check-mail') },
     { type: 'separator' },
-    { label: 'Quit Mailplane', click: () => { _quitting = true; app.quit(); } },
+    { label: T('Quit Mailplane'), click: () => { _quitting = true; app.quit(); } },
   ]));
   _tray.on('click', () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
 }
@@ -624,9 +643,9 @@ function setupAppIconMenu() {
     ]);
   } else if (process.platform === 'darwin' && app.dock) {
     app.dock.setMenu(Menu.buildFromTemplate([
-      { label: 'New Message', click: () => runLaunchAction('--new-message') },
-      { label: 'Search Mail', click: () => runLaunchAction('--search') },
-      { label: 'Check for New Mail', click: () => runLaunchAction('--check-mail') },
+      { label: T('New Message'), click: () => runLaunchAction('--new-message') },
+      { label: T('Search Mail'), click: () => runLaunchAction('--search') },
+      { label: T('Check for New Mail'), click: () => runLaunchAction('--check-mail') },
     ]));
   }
 }
@@ -1406,15 +1425,15 @@ ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
   const isSystem = !!folder.role;
   const items = [
     {
-      label: 'New Folder…',
+      label: T('New Folder…'),
       click: () => event.sender.send('context-menu:folder-action', { action: 'create', accountId, folder }),
     },
   ];
   if (!isSystem) {
     items.push(
-      { label: 'Rename…', click: () => event.sender.send('context-menu:folder-action', { action: 'rename', accountId, folder }) },
+      { label: T('Rename…'), click: () => event.sender.send('context-menu:folder-action', { action: 'rename', accountId, folder }) },
       { type: 'separator' },
-      { label: 'Delete Folder', click: () => event.sender.send('context-menu:folder-action', { action: 'delete', accountId, folder }) },
+      { label: T('Delete Folder'), click: () => event.sender.send('context-menu:folder-action', { action: 'delete', accountId, folder }) },
     );
   }
   Menu.buildFromTemplate(items).popup({ window: BrowserWindow.fromWebContents(event.sender) });
@@ -1424,12 +1443,12 @@ ipcMain.on('context-menu:folder', (event, { accountId, folder }) => {
 ipcMain.on('context-menu:account', (event, { accountId }) => {
   const items = [
     {
-      label: 'Edit Account…',
+      label: T('Edit Account…'),
       click: () => event.sender.send('context-menu:account-action', { action: 'edit', accountId }),
     },
     { type: 'separator' },
     {
-      label: 'Remove Account',
+      label: T('Remove Account'),
       click: () => event.sender.send('context-menu:account-action', { action: 'remove', accountId }),
     },
   ];
@@ -1439,17 +1458,17 @@ ipcMain.on('context-menu:account', (event, { accountId }) => {
 // ── Context menu ──────────────────────────────────────────────────────────────
 ipcMain.on('context-menu:show', (event, _payload) => {
   const items = [
-    { label: 'Reply',       click: () => event.sender.send('context-menu:action', 'reply') },
-    { label: 'Reply All',   click: () => event.sender.send('context-menu:action', 'reply-all') },
-    { label: 'Forward',     click: () => event.sender.send('context-menu:action', 'forward') },
+    { label: T('Reply'),       click: () => event.sender.send('context-menu:action', 'reply') },
+    { label: T('Reply All'),   click: () => event.sender.send('context-menu:action', 'reply-all') },
+    { label: T('Forward'),     click: () => event.sender.send('context-menu:action', 'forward') },
     { type: 'separator' },
-    { label: 'Archive',     click: () => event.sender.send('context-menu:action', 'archive') },
-    { label: 'Delete',      click: () => event.sender.send('context-menu:action', 'delete') },
-    { label: 'Snooze…',     click: () => event.sender.send('context-menu:action', 'snooze') },
+    { label: T('Archive'),     click: () => event.sender.send('context-menu:action', 'archive') },
+    { label: T('Delete'),      click: () => event.sender.send('context-menu:action', 'delete') },
+    { label: T('Snooze…'),     click: () => event.sender.send('context-menu:action', 'snooze') },
     { type: 'separator' },
-    { label: 'Mark as Read',   click: () => event.sender.send('context-menu:action', 'mark-read') },
-    { label: 'Mark as Unread', click: () => event.sender.send('context-menu:action', 'mark-unread') },
-    { label: 'Star / Unstar',  click: () => event.sender.send('context-menu:action', 'toggle-star') },
+    { label: T('Mark as Read'),   click: () => event.sender.send('context-menu:action', 'mark-read') },
+    { label: T('Mark as Unread'), click: () => event.sender.send('context-menu:action', 'mark-unread') },
+    { label: T('Star / Unstar'),  click: () => event.sender.send('context-menu:action', 'toggle-star') },
   ];
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: BrowserWindow.fromWebContents(event.sender) });
@@ -1467,6 +1486,7 @@ app.whenReady().then(() => {
     }
   }
   if (!_gotLock) return;
+  try { applyLocale(new (require('electron-store'))({ name: 'window' }).get('language') || 'system'); } catch {}
   buildAppMenu();
   createWindow();
   accountStore.getAccounts().forEach(startIdleForAccount);

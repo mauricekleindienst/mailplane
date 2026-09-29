@@ -23,7 +23,7 @@ const INVOKE_CHANNELS = new Set([
 ]);
 
 const SEND_CHANNELS = new Set([
-  'badge:set',
+  'badge:set', 'app:locale',
   'context-menu:show',
   'context-menu:folder',
   'context-menu:account',

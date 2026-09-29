@@ -1758,3 +1758,5 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
 .snz-when { font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .snz-err { font-size: 11.5px; color: var(--danger); padding: 4px 8px 0; }
 .snz-confirm { width: 100%; margin-top: 8px; justify-content: center; }
+.smart-unread { width: 28px; padding: 0; justify-content: center; }
+.smart-tab { padding: 0 9px; }

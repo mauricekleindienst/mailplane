@@ -22,6 +22,7 @@ main.js                 — main process: window, IPC handlers, protocol, update
 src/account-store.js    — CRUD for accounts + provider presets + folder maps
 src/imap-manager.js     — ImapFlow connection pool, fetch/body/delete/move/flag/archive
 src/smtp-manager.js     — nodemailer send + verify + undo-send queue
+src/i18n.js             — UI translations (English = keys; `de`), `translator()`, DOM translator; shared by renderer + main
 src/ai-client.js        — optional AI: providers, OpenAI-compatible + Anthropic requests, task prompts
 index.html              — app shell + modals (setup, compose)
 renderer.js             — all UI logic, state, IPC calls
@@ -76,6 +77,7 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 | `update:info` | invoke | → `{mode:'auto'\|'manual', version, status, packaged}` |
 | `update:check` / `update:download` / `update:install` | invoke | check now / download (when auto-download is off) / quit and install |
 | `update:status` | main→renderer | `{state:'checking'\|'upToDate'\|'available'\|'downloading'\|'ready'\|'manual'\|'error', version?, downloadUrl?, pageUrl?}` |
+| `app:locale` | send | `'system'\|'en'\|'de'` — main translates menus / notifications |
 | `titlebar:theme` | send | `{dark}` — recolours the Windows/Linux window buttons |
 | `shell:open` | invoke | `url` |
 | `badge:set` | send | `count` |
@@ -111,6 +113,7 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 - **Drafts** (renderer.js "Drafts", `draft:save` / `draft:delete`): each compose window is a session (`_cs`) that autosaves 2.5 s after the last edit into the server Drafts folder (IMAP APPEND `\\Draft`, previous copy removed); close / Esc keeps it ("Saved to Drafts"), Discard deletes it, and main deletes it once the message is sent (`draft` ref travels with `email:send`, also through the send-later queue). Clicking a message in Drafts reopens it in compose. JMAP accounts don't save drafts.
 - **Snooze** (`email:snooze`, H key, hover/detail clock, context menu): the message moves to a server "Snoozed" folder (created on demand) and main keeps `snoozed.json` ({accountId, folder, returnTo, messageId, until}); at `until` it is found by Message-ID, marked unread, moved back and announced ("Back from snooze"). Restored on launch, retries every 5 min.
 - **Notifications** (`notifyNewMail(accountId, info)`): IDLE passes the new messages' envelopes. One message → actions: macOS buttons Archive / Mark as Read + inline reply (sent threaded via `dispatchSend`); Windows toast buttons via `mailplane://notification?action=…&account=…&folder=…&uid=…` (protocol registered at startup + `build.protocols`, handled in `handleAppUrl` from second-instance/open-url); Reply without text opens the reply in the app (`notification-reply`). `global.__mailplaneTest` exposes these hooks in E2E.
+- **Languages** (`src/i18n.js`): English text is the key, so write UI strings in English as usual and add the German entry (strings, `{placeholder}` patterns, folder nouns). The renderer runs `installDomTranslator` (MutationObserver) so any UI text/`title`/`placeholder`/`aria-label` is translated as it renders; mail content lives under `RAW` selectors and is never touched — add new user-content classes there. Use `t()` explicitly only inside RAW areas. Setting `language` (`system`|`en`|`de`) reloads the window; main gets `app:locale` and rebuilds menus (`T()` wraps menu labels and notification text). Dates use `LOCALE_TAG`.
 - **Starred** is a virtual folder (`key: 'starred'`, `emails:starred`); selection keys include the folder because UIDs are per folder.
 - **Settings only show options that work** — don't add placebo toggles.
 - **Account setup** (renderer.js "Account setup", `#setupModal` sections by `data-step`): welcome (first run only) → email (live preset detection, autodiscover on continue, guess `imap.<domain>` as last resort) → password (`PROVIDER_HELP` gives app-password steps + link per provider family) → optional server form (security select switches default ports; "None" warns) → checking (`accounts:test` for IMAP then SMTP, live status, `parseSetupError` explains failures per server) → personalise (name derived from address, colour) → `accounts:add` with `verified: true`.
@@ -210,6 +213,7 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] Drafts autosave to the server Drafts folder (reopen, discard, removed after send)
 - [x] Snooze (server Snoozed folder, comes back unread)
 - [x] Notification actions (archive, mark read, reply)
+- [x] German interface + language setting (System / English / Deutsch)
 - [x] Smart inbox (categories, sender bundles, unread filter)
 - [x] Local SQLite cache for offline reading (better-sqlite3, WAL mode, messages + bodies)
 - [x] CalDAV / calendar integration (PROPFIND discovery, REPORT fetch, monthly grid view)
