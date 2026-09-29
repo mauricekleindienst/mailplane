@@ -202,7 +202,7 @@ Android: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_AL
 
 | | Desktop | Android |
 |---|---|---|
-| UI | Electron 30, vanilla JS + CSS | Kotlin, Jetpack Compose, Material 3 |
+| UI | Electron 44, vanilla JS + CSS | Kotlin, Jetpack Compose, Material 3 |
 | Mail | imapflow, nodemailer, mailparser, JMAP client | javax.mail (android-mail) in `android/core` |
 | Storage | electron-store, SQLite cache (better-sqlite3) | SharedPreferences + Android Keystore |
 | Secrets | Electron `safeStorage` | AES-GCM key in the Android Keystore |
