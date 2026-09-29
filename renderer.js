@@ -415,6 +415,7 @@ _on('context-menu:action', async (action) => {
   else if (action === 'mark-read') setReadState(email, true);
   else if (action === 'mark-unread') setReadState(email, false);
   else if (action === 'toggle-star') toggleFlag(email);
+  else if (action === 'snooze') openSnoozePicker(email);
 });
 
 // ── Folder context menu actions ───────────────────────────────────────────────
@@ -2050,6 +2051,7 @@ function makeEmailItem(email, showAccountBadge) {
       ? `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/></svg>`
       : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`,
     () => setReadState(email, !email.read)),
+    mkAct('Snooze', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`, () => openSnoozePicker(email, actions)),
     mkAct('Delete', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M9 6V4h6v2"/></svg>`, () => doDelete(email)),
   );
 
@@ -2436,12 +2438,12 @@ function advanceSelectionAfterRemove(email) {
 
 const _removing = new Set(); // selKeys with a delete/archive in flight (prevents double-fire)
 
-async function removeEmail(email, channel, doneMsg, failMsg) {
+async function removeEmail(email, channel, doneMsg, failMsg, extra = {}) {
   const key = selKey(email);
   if (_removing.has(key)) return;
   _removing.add(key);
   try {
-    const res = await ipc(channel, { accountId: email.accountId, folder: email.folder, uid: email.uid });
+    const res = await ipc(channel, { accountId: email.accountId, folder: email.folder, uid: email.uid, ...extra });
     if (res.success) {
       await collapseRow(key);
       advanceSelectionAfterRemove(email);
@@ -2474,6 +2476,89 @@ function collapseRow(key) {
 
 function doDelete(email) { return removeEmail(email, 'email:delete', 'Deleted', 'Delete failed'); }
 function doArchive(email) { return removeEmail(email, 'email:archive', 'Archived', 'Archive failed'); }
+
+// ── Snooze ────────────────────────────────────────────────────────────────────
+// The message leaves the list now and comes back unread at the chosen time
+// (main keeps the schedule, the server keeps the message in "Snoozed").
+function snoozePresets(now = new Date()) {
+  const at = (d, h) => { const x = new Date(d); x.setHours(h, 0, 0, 0); return x; };
+  const plusDays = n => { const x = new Date(now); x.setDate(x.getDate() + n); return x; };
+  const out = [];
+  const later = new Date(now.getTime() + 3 * 3600e3);
+  later.setMinutes(0, 0, 0);
+  if (later.getDate() === now.getDate() && later.getHours() <= 21) out.push(['later', 'Later today', later]);
+  if (now.getHours() < 17) out.push(['evening', 'This evening', at(now, 18)]);
+  out.push(['tomorrow', 'Tomorrow', at(plusDays(1), 8)]);
+  const day = now.getDay();
+  if (day >= 1 && day <= 4) out.push(['weekend', 'This weekend', at(plusDays(6 - day), 9)]);
+  out.push(['nextweek', 'Next week', at(plusDays(((8 - day) % 7) || 7), 8)]);
+  return out;
+}
+const fmtSnooze = d => d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+
+function doSnooze(email, until) {
+  return removeEmail(email, 'email:snooze', `Snoozed until ${fmtSnooze(until)}`, 'Snooze failed',
+    { until: until.toISOString(), subject: email.subject, fromName: email.fromName || email.fromEmail });
+}
+
+function closeSnoozePicker() { document.getElementById('snoozePicker')?.remove(); }
+function openSnoozePicker(email, anchor = null) {
+  closeSnoozePicker();
+  const box = document.createElement('div');
+  box.id = 'snoozePicker';
+  box.className = 'snooze-picker';
+  box.setAttribute('role', 'menu');
+  box.innerHTML = '<div class="slp-title">Snooze until</div>';
+  snoozePresets().forEach(([key, label, when]) => {
+    const b = document.createElement('button');
+    b.className = 'slp-opt snz-opt';
+    b.dataset.preset = key;
+    b.innerHTML = `<span>${label}</span><span class="snz-when">${escHtml(fmtSnooze(when))}</span>`;
+    b.addEventListener('click', () => { closeSnoozePicker(); doSnooze(email, when); });
+    box.appendChild(b);
+  });
+  box.insertAdjacentHTML('beforeend', `<div class="slp-sep"></div><label class="slp-custom-label" for="snoozeCustom">Pick a date &amp; time</label>
+    <input type="datetime-local" class="slp-datetime" id="snoozeCustom"><div class="snz-err hidden" id="snoozeErr">Pick a time in the future</div>
+    <button class="btn-send snz-confirm" id="snoozeConfirm">Snooze</button>`);
+  document.body.appendChild(box);
+  const custom = box.querySelector('#snoozeCustom');
+  const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0);
+  custom.value = toLocalInputValue(d);
+  custom.min = toLocalInputValue(new Date());
+  box.querySelector('#snoozeConfirm').addEventListener('click', () => {
+    const when = new Date(custom.value);
+    if (!(when > new Date())) { box.querySelector('#snoozeErr').classList.remove('hidden'); return; }
+    closeSnoozePicker();
+    doSnooze(email, when);
+  });
+  // Next to the button that opened it, else centred over the list
+  const r = anchor?.getBoundingClientRect?.() || document.getElementById('emailListPanel').getBoundingClientRect();
+  const w = box.offsetWidth, h = box.offsetHeight;
+  let left = anchor ? r.right - w : r.left + (r.width - w) / 2;
+  let top = anchor ? r.bottom + 6 : r.top + 80;
+  left = Math.max(8, Math.min(left, innerWidth - w - 8));
+  if (top + h > innerHeight - 8) top = Math.max(8, (anchor ? r.top - h - 6 : innerHeight - h - 8));
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  box.querySelector('.snz-opt')?.focus();
+  setTimeout(() => {
+    const away = e => { if (!box.contains(e.target)) { closeSnoozePicker(); document.removeEventListener('mousedown', away, true); } };
+    document.addEventListener('mousedown', away, true);
+  });
+  box.addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); closeSnoozePicker(); } });
+}
+
+_on('email:unsnoozed', ({ subject }) => toast(`“${subject}” is back from snooze`));
+
+// Reply button on a Windows notification: open that message's reply in the app
+_on('notification-reply', async ({ accountId, folder, uid }) => {
+  const res = await ipc('email:body', { accountId, folder, uid }).catch(() => null);
+  const body = res?.body;
+  if (!body) { toast('Could not open that message', true); return; }
+  const email = { accountId, folder, uid, subject: body.subject || '', read: true,
+    fromName: body.from?.name || body.from?.address || '', fromEmail: body.from?.address || '', date: body.date };
+  openReply(email, body);
+});
 
 // ── Undo send queue ───────────────────────────────────────────────────────────
 let _undoSendTimer = null;
@@ -2745,6 +2830,7 @@ function renderDetail(email, body) {
   moreWrap.append(moreBtn, moreMenu);
   grpActions.append(
     mkIconBtn('Archive', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>`, '', () => doArchive(email)),
+    mkIconBtn('Snooze', `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`, '', e => { e.stopPropagation(); openSnoozePicker(email, e.currentTarget); }),
     mkIconBtn(email.flagged ? 'Unflag' : 'Flag',
       `<svg width="13" height="13" viewBox="0 0 24 24" fill="${email.flagged ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
       email.flagged ? 'flagged-active' : '', () => toggleFlag(email)),
@@ -4879,6 +4965,7 @@ function renderSettingsShortcuts() {
       [['⌫'], 'Delete'],
       [['U'], 'Mark read / unread'],
       [['S'], 'Star / unstar'],
+      [['H'], 'Snooze'],
     ]],
     ['Layout', [
       [['⌘', '\\'], 'Show / hide sidebar'],
@@ -5485,6 +5572,8 @@ document.addEventListener('keydown', e => {
     setReadState(S.selectedEmail, !S.selectedEmail.read);
   } else if (key === 's' && S.selectedEmail) {
     toggleFlag(S.selectedEmail);
+  } else if (key === 'h' && S.selectedEmail) {
+    openSnoozePicker(S.selectedEmail);
   } else if (key === '/') {
     e.preventDefault(); document.getElementById('searchInput').focus();
   }

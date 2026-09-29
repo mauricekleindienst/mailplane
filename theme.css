@@ -1748,3 +1748,13 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
 /* Draft autosave state in the compose footer */
 .compose-draft-state { font-size: 11.5px; color: var(--text-tertiary); white-space: nowrap; margin-right: 4px; }
 .compose-draft-state:empty { display: none; }
+
+/* Snooze picker (anchored popover) */
+.snooze-picker {
+  position: fixed; z-index: 10006; width: 240px; padding: 8px;
+  background: var(--modal-bg); border-radius: 16px; box-shadow: var(--shadow-md);
+}
+.snz-opt { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.snz-when { font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.snz-err { font-size: 11.5px; color: var(--danger); padding: 4px 8px 0; }
+.snz-confirm { width: 100%; margin-top: 8px; justify-content: center; }

@@ -57,6 +57,12 @@
         "schemes": [
           "mailto"
         ]
+      },
+      {
+        "name": "Mailplane",
+        "schemes": [
+          "mailplane"
+        ]
       }
     ],
     "copyright": "© 2026 Mailplane",

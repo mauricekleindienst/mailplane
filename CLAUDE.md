@@ -109,6 +109,8 @@ Native Kotlin + Jetpack Compose, same "Frost" design and accent presets.
 - **Smart inbox** (Inbox / All Mail, setting `smart-inbox`): `#smartBar` tabs All/People/Updates/Newsletters from `mailCategory()` (sender address only), Unread-only filter, and 3+ automated mails from one sender collapse into a `.bundle` (Mark all read / Archive all via `runBulk`). ↑/↓ follow `visibleEmails()`.
 - **Send later** persists in `scheduled.json` (main.js `scheduledQueue`): restored on launch, overdue mail goes out right away, failures retry every 5 min; cancelling reopens the message in compose.
 - **Drafts** (renderer.js "Drafts", `draft:save` / `draft:delete`): each compose window is a session (`_cs`) that autosaves 2.5 s after the last edit into the server Drafts folder (IMAP APPEND `\\Draft`, previous copy removed); close / Esc keeps it ("Saved to Drafts"), Discard deletes it, and main deletes it once the message is sent (`draft` ref travels with `email:send`, also through the send-later queue). Clicking a message in Drafts reopens it in compose. JMAP accounts don't save drafts.
+- **Snooze** (`email:snooze`, H key, hover/detail clock, context menu): the message moves to a server "Snoozed" folder (created on demand) and main keeps `snoozed.json` ({accountId, folder, returnTo, messageId, until}); at `until` it is found by Message-ID, marked unread, moved back and announced ("Back from snooze"). Restored on launch, retries every 5 min.
+- **Notifications** (`notifyNewMail(accountId, info)`): IDLE passes the new messages' envelopes. One message → actions: macOS buttons Archive / Mark as Read + inline reply (sent threaded via `dispatchSend`); Windows toast buttons via `mailplane://notification?action=…&account=…&folder=…&uid=…` (protocol registered at startup + `build.protocols`, handled in `handleAppUrl` from second-instance/open-url); Reply without text opens the reply in the app (`notification-reply`). `global.__mailplaneTest` exposes these hooks in E2E.
 - **Starred** is a virtual folder (`key: 'starred'`, `emails:starred`); selection keys include the folder because UIDs are per folder.
 - **Settings only show options that work** — don't add placebo toggles.
 - **Account setup** (renderer.js "Account setup", `#setupModal` sections by `data-step`): welcome (first run only) → email (live preset detection, autodiscover on continue, guess `imap.<domain>` as last resort) → password (`PROVIDER_HELP` gives app-password steps + link per provider family) → optional server form (security select switches default ports; "None" warns) → checking (`accounts:test` for IMAP then SMTP, live status, `parseSetupError` explains failures per server) → personalise (name derived from address, colour) → `accounts:add` with `verified: true`.
@@ -206,6 +208,8 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [x] Empty state screens (no accounts, empty folder, no search results)
 - [x] Send Later / scheduled send (persistent queue, catches up after restart)
 - [x] Drafts autosave to the server Drafts folder (reopen, discard, removed after send)
+- [x] Snooze (server Snoozed folder, comes back unread)
+- [x] Notification actions (archive, mark read, reply)
 - [x] Smart inbox (categories, sender bundles, unread filter)
 - [x] Local SQLite cache for offline reading (better-sqlite3, WAL mode, messages + bodies)
 - [x] CalDAV / calendar integration (PROPFIND discovery, REPORT fetch, monthly grid view)
@@ -219,6 +223,5 @@ Notarization requires `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`
 - [ ] Crash reporting (Sentry — needs DSN from account)
 - [ ] Code signing + notarization (needs Apple Developer ID cert)
 - [ ] Email rules / filters
-- [ ] Snooze emails
 - [ ] Spotlight integration (NSUserActivity)
 - [ ] Virtual scrolling for large email lists

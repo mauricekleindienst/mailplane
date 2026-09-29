@@ -301,6 +301,41 @@ async function archiveEmail(account, folder, uid) {
   }
 }
 
+// ── Snooze ────────────────────────────────────────────────────────────────────
+// A snoozed message waits in a "Snoozed" folder (created on first use). UIDs
+// change on every move, so it is found again by its Message-ID.
+async function snoozeEmail(account, folder, uid) {
+  const client = await getClient(account);
+  const list = await client.list();
+  let dest = list.find(mb => (mb.name || mb.path).toLowerCase() === 'snoozed')?.path;
+  if (!dest) { await client.mailboxCreate('Snoozed'); dest = 'Snoozed'; }
+  const lock = await client.getMailboxLock(folder);
+  try {
+    const msg = await client.fetchOne(String(uid), { envelope: true }, { uid: true });
+    const messageId = msg?.envelope?.messageId || null;
+    if (!messageId) throw new Error('This message can’t be snoozed (it has no Message-ID)');
+    await client.messageMove({ uid }, dest, { uid: true });
+    return { folder: dest, messageId };
+  } finally {
+    lock.release();
+  }
+}
+
+/** Moves a snoozed message back (unread). Returns false when it is no longer there. */
+async function unsnoozeEmail(account, snoozeFolder, messageId, dest) {
+  const client = await getClient(account);
+  const lock = await client.getMailboxLock(snoozeFolder);
+  try {
+    const uids = await client.search({ header: { 'message-id': messageId } }, { uid: true });
+    if (!uids?.length) return false;
+    await client.messageFlagsRemove(uids, ['\\Seen'], { uid: true });
+    await client.messageMove(uids, dest, { uid: true });
+    return true;
+  } finally {
+    lock.release();
+  }
+}
+
 // ── Drafts ────────────────────────────────────────────────────────────────────
 // Saving appends a fresh copy (\Draft) and then removes the previous one, so
 // the Drafts folder always holds exactly one version of the message.
@@ -527,8 +562,21 @@ async function startIdle(account, onNewMail) {
       // Successful connection — reset backoff
       state.delay = IDLE_BACKOFF_MIN;
       await client.mailboxOpen('INBOX');
-      client.on('exists', ({ count, prevCount }) => {
-        if (count > (prevCount ?? 0)) onNewMail(account.id);
+      client.on('exists', async ({ count, prevCount }) => {
+        if (!(count > (prevCount ?? 0))) return;
+        // Tell main which messages arrived, so the notification can show and act on them
+        const fresh = [];
+        if (prevCount) {
+          try {
+            for await (const m of client.fetch(`${prevCount + 1}:${count}`, { uid: true, envelope: true, flags: true })) {
+              if (m.flags?.has('\\Seen')) continue;
+              const f = m.envelope?.from?.[0] || {};
+              fresh.push({ uid: m.uid, folder: 'INBOX', subject: m.envelope?.subject || '',
+                fromName: f.name || f.address || '', fromEmail: f.address || '', messageId: m.envelope?.messageId || null });
+            }
+          } catch { /* notify without details */ }
+        }
+        onNewMail(account.id, fresh);
       });
     } catch {
       state.client = null;
@@ -562,7 +610,7 @@ function stopAllIdle() {
 }
 
 module.exports = {
-  saveDraft, deleteDraft,
+  saveDraft, deleteDraft, snoozeEmail, unsnoozeEmail,
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
   setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders, fetchFlagged, getQuota,
   createFolder, renameFolder, deleteFolder,

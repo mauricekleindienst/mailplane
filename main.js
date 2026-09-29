@@ -77,18 +77,26 @@ if (!_gotLock) {
 } else {
   app.on('second-instance', (_event, argv) => {
     const url = argv.find(a => a.startsWith('mailto:'));
+    const appUrl = argv.find(a => a.startsWith('mailplane:'));
     const action = argv.find(a => a in LAUNCH_ACTIONS);
-    if (url) handleMailto(url);
+    if (appUrl) handleAppUrl(appUrl);
+    else if (url) handleMailto(url);
     else if (action) runLaunchAction(action);
     else if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
   });
+  const argvAppUrl = process.argv.find(a => a.startsWith('mailplane:'));
+  if (argvAppUrl) {app.whenReady().then(() => setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.isLoading()) {
+      mainWindow.webContents.once('did-finish-load', () => handleAppUrl(argvAppUrl));
+    } else handleAppUrl(argvAppUrl);
+  }, 0));}
   const argvMailto = process.argv.find(a => a.startsWith('mailto:'));
   if (argvMailto) _pendingMailto = argvMailto;
 }
 
 app.on('open-url', (event, url) => {
   event.preventDefault();
-  handleMailto(url);
+  if (url.startsWith('mailplane:')) handleAppUrl(url); else handleMailto(url);
 });
 
 // ── Updates via GitHub Releases ───────────────────────────────────────────────
@@ -271,27 +279,117 @@ const _notifyPrefs = { enabled: true, sound: true, sender: true, subject: true }
 
 ipcMain.on('prefs:notify', (_, prefs) => { Object.assign(_notifyPrefs, prefs); });
 
-function notifyNewMail(accountId, subject, fromName) {
+// info: an array of new messages from IDLE ({uid, folder, subject, fromName, fromEmail, messageId}),
+// or one object (e.g. a snoozed message coming back). One message gets actions:
+// macOS buttons + inline reply, Windows toast buttons (via mailplane:// links).
+const _liveNotifications = new Set();   // keeps shown notifications from being garbage-collected
+function notifyNewMail(accountId, info = []) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('new-emails', accountId);
   }
-  if (!_notifyPrefs.enabled) return;
-  if (Notification.isSupported()) {
-    const bodyParts = [];
-    if (_notifyPrefs.sender && fromName) bodyParts.push(fromName);
-    if (_notifyPrefs.subject && subject) bodyParts.push(subject);
-    // Sender as the title, subject as the text — like the system Mail apps
-    const title = (_notifyPrefs.sender && fromName) ? fromName : 'Mailplane';
-    const body = (_notifyPrefs.subject && subject) ? subject : (bodyParts.length ? bodyParts.join(' — ') : 'New email received');
-    const n = new Notification({ title, body, silent: !_notifyPrefs.sound });
-    n.on('click', () => {
-      if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return; }
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-      mainWindow.webContents.send('notification-open', { accountId });
-    });
-    n.show();
+  if (!_notifyPrefs.enabled || !Notification.isSupported()) return;
+  const list = Array.isArray(info) ? info : [info];
+  const one = list.length === 1 ? list[0] : null;
+  let title = 'Mailplane';
+  let body = 'New email received';
+  if (one) {
+    if (_notifyPrefs.sender && one.fromName) title = one.fromName;
+    if (_notifyPrefs.subject && one.subject) body = one.subject;
+    else if (one.fromName && title === 'Mailplane' && _notifyPrefs.sender) body = one.fromName;
+    if (one.snoozed) { title = 'Back from snooze'; body = [_notifyPrefs.sender && one.fromName, _notifyPrefs.subject && one.subject].filter(Boolean).join(' — ') || 'A snoozed message is back'; }
+  } else if (list.length > 1) {
+    title = `${list.length} new messages`;
+    if (_notifyPrefs.sender) body = [...new Set(list.map(m => m.fromName).filter(Boolean))].slice(0, 3).join(', ') || body;
+  }
+  const account = accountStore.getAccounts().find(a => a.id === accountId);
+  const actionable = !!(one?.uid && account && account.protocol !== 'jmap');
+  const opts = { title, body, silent: !_notifyPrefs.sound };
+  if (actionable && process.platform === 'darwin') {
+    opts.actions = [{ type: 'button', text: 'Archive' }, { type: 'button', text: 'Mark as Read' }];
+    opts.hasReply = true;
+    opts.replyPlaceholder = 'Reply…';
+  } else if (actionable && process.platform === 'win32') {
+    opts.toastXml = notificationToastXml(title, body, accountId, one);
+  }
+  const n = new Notification(opts);
+  _liveNotifications.add(n);
+  n.on('close', () => _liveNotifications.delete(n));
+  n.on('click', () => { _liveNotifications.delete(n); openFromNotification(accountId); });
+  n.on('action', (_e, index) => { _liveNotifications.delete(n); runNotificationAction(index === 0 ? 'archive' : 'read', accountId, one); });
+  n.on('reply', (_e, text) => { _liveNotifications.delete(n); runNotificationAction('reply', accountId, one, text); });
+  n.show();
+}
+
+function openFromNotification(accountId) {
+  if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send('notification-open', { accountId });
+}
+
+const xmlEsc = v => String(v ?? '').replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+function notificationUrl(action, accountId, m) {
+  const q = new URLSearchParams({ action, account: accountId, folder: m.folder || 'INBOX', uid: String(m.uid) });
+  return `mailplane://notification?${q}`;
+}
+function notificationToastXml(title, body, accountId, m) {
+  const act = (label, action) =>
+    `<action content="${xmlEsc(label)}" activationType="protocol" arguments="${xmlEsc(notificationUrl(action, accountId, m))}"/>`;
+  return `<toast launch="${xmlEsc(notificationUrl('open', accountId, m))}" activationType="protocol">` +
+    `<visual><binding template="ToastGeneric"><text>${xmlEsc(title)}</text><text>${xmlEsc(body)}</text></binding></visual>` +
+    `<actions>${act('Archive', 'archive')}${act('Mark as read', 'read')}${act('Reply', 'reply')}</actions></toast>`;
+}
+
+// mailplane://notification?action=…&account=…&folder=…&uid=… (Windows toast buttons)
+function handleAppUrl(url) {
+  let u;
+  try { u = new URL(url); } catch { return; }
+  if (u.hostname !== 'notification') return;
+  const p = u.searchParams;
+  const accountId = p.get('account');
+  const m = { uid: Number(p.get('uid')), folder: p.get('folder') || 'INBOX' };
+  const action = p.get('action');
+  if (!accountId || !m.uid) return;
+  if (action === 'archive' || action === 'read') runNotificationAction(action, accountId, m);
+  else if (action === 'reply') runNotificationAction('reply', accountId, m);
+  else openFromNotification(accountId);
+}
+
+async function runNotificationAction(action, accountId, m, text) {
+  const account = accountStore.getAccounts().find(a => a.id === accountId);
+  if (!account || !m?.uid) return;
+  const folder = m.folder || 'INBOX';
+  const refresh = () => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send('new-emails', accountId);
+  const fail = (msg) => { if (Notification.isSupported()) new Notification({ title: 'Mailplane', body: msg }).show(); };
+  try {
+    if (action === 'archive') {
+      await mgr(account).archiveEmail(account, folder, m.uid);
+      emailCache.removeMessage(accountId, folder, m.uid);
+      refresh();
+    } else if (action === 'read') {
+      await mgr(account).setRead(account, folder, m.uid, true);
+      emailCache.updateFlags(accountId, folder, m.uid, { read: true });
+      refresh();
+    } else if (action === 'reply' && text?.trim()) {
+      // Inline reply (macOS): send straight away, threaded, then mark the message read
+      const to = m.fromEmail;
+      if (!to) throw new Error('No sender address');
+      const subject = /^re:/i.test(m.subject || '') ? m.subject : `Re: ${m.subject || ''}`;
+      const html = xmlEsc(text).replace(/\n/g, '<br>');
+      const res = await dispatchSend(accountId, { to, subject, text, html,
+        inReplyTo: m.messageId || undefined, references: m.messageId || undefined });
+      if (!res.success) throw new Error(res.error || 'Send failed');
+      await mgr(account).setRead(account, folder, m.uid, true).catch(() => {});
+      emailCache.updateFlags(accountId, folder, m.uid, { read: true });
+      refresh();
+    } else if (action === 'reply') {
+      // Button without inline text (Windows): open the reply in the app
+      openFromNotification(accountId);
+      mainWindow?.webContents.send('notification-reply', { accountId, folder, uid: m.uid });
+    }
+  } catch (err) {
+    fail(`Couldn’t ${action === 'read' ? 'mark as read' : action}: ${err.message}`);
   }
 }
 
@@ -813,6 +911,81 @@ async function dispatchSend(accountId, { draft, ...emailData }) {
   return result;
 }
 
+// ── Snooze ────────────────────────────────────────────────────────────────────
+// snoozed.json: id → { accountId, folder (Snoozed), returnTo, messageId, subject, fromName, until }.
+// Re-armed on launch; overdue ones come back right away; failures retry in 5 min.
+const snoozeTimers = new Map();
+let _snoozeStore;
+function snoozeStore() {
+  if (!_snoozeStore) _snoozeStore = new (require('electron-store'))({ name: 'snoozed', defaults: { items: {} } });
+  return _snoozeStore;
+}
+const snoozedItems = () => snoozeStore().get('items') || {};
+function setSnoozed(id, item) {
+  const items = snoozedItems();
+  if (item) items[id] = item; else delete items[id];
+  snoozeStore().set('items', items);
+}
+
+function armSnooze(id, until) {
+  clearTimeout(snoozeTimers.get(id));
+  const wait = Math.max(0, new Date(until) - Date.now());
+  snoozeTimers.set(id, setTimeout(() => {
+    if (wait > MAX_TIMER_MS - 1) armSnooze(id, until); else wakeSnoozed(id);
+  }, Math.min(wait, MAX_TIMER_MS - 1)));
+}
+
+async function wakeSnoozed(id) {
+  const item = snoozedItems()[id];
+  snoozeTimers.delete(id);
+  if (!item) return;
+  const account = accountStore.getAccounts().find(a => a.id === item.accountId);
+  if (!account) { setSnoozed(id, null); return; }
+  let back;
+  try {
+    back = await imapManager.unsnoozeEmail(account, item.folder, item.messageId, item.returnTo);
+  } catch (err) {
+    console.warn('[Mailplane] unsnooze failed, retrying:', err.message);
+    snoozeTimers.set(id, setTimeout(() => wakeSnoozed(id), SCHEDULE_RETRY_MS));
+    return;
+  }
+  setSnoozed(id, null);
+  if (!back) return;   // moved away by hand meanwhile
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('email:unsnoozed', { accountId: item.accountId, subject: item.subject });
+  }
+  notifyNewMail(item.accountId, { subject: item.subject, fromName: item.fromName, snoozed: true });
+}
+
+function restoreSnoozed() {
+  for (const [id, item] of Object.entries(snoozedItems())) {
+    armSnooze(id, new Date(Math.max(new Date(item.until).getTime(), Date.now() + 3000)).toISOString());
+  }
+}
+
+ipcMain.handle('email:snooze', async (_, { accountId, folder, uid, until, subject, fromName }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    if (account.protocol === 'jmap') return { success: false, error: 'Snooze isn’t available for this account' };
+    if (!(new Date(until) > new Date())) return { success: false, error: 'Pick a time in the future' };
+    const res = await imapManager.snoozeEmail(account, folder, uid);
+    emailCache.removeMessage(accountId, folder, uid);
+    const id = `snz_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setSnoozed(id, { accountId, folder: res.folder, returnTo: folder, messageId: res.messageId,
+      subject: subject || '(no subject)', fromName: fromName || '', until });
+    armSnooze(id, until);
+    return { success: true, id };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('email:snoozed:list', () =>
+  Object.entries(snoozedItems()).map(([id, it]) => ({ id, ...it })));
+
+ipcMain.handle('email:snoozed:wake', (_, { id }) => { wakeSnoozed(id); return { success: true }; });
+
 // ── Drafts (server Drafts folder) ─────────────────────────────────────────────
 ipcMain.handle('draft:save', async (_, { accountId, draft, ...data }) => {
   try {
@@ -1272,6 +1445,7 @@ ipcMain.on('context-menu:show', (event, _payload) => {
     { type: 'separator' },
     { label: 'Archive',     click: () => event.sender.send('context-menu:action', 'archive') },
     { label: 'Delete',      click: () => event.sender.send('context-menu:action', 'delete') },
+    { label: 'Snooze…',     click: () => event.sender.send('context-menu:action', 'snooze') },
     { type: 'separator' },
     { label: 'Mark as Read',   click: () => event.sender.send('context-menu:action', 'mark-read') },
     { label: 'Mark as Unread', click: () => event.sender.send('context-menu:action', 'mark-unread') },
@@ -1285,7 +1459,13 @@ ipcMain.on('context-menu:show', (event, _payload) => {
 
 app.whenReady().then(() => {
   // Windows ties notifications and the taskbar entry to this ID (same as the installer's)
-  if (process.platform === 'win32') app.setAppUserModelId('com.mailplane.app');
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.mailplane.app');
+    // Toast buttons (Archive / Mark as read / Reply) come back as mailplane:// links
+    if (!process.env.MAILPLANE_E2E) {
+      try { if (!app.isDefaultProtocolClient('mailplane', ...mailtoArgs())) app.setAsDefaultProtocolClient('mailplane', ...mailtoArgs()); } catch {}
+    }
+  }
   if (!_gotLock) return;
   buildAppMenu();
   createWindow();
@@ -1297,6 +1477,7 @@ app.whenReady().then(() => {
   }
   emailCache.pruneOldEntries(30);
   restoreScheduled();
+  restoreSnoozed();
   // Update checks start once the renderer sends 'update:config'
   _updaterReady = setupUpdater();
   setupAppIconMenu();
@@ -1321,6 +1502,7 @@ app.on('will-quit', (event) => {
   _cleanedUp = true;
   imapManager.stopAllIdle();
   for (const { timer } of scheduledQueue.values()) clearTimeout(timer);
+  for (const t of snoozeTimers.values()) clearTimeout(t);
   const done = Promise.allSettled([
     imapManager.disconnectAll(),
     jmapManager.disconnectAll(),
@@ -1333,3 +1515,8 @@ app.on('will-quit', (event) => {
     app.exit(0);
   });
 });
+
+// E2E hooks for things only the OS can trigger (notification buttons, snooze wake-ups)
+if (process.env.MAILPLANE_E2E === '1') {
+  global.__mailplaneTest = { handleAppUrl, runNotificationAction, notificationToastXml, wakeSnoozed, snoozedItems };
+}

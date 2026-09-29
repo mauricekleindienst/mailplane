@@ -218,6 +218,20 @@ function installFakeBackend({ shell, ipcMain, session }, { mailboxes, folders })
     return { folder, uid };
   };
   imap.deleteDraft = async (acc, folder, uid) => { take(acc, folder, uid); };
+  imap.snoozeEmail = async (acc, folder, uid) => {
+    if (!state.folders.some(f => f.path === 'Snoozed')) state.folders.push({ path: 'Snoozed', name: 'Snoozed', role: null, key: 'Snoozed' });
+    const m = take(acc, folder, uid);
+    box(acc, 'Snoozed').push(m);
+    return { folder: 'Snoozed', messageId: m.body.messageId };
+  };
+  imap.unsnoozeEmail = async (acc, snoozeFolder, messageId, dest) => {
+    const m = box(acc, snoozeFolder).find(x => x.body.messageId === messageId);
+    if (!m) return false;
+    take(acc, snoozeFolder, m.uid);
+    m.read = false;
+    box(acc, dest).push(m);
+    return true;
+  };
   imap.disconnect = async () => {};
   imap.disconnectAll = async () => {};
 

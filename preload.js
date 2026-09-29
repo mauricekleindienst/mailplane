@@ -13,7 +13,7 @@ const INVOKE_CHANNELS = new Set([
   'email:body', 'email:send', 'email:delete', 'email:archive',
   'email:move', 'email:flag', 'email:markread', 'email:bulk', 'email:attachment',
   'email:bimi',
-  'email:scheduled:list', 'email:scheduled:cancel', 'draft:save', 'draft:delete',
+  'email:scheduled:list', 'email:scheduled:cancel', 'draft:save', 'draft:delete', 'email:snooze', 'email:snoozed:list', 'email:snoozed:wake',
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
   'update:install', 'update:check', 'update:info', 'update:download',
@@ -34,7 +34,7 @@ const SEND_CHANNELS = new Set([
 ]);
 
 const RECEIVE_CHANNELS = new Set([
-  'new-emails', 'mailto', 'update-ready', 'email:scheduled:fired',
+  'new-emails', 'mailto', 'update-ready', 'email:scheduled:fired', 'email:unsnoozed', 'notification-reply',
   'open-settings', 'new-message', 'reply', 'reply-all', 'forward',
   'refresh', 'delete-email', 'archive-email', 'mark-read', 'toggle-star',
   'context-menu:action', 'context-menu:folder-action', 'context-menu:account-action',

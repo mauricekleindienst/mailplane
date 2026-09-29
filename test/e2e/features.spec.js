@@ -217,3 +217,70 @@ test('smart inbox: category tabs, unread filter and bundles for busy senders', a
   await page.locator('.folder-btn[data-folder="inbox"]').click();
   await expect(page.locator('#smartBar')).toBeHidden();
 });
+
+test('snooze: the message leaves the inbox and comes back unread when the time comes', async () => {
+  ctx = await launchApp();
+  const { page, fake, app } = ctx;
+  await page.locator('.acc-tab', { hasText: 'Alice Example' }).click();
+  await emailItem(page, 'Quarterly report').click();
+  await page.keyboard.press('h');
+  await expect(page.locator('#snoozePicker')).toBeVisible();
+  await expect(page.locator('#snoozePicker .snz-opt[data-preset="tomorrow"]')).toBeVisible();
+
+  // A time in the past is refused
+  await page.fill('#snoozeCustom', '2001-01-01T08:00');
+  await page.locator('#snoozeConfirm').click();
+  await expect(page.locator('#snoozeErr')).toBeVisible();
+
+  await page.locator('#snoozePicker .snz-opt[data-preset="tomorrow"]').click();
+  await expect(page.locator('#toast')).toContainText('Snoozed until');
+  await expect(emailItem(page, 'Quarterly report')).toHaveCount(0);
+  expect(await fake(s => s.mailboxes['acc-a'].Snoozed.map(m => m.subject))).toEqual(['Quarterly report']);
+  const items = await app.evaluate(() => global.__mailplaneTest.snoozedItems());
+  const [id] = Object.keys(items);
+  expect(items[id]).toMatchObject({ accountId: 'acc-a', returnTo: 'INBOX', subject: 'Quarterly report' });
+  expect(new Date(items[id].until).getHours()).toBe(8);
+
+  // Wake it up early (as the timer would): back in the inbox, unread, schedule cleared
+  await app.evaluate((_e, snzId) => global.__mailplaneTest.wakeSnoozed(snzId), id);
+  await expect(page.locator('#toast')).toContainText('is back from snooze');
+  await expect(emailItem(page, 'Quarterly report')).toHaveCount(1);
+  expect(await fake(s => s.mailboxes['acc-a'].INBOX.find(m => m.subject === 'Quarterly report').read)).toBe(false);
+  expect(await app.evaluate(() => Object.keys(global.__mailplaneTest.snoozedItems()).length)).toBe(0);
+});
+
+test('notification buttons archive, mark read and reply without opening the message', async () => {
+  ctx = await launchApp();
+  const { page, fake, app } = ctx;
+  await page.locator('.acc-tab', { hasText: 'Alice Example' }).click();
+  const uidOf = subject => fake((s, subj) => s.mailboxes['acc-a'].INBOX.find(m => m.subject === subj).uid, subject);
+  const invoice = await uidOf('Invoice #42');
+  const report = await uidOf('Quarterly report');
+
+  // Windows toast buttons arrive as mailplane:// links
+  await app.evaluate((_e, uid) => global.__mailplaneTest.handleAppUrl(`mailplane://notification?action=archive&account=acc-a&folder=INBOX&uid=${uid}`), invoice);
+  await expect.poll(() => fake(s => s.mailboxes['acc-a'].Archive.map(m => m.subject))).toEqual(['Invoice #42']);
+  await expect(emailItem(page, 'Invoice #42')).toHaveCount(0);
+
+  await app.evaluate((_e, uid) => global.__mailplaneTest.handleAppUrl(`mailplane://notification?action=read&account=acc-a&folder=INBOX&uid=${uid}`), report);
+  await expect.poll(() => fake((s, uid) => s.mailboxes['acc-a'].INBOX.find(m => m.uid === uid).read, report)).toBe(true);
+
+  // macOS inline reply: sent threaded to the sender
+  await app.evaluate((_e, uid) => global.__mailplaneTest.runNotificationAction('reply', 'acc-a',
+    { uid, folder: 'INBOX', subject: 'Quarterly report', fromEmail: 'carol@sender.test', messageId: '<q@sender.test>' }, 'Looks good!\nThanks'), report);
+  await expect.poll(() => fake(s => s.sent.map(m => ({ to: m.to, subject: m.subject, inReplyTo: m.inReplyTo }))))
+    .toEqual([{ to: 'carol@sender.test', subject: 'Re: Quarterly report', inReplyTo: '<q@sender.test>' }]);
+
+  // Reply button without text opens the reply in the app
+  await app.evaluate((_e, uid) => global.__mailplaneTest.handleAppUrl(`mailplane://notification?action=reply&account=acc-a&folder=INBOX&uid=${uid}`), report);
+  await expect(page.locator('#composeFloat')).toBeVisible();
+  await expect(page.locator('#composeSubject')).toHaveValue('Re: Quarterly report');
+
+  // The Windows toast carries the three buttons
+  const xml = await app.evaluate(() => global.__mailplaneTest.notificationToastXml('Carol & co', 'Hi <there>', 'acc-a', { uid: 7, folder: 'INBOX' }));
+  expect(xml).toContain('content="Archive"');
+  expect(xml).toContain('content="Mark as read"');
+  expect(xml).toContain('Carol &amp; co');
+  expect(xml).toContain('Hi &lt;there&gt;');
+  expect(xml).toContain('mailplane://notification?action=archive&amp;account=acc-a&amp;folder=INBOX&amp;uid=7');
+});
