@@ -64,6 +64,13 @@ each message tagged with a small dot in its account's colour.
 
 <img src="docs/screenshots/all-mail.png" alt="All Mail across accounts" width="100%" />
 
+### A smarter inbox
+The inbox sorts itself into **People**, **Updates** and **Newsletters**, and three or more
+notifications from the same sender fold into one bundle you can mark read or archive in one go.
+**Snooze** a message (`H`) and it comes back unread tomorrow morning, next week, or whenever you pick.
+New-mail notifications have **Archive**, **Mark as read** and **Reply** buttons, so many messages
+never need opening at all.
+
 ### Light, dark, and your colour
 Automatic, light or dark theme, and seven accent colours (or any colour you like).
 Everything tinted — buttons, badges, the selection glow — follows your choice.
@@ -75,7 +82,8 @@ Everything tinted — buttons, badges, the selection glow — follows your choic
 
 ### Write without friction
 Rich text or plain text, inline images, attachments, per-account signatures, **Undo Send**,
-**Send Later**, replies that thread correctly and never stack "Re: Re: AW:".
+**Send Later** (it survives a restart), drafts that save themselves to your server's Drafts folder,
+and replies that thread correctly and never stack "Re: Re: AW:".
 
 <img src="docs/screenshots/compose.png" alt="Compose" width="100%" />
 
@@ -112,6 +120,9 @@ Mailplane remembers your layout.
 **Offline**
 - Local SQLite cache — mail you've seen stays readable without a connection
 
+**Languages**
+- English and German (Deutsch) — follows your system, or pick one in Settings → General
+
 **Extras (desktop)**
 - CalDAV calendars with a month view
 - Pin any web app next to your inbox
@@ -121,7 +132,10 @@ Mailplane remembers your layout.
 
 A native Kotlin / Jetpack Compose app with the same look: guided account setup, account pills,
 folder drawer, swipe right to archive and left to delete, pull to refresh, a sandboxed reader,
-reply / reply all / forward, accent colours and dark mode, and quiet new-mail notifications.
+reply / reply all / forward, accent colours and dark mode. Plus everything from the desktop that matters
+on a phone: all inboxes in one list, search across every folder, attachments, drafts that sync with the
+desktop through your server, snooze, the optional AI assistant, German, and notifications you can archive,
+mark read or answer right from the notification shade.
 Passwords are encrypted with a key that never leaves the phone's Keystore.
 
 The mail engine (`android/core`) is plain Kotlin and tested against a real in-memory IMAP/SMTP server.
@@ -138,6 +152,7 @@ The mail engine (`android/core`) is plain Kotlin and tested against a real in-me
 | `⌫` | Delete |
 | `U` | Mark read / unread |
 | `S` | Star / unstar |
+| `H` | Snooze |
 | `⌘K` or `/` | Search |
 | `⌘\` / `⇧⌘\` | Show / hide sidebar / message list |
 | `⇧⌘N` | Refresh |
