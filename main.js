@@ -17,11 +17,14 @@ if (SENTRY_DSN) {
   } catch {}
 }
 
-// ── Mailto protocol handler ───────────────────────────────────────────────────
-if (process.defaultApp) {
-  if (process.argv.length >= 2) app.setAsDefaultProtocolClient('mailto', process.execPath, [path.resolve(process.argv[1])]);
-} else {
-  app.setAsDefaultProtocolClient('mailto');
+// ── Default mail app (mailto:) ────────────────────────────────────────────────
+// Only when the user asks for it (Settings → General). The installers register
+// Mailplane as a mail app (package.json build.protocols); this makes it the default.
+function mailtoArgs() {
+  return process.defaultApp && process.argv.length >= 2 ? [process.execPath, [path.resolve(process.argv[1])]] : [];
+}
+function isDefaultMailApp() {
+  try { return app.isDefaultProtocolClient('mailto', ...mailtoArgs()); } catch { return false; }
 }
 
 // ── Suppress known ImapFlow internal promise rejections ───────────────────────
@@ -277,9 +280,17 @@ function notifyNewMail(accountId, subject, fromName) {
     const bodyParts = [];
     if (_notifyPrefs.sender && fromName) bodyParts.push(fromName);
     if (_notifyPrefs.subject && subject) bodyParts.push(subject);
-    const body = bodyParts.join(' — ') || 'New email received';
-    const n = new Notification({ title: 'Mailplane', body, silent: !_notifyPrefs.sound });
-    n.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+    // Sender as the title, subject as the text — like the system Mail apps
+    const title = (_notifyPrefs.sender && fromName) ? fromName : 'Mailplane';
+    const body = (_notifyPrefs.subject && subject) ? subject : (bodyParts.length ? bodyParts.join(' — ') : 'New email received');
+    const n = new Notification({ title, body, silent: !_notifyPrefs.sound });
+    n.on('click', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return; }
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send('notification-open', { accountId });
+    });
     n.show();
   }
 }
@@ -329,10 +340,23 @@ ipcMain.on('titlebar:theme', (_, { dark } = {}) => {
 function createWindow() {
   const Store = require('electron-store');
   const winStore = new Store({ name: 'window', defaults: { bounds: null } });
-  const saved = winStore.get('bounds');
+  let saved = winStore.get('bounds');
+  // Drop a saved position that is no longer on any screen (monitor unplugged)
+  if (saved && Number.isFinite(saved.x)) {
+    const { screen } = require('electron');
+    const visible = screen.getAllDisplays().some(d => {
+      const a = d.workArea;
+      return saved.x < a.x + a.width - 80 && saved.x + saved.width > a.x + 80 && saved.y >= a.y - 10 && saved.y < a.y + a.height - 80;
+    });
+    if (!visible) saved = { width: saved.width, height: saved.height };
+  }
   const translucent = CAN_TRANSLUCENT && winStore.get('translucent') !== false;
 
+  // Opened at login: start quietly in the background (Dock / taskbar / tray)
+  const startHidden = process.argv.includes('--hidden') ||
+    (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAsHidden);
   mainWindow = new BrowserWindow({
+    show: !startHidden,
     width:  saved?.width  || 1280,
     height: saved?.height || 820,
     x: saved?.x,
@@ -365,6 +389,9 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url !== mainWindow.webContents.getURL()) event.preventDefault();
   });
+  mainWindow.on('close', (e) => {
+    if (!_quitting && runInBackground()) { e.preventDefault(); mainWindow.hide(); }
+  });
   mainWindow.loadFile('index.html');
   mainWindow.webContents.on('did-finish-load', () => {
     if (_pendingLaunchAction) {
@@ -391,6 +418,9 @@ function createWindow() {
   };
   mainWindow.on('resize', saveBounds);
   mainWindow.on('move', saveBounds);
+  mainWindow.on('maximize', () => winStore.set('maximized', true));
+  mainWindow.on('unmaximize', () => winStore.set('maximized', false));
+  if (winStore.get('maximized') && !startHidden) mainWindow.maximize();   // maximize() would show a hidden window
 
   // Notify renderer so it can shift the account bar
   const sendFs = (v) => { if (!mainWindow.isDestroyed()) mainWindow.webContents.send('fullscreen-change', v); };
@@ -411,6 +441,64 @@ ipcMain.on('badge:set', (_, payload) => {
   } else {
     app.setBadgeCount(count || 0);
   }
+});
+
+// ── Desktop integration settings (Settings → General) ─────────────────────────
+let _tray = null;
+function integrationStore() {
+  const Store = require('electron-store');
+  return new Store({ name: 'window' });
+}
+function runInBackground() {
+  return process.platform !== 'darwin' && integrationStore().get('runInBackground') === true;
+}
+function syncTray() {
+  const want = runInBackground();
+  if (!want && _tray) { _tray.destroy(); _tray = null; return; }
+  if (!want || _tray) return;
+  const { Tray, nativeImage } = require('electron');
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png')).resize({ width: 16, height: 16 });
+  _tray = new Tray(icon);
+  _tray.setToolTip('Mailplane');
+  _tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open Mailplane', click: () => { if (!mainWindow || mainWindow.isDestroyed()) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
+    { label: 'New message', click: () => runLaunchAction('--new-message') },
+    { label: 'Check for new mail', click: () => runLaunchAction('--check-mail') },
+    { type: 'separator' },
+    { label: 'Quit Mailplane', click: () => { _quitting = true; app.quit(); } },
+  ]));
+  _tray.on('click', () => { if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); } });
+}
+let _quitting = false;
+app.on('before-quit', () => { _quitting = true; });
+
+ipcMain.handle('app:integration', (_, changes = {}) => {
+  const store = integrationStore();
+  if ('defaultMail' in changes && changes.defaultMail) {
+    if (process.platform === 'win32') {
+      // Windows only lets the user pick the default app themselves
+      app.setAsDefaultProtocolClient('mailto', ...mailtoArgs());
+      shell.openExternal('ms-settings:defaultapps').catch(() => {});
+    } else {
+      app.setAsDefaultProtocolClient('mailto', ...mailtoArgs());
+    }
+  }
+  if ('openAtLogin' in changes && (process.platform === 'darwin' || process.platform === 'win32')) {
+    app.setLoginItemSettings({ openAtLogin: !!changes.openAtLogin, args: ['--hidden'] });
+  }
+  if ('runInBackground' in changes && process.platform !== 'darwin') {
+    store.set('runInBackground', !!changes.runInBackground);
+    syncTray();
+  }
+  const login = (process.platform === 'darwin' || process.platform === 'win32') ? app.getLoginItemSettings({ args: ['--hidden'] }) : null;
+  return {
+    platform: process.platform,
+    defaultMail: isDefaultMailApp(),
+    canOpenAtLogin: !!login,
+    openAtLogin: !!login?.openAtLogin,
+    canRunInBackground: process.platform !== 'darwin',
+    runInBackground: runInBackground(),
+  };
 });
 
 // Taskbar jump list (Windows) and Dock menu (macOS): quick actions on the app icon
@@ -1117,8 +1205,10 @@ app.whenReady().then(() => {
   // Update checks start once the renderer sends 'update:config'
   _updaterReady = setupUpdater();
   setupAppIconMenu();
+  syncTray();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show();
   });
 });
 
@@ -1126,7 +1216,7 @@ app.whenReady().then(() => {
 // re-creates it), so connections and the cache DB must only be torn down
 // when the app actually quits.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin' && !runInBackground()) app.quit();
 });
 
 let _cleanedUp = false;

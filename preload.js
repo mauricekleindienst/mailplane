@@ -18,6 +18,7 @@ const INVOKE_CHANNELS = new Set([
   'shell:open',
   'update:install', 'update:check', 'update:info', 'update:download',
   'ai:status', 'ai:save', 'ai:models', 'ai:run',
+  'app:integration',
   'caldav:test', 'caldav:add', 'caldav:remove', 'caldav:list', 'caldav:calendars', 'caldav:events',
 ]);
 
@@ -40,7 +41,7 @@ const RECEIVE_CHANNELS = new Set([
   'fullscreen-change',
   'emails:refreshed',
   'update:status',
-  'toggle-sidebar', 'toggle-list', 'open-search',
+  'toggle-sidebar', 'toggle-list', 'open-search', 'notification-open',
 ]);
 
 contextBridge.exposeInMainWorld('electronAPI', {

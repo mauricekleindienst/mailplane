@@ -3991,13 +3991,37 @@ function renderSettingsGeneral() {
             ['inbox','Inbox'],['last','Last viewed folder'],
           ])
         )}
-        ${makePrefRow('Unread count on app icon', 'Badge the dock icon with unread inbox mail',
+        ${makePrefRow('Unread count on app icon', IS_MAC ? 'Badge the Dock icon with unread inbox mail' : 'Show unread inbox mail on the taskbar icon',
           makeToggle('dock-badge', 'true')
         )}
       </div>
     </div>
+    <div class="settings-section" id="integrationSection">
+      <div class="settings-section-title">System</div>
+      <div class="settings-pref-group" id="integrationRows"><div class="ai-pending" style="padding:12px 0">Loading…</div></div>
+    </div>
   `;
   bindPrefControls(content);
+  renderIntegrationRows();
+}
+
+// Default mail app, open at login, keep running in the background — owned by main
+async function renderIntegrationRows(changes) {
+  const box = document.getElementById('integrationRows');
+  if (!box) return;
+  const st = await ipc('app:integration', changes || {}).catch(() => null);
+  if (!st || !document.body.contains(box)) return;
+  const toggle = (id, on) => `<label class="toggle-sw"><input type="checkbox" id="${id}" ${on ? 'checked' : ''}><span class="toggle-track"></span></label>`;
+  box.innerHTML = `
+    ${makePrefRow('Default email app', st.defaultMail
+      ? 'Email links (mailto:) open in Mailplane'
+      : (st.platform === 'win32' ? 'Windows opens its Default apps settings; choose Mailplane for Email' : 'Email links open in another app'),
+      st.defaultMail ? '<span class="integration-ok">✓ Mailplane</span>' : '<button class="btn-secondary" id="makeDefaultMail">Make default</button>')}
+    ${st.canOpenAtLogin ? makePrefRow('Open at login', 'Start quietly in the background so new mail notifications arrive', toggle('openAtLogin', st.openAtLogin)) : ''}
+    ${st.canRunInBackground ? makePrefRow('Keep running when closed', 'Closing the window keeps Mailplane in the system tray and still notifies you', toggle('runInBackground', st.runInBackground)) : ''}`;
+  box.querySelector('#makeDefaultMail')?.addEventListener('click', () => renderIntegrationRows({ defaultMail: true }));
+  box.querySelector('#openAtLogin')?.addEventListener('change', e => renderIntegrationRows({ openAtLogin: e.target.checked }));
+  box.querySelector('#runInBackground')?.addEventListener('change', e => renderIntegrationRows({ runInBackground: e.target.checked }));
 }
 
 function renderSettingsNotifications() {
@@ -5183,6 +5207,13 @@ _on('open-settings', () => showSettingsModal());
 _on('toggle-sidebar', () => togglePane('sidebar'));
 _on('toggle-list', () => togglePane('list'));
 _on('open-search', () => openPalette());
+// Clicking a new-mail notification opens that account's inbox
+_on('notification-open', ({ accountId } = {}) => {
+  if (!accountId || !S.accounts.some(a => a.id === accountId)) return;
+  if (S.activeAccountId !== accountId) switchAccount(accountId);
+  else if (S.activeFolder !== 'inbox') goToFolder('inbox');
+  else refreshAll();
+});
 _on('new-message', () => openCompose());
 const withSelectedBody = fn => () => {
   const sel = S.selectedEmail;

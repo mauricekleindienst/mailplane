@@ -135,3 +135,29 @@ test('senders without a picture get a placeholder that says what they are', asyn
   await expect(emailItem(page, 'Lunch?').locator('.sender-avatar')).not.toHaveAttribute('data-kind', /./);
   await expect(emailItem(page, 'Lunch?').locator('.av-initials')).toHaveText('DF');
 });
+
+test('Settings → General has the system integration options for this OS', async () => {
+  ctx = await launchApp();
+  const { page, app } = ctx;
+  await page.locator('#settingsBtn').click();
+  await page.locator('.settings-nav-item[data-panel="general"]').click();
+  await expect(page.locator('#integrationRows')).toContainText('Default email app');
+  const platform = await app.evaluate(() => process.platform);
+  await expect(page.locator('#openAtLogin')).toHaveCount(platform === 'linux' ? 0 : 1);
+  if (platform !== 'darwin') {
+    const sw = page.locator('.toggle-sw', { has: page.locator('#runInBackground') });
+    await sw.click();
+    await expect(page.locator('#runInBackground')).toBeChecked();
+    await expect.poll(() => page.evaluate(() => window.electronAPI.invoke('app:integration', {}).then(r => r.runInBackground))).toBe(true);
+    await page.locator('.toggle-sw', { has: page.locator('#runInBackground') }).click();
+    await expect(page.locator('#runInBackground')).not.toBeChecked();
+  }
+});
+
+test('clicking a new-mail notification opens that account', async () => {
+  ctx = await launchApp();
+  const { page, app } = ctx;
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.send('notification-open', { accountId: 'acc-b' }));
+  await expect(page.locator('.acc-tab.active')).toContainText('Bob Work');
+  await expect(emailItem(page, 'Standup notes')).toBeVisible();
+});

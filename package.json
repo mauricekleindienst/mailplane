@@ -53,6 +53,14 @@
   "build": {
     "appId": "com.mailplane.app",
     "productName": "Mailplane",
+    "protocols": [
+      {
+        "name": "Email",
+        "schemes": [
+          "mailto"
+        ]
+      }
+    ],
     "copyright": "© 2026 Mailplane",
     "directories": {
       "output": "dist",
