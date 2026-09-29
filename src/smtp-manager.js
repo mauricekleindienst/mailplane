@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const MailComposer = require('nodemailer/lib/mail-composer');
 const fs = require('fs');
 const path = require('path');
 
@@ -16,41 +17,52 @@ function buildTransport(account) {
   });
 }
 
-async function sendEmail(account, { to, cc, bcc, subject, text, html, attachments, inReplyTo, references }) {
+function buildMailOptions(account, { to, cc, bcc, subject, text, html, attachments, inReplyTo, references, messageId }) {
+  const mailOptions = {
+    // Object form lets nodemailer quote/encode names containing commas, umlauts, etc.
+    from: { name: account.name || '', address: account.email },
+    to,
+    cc: cc || undefined,
+    bcc: bcc || undefined,
+    subject,
+    text: text || '',
+    // Plain-text mode sends no HTML part (wrapping text as HTML would collapse line breaks)
+    html: html || undefined,
+    inReplyTo: inReplyTo || undefined,
+    references: references || undefined,
+    messageId: messageId || undefined,
+  };
+
+  if (attachments?.length) {
+    mailOptions.attachments = attachments.map(a => {
+      const resolved = path.resolve(a.path);
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) throw new Error(`Attachment is not a regular file: ${a.name}`);
+      return {
+        filename: a.name,
+        contentType: a.type || 'application/octet-stream',
+        content: fs.readFileSync(resolved),
+      };
+    });
+  }
+  return mailOptions;
+}
+
+async function sendEmail(account, data) {
   const transport = buildTransport(account);
   try {
-    const mailOptions = {
-      // Object form lets nodemailer quote/encode names containing commas, umlauts, etc.
-      from: { name: account.name || '', address: account.email },
-      to,
-      cc: cc || undefined,
-      bcc: bcc || undefined,
-      subject,
-      text: text || '',
-      // Plain-text mode sends no HTML part (wrapping text as HTML would collapse line breaks)
-      html: html || undefined,
-      inReplyTo: inReplyTo || undefined,
-      references: references || undefined,
-    };
-
-    if (attachments?.length) {
-      mailOptions.attachments = attachments.map(a => {
-        const resolved = path.resolve(a.path);
-        const stat = fs.statSync(resolved);
-        if (!stat.isFile()) throw new Error(`Attachment is not a regular file: ${a.name}`);
-        return {
-          filename: a.name,
-          contentType: a.type || 'application/octet-stream',
-          content: fs.readFileSync(resolved),
-        };
-      });
-    }
-
-    const info = await transport.sendMail(mailOptions);
+    const info = await transport.sendMail(buildMailOptions(account, data));
     return { success: true, messageId: info.messageId };
   } finally {
     transport.close();
   }
+}
+
+/** RFC 822 source of a message (for IMAP APPEND, e.g. drafts). Bcc is kept, like other clients do for drafts. */
+function buildRaw(account, data) {
+  const mail = new MailComposer(buildMailOptions(account, data)).compile();
+  mail.keepBcc = true;
+  return mail.build();
 }
 
 async function testSmtp(account) {
@@ -65,4 +77,4 @@ async function testSmtp(account) {
   }
 }
 
-module.exports = { sendEmail, testSmtp };
+module.exports = { sendEmail, testSmtp, buildRaw };

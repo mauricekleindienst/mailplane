@@ -301,6 +301,44 @@ async function archiveEmail(account, folder, uid) {
   }
 }
 
+// ── Drafts ────────────────────────────────────────────────────────────────────
+// Saving appends a fresh copy (\Draft) and then removes the previous one, so
+// the Drafts folder always holds exactly one version of the message.
+async function saveDraft(account, data, previous = null) {
+  const { buildRaw } = require('./smtp-manager');
+  const client = await getClient(account);
+  const folder = previous?.folder
+    || await findSpecialMailbox(client, ['\\Drafts'], ['drafts', 'draft', 'entwürfe', 'brouillons', 'borradores']);
+  if (!folder) throw new Error('No Drafts folder on this server');
+  const raw = await buildRaw(account, data);
+  const res = await client.append(folder, raw, ['\\Seen', '\\Draft']);
+  let uid = res?.uid || null;
+  const lock = await client.getMailboxLock(folder);
+  try {
+    if (!uid && data.messageId) {
+      // Server without UIDPLUS: look the copy up by its Message-ID
+      const found = await client.search({ header: { 'message-id': data.messageId } }, { uid: true });
+      uid = found?.length ? Math.max(...found) : null;
+    }
+    if (previous?.uid && previous.uid !== uid) {
+      await client.messageDelete({ uid: previous.uid }, { uid: true });
+    }
+  } finally {
+    lock.release();
+  }
+  return { folder, uid };
+}
+
+async function deleteDraft(account, folder, uid) {
+  const client = await getClient(account);
+  const lock = await client.getMailboxLock(folder);
+  try {
+    await client.messageDelete({ uid }, { uid: true });
+  } finally {
+    lock.release();
+  }
+}
+
 async function listFolders(account) {
   // Use a dedicated fresh connection — avoids any pool client state issues
   const client = new ImapFlow({
@@ -524,6 +562,7 @@ function stopAllIdle() {
 }
 
 module.exports = {
+  saveDraft, deleteDraft,
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
   setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders, fetchFlagged, getQuota,
   createFolder, renameFolder, deleteFolder,

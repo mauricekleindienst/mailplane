@@ -135,7 +135,7 @@ function renderScheduledOutbox() {
           openCompose({ to: d.to || '', cc: d.cc || '', bcc: d.bcc || '', subject: d.subject || '',
             rawBodyHtml: d.html || escHtml(d.text || '').replace(/\n/g, '<br>'), accountId: res.accountId,
             inReplyTo: d.inReplyTo || null, references: d.references || null, attachments: d.attachments || null,
-            title: 'Edit Message' });
+            title: 'Edit Message', draft: d.draft || null });
         }
         toast('Scheduled send cancelled');
       }
@@ -2368,6 +2368,10 @@ async function selectEmail(email) {
   S.selectedUid = email.uid;
   S.selectedEmail = email;
   renderEmailList();
+  if (folderRoleOf(email.accountId, email.folder) === 'drafts' && !S.accounts.find(a => a.id === email.accountId && a.protocol === 'jmap')) {
+    openDraftInCompose(email);
+    return;
+  }
 
   const cacheKey = bodyCacheKey(email);
   if (S.bodyCache.has(cacheKey)) {
@@ -3018,6 +3022,10 @@ function formatFileSize(bytes) {
 function renderAttachmentChips() {
   const list = document.getElementById('composeAttachList');
   if (!list) return;
+  if (_cs && S.pendingAttachments.length !== _cs.attachCount) {
+    if (_cs.attachCount !== undefined) markDraftDirty();
+    _cs.attachCount = S.pendingAttachments.length;
+  }
   list.classList.toggle('hidden', !S.pendingAttachments.length);
   list.innerHTML = '';
   S.pendingAttachments.forEach((att, i) => {
@@ -3048,9 +3056,13 @@ let _composeThread = { inReplyTo: null, references: null };
 function openCompose({
   to = '', cc = '', bcc = '', subject = '', bodyHtml = '', bodyText = '', title = 'New Message',
   accountId = null, inReplyTo = null, references = null, rawBodyHtml = null, attachments = null,
-  source = null,
+  source = null, draft = null,
 } = {}) {
   if (!S.accounts.length) { toast('Add an account before composing', true); return; }
+  // A message still open in compose is kept as a draft, never silently replaced
+  if (_cs && !document.getElementById('composeFloat').classList.contains('hidden')) flushDraft(_cs, true);
+  _cs = newComposeSession(draft);
+  setDraftState('');
   // Reset plain-text mode left over from a previous draft
   if (_composePlainText) document.getElementById('tbPlainToggle').click();
   S.pendingAttachments = attachments ? [...attachments] : [];
@@ -3143,15 +3155,20 @@ function openCompose({
   sel.addRange(range);
 }
 
-function closeCompose(skipConfirm = false) {
+// mode: 'keep' (close / Esc → saved to Drafts), 'discard' (Discard button → draft removed), 'sent'
+function closeCompose(mode = 'keep') {
   const bodyEl = document.getElementById('composeBody');
-  if (!skipConfirm && getSetting('confirm-discard', 'false') === 'true') {
-    const clone = bodyEl.cloneNode(true);
-    clone.querySelector('.compose-signature')?.remove();
-    if (clone.textContent.trim()) {
-      if (!confirm('Discard this message?')) return;
-    }
+  const cs = _cs;
+  if (mode === 'discard' && getSetting('confirm-discard', 'false') === 'true' && !composeIsEmpty()) {
+    if (!confirm('Discard this message?')) return;
   }
+  if (cs) {
+    clearTimeout(cs.timer);
+    if (mode === 'keep') flushDraft(cs, true);
+    else if (mode === 'discard') discardDraft(cs);
+    cs.closed = true;
+  }
+  _cs = null;
   document.getElementById('composeFloat').classList.add('hidden');
   document.getElementById('sendLaterPicker').classList.add('hidden');
   setScheduledAt(null);
@@ -3280,8 +3297,111 @@ document.getElementById('composeFloatHeader').addEventListener('click', () => {
   }
 });
 
-document.getElementById('composeClose').addEventListener('click', e => { e.stopPropagation(); closeCompose(); });
-document.getElementById('composeCancelBtn').addEventListener('click', () => closeCompose());
+document.getElementById('composeClose').addEventListener('click', e => { e.stopPropagation(); closeCompose('keep'); });
+document.getElementById('composeCancelBtn').addEventListener('click', () => closeCompose('discard'));
+
+// ── Drafts: autosave into the server's Drafts folder ─────────────────────────
+// Each compose window is a session; its draft ({accountId, folder, uid}) is
+// replaced on every save, removed on Discard, and removed by main once sent.
+const DRAFT_DELAY = 2500;
+let _cs = null;
+function newComposeSession(draft = null) {
+  return {
+    draft, dirty: false, timer: null, chain: Promise.resolve(), closed: false,
+    msgId: `<draft-${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 10)}@mailplane>`,
+  };
+}
+
+function composeIsEmpty() {
+  const clone = document.getElementById('composeBody').cloneNode(true);
+  clone.querySelectorAll('.compose-signature').forEach(n => n.remove());
+  return !clone.textContent.trim() && !S.pendingAttachments.length
+    && !['composeTo', 'composeCc', 'composeBcc', 'composeSubject'].some(id => document.getElementById(id).value.trim());
+}
+
+function setDraftState(text) {
+  const el = document.getElementById('composeDraftState');
+  if (el) el.textContent = text;
+}
+
+function markDraftDirty() {
+  const cs = _cs;
+  if (!cs || document.getElementById('composeFloat').classList.contains('hidden')) return;
+  cs.dirty = true;
+  clearTimeout(cs.timer);
+  cs.timer = setTimeout(() => flushDraft(cs), DRAFT_DELAY);
+}
+
+// Save now if anything changed. `closing` also reports the result as a toast.
+function flushDraft(cs, closing = false) {
+  clearTimeout(cs.timer);
+  if (!cs.dirty || composeIsEmpty()) return cs.chain;
+  cs.dirty = false;
+  const data = collectComposeData();
+  if (!closing) setDraftState('Saving…');
+  cs.chain = cs.chain.then(async () => {
+    const r = await ipc('draft:save', { ...data, messageId: cs.msgId, draft: cs.draft }).catch(e => ({ success: false, error: e.message }));
+    if (r.success) {
+      cs.draft = { accountId: r.accountId, folder: r.folder, uid: r.uid };
+      if (!cs.closed) setDraftState('Saved');
+      if (closing) toast('Saved to Drafts');
+      refreshDraftsView(r.accountId, r.folder);
+    } else if (r.unsupported) {
+      if (!cs.closed) setDraftState('');
+    } else {
+      if (!cs.closed) { cs.dirty = true; setDraftState('Not saved'); }
+      if (closing) toast('Could not save the draft: ' + (r.error || 'Unknown error'), true);
+    }
+  });
+  return cs.chain;
+}
+
+function discardDraft(cs) {
+  cs.dirty = false;
+  cs.chain = cs.chain.then(async () => {
+    if (!cs.draft?.uid) return;
+    const { accountId, folder, uid } = cs.draft;
+    cs.draft = null;
+    await ipc('draft:delete', { accountId, folder, uid }).catch(() => {});
+    const before = S.emails.length;
+    S.emails = S.emails.filter(e => !(e.accountId === accountId && e.folder === folder && e.uid === uid));
+    if (S.emails.length !== before) renderEmailList(S.isSearching);
+    toast('Draft discarded');
+  });
+}
+
+function folderRoleOf(accountId, folder) {
+  return accountFolders.get(accountId)?.find(f => f.path === folder || f.key === folder)?.role || null;
+}
+
+// Keep an open Drafts folder in step with what was just saved
+function refreshDraftsView(accountId, folder) {
+  if (S.activeAccountId !== accountId || S.isSearching) return;
+  if (folderRoleOf(accountId, S.activeFolder) !== 'drafts' && S.activeFolder !== folder) return;
+  loadEmails(false, { silent: true });
+}
+
+// Clicking a message in Drafts continues it in compose
+async function openDraftInCompose(email) {
+  const res = await ipc('email:body', { accountId: email.accountId, folder: email.folder, uid: email.uid }).catch(() => null);
+  const body = res?.body;
+  if (!body) { toast('Could not open the draft', true); return; }
+  const addrList = list => (Array.isArray(list) ? list : [])
+    .map(a => (a.name ? `${a.name} <${a.address}>` : a.address)).filter(Boolean).join(', ');
+  openCompose({
+    to: addrList(body.to), cc: addrList(body.cc), bcc: addrList(body.bcc), subject: body.subject || '',
+    rawBodyHtml: body.html ? sanitizeHtml(body.html) : escHtml(body.text || '').replace(/\n/g, '<br>'),
+    accountId: email.accountId, inReplyTo: body.inReplyTo || null, references: body.references || null,
+    title: 'Draft', draft: { accountId: email.accountId, folder: email.folder, uid: email.uid },
+  });
+  if (body.attachments?.length) {
+    showComposeError(`This draft had ${body.attachments.length} attachment${body.attachments.length > 1 ? 's' : ''} — attach ${body.attachments.length > 1 ? 'them' : 'it'} again before sending.`);
+  }
+}
+
+['composeTo', 'composeCc', 'composeBcc', 'composeSubject', 'composeBody'].forEach(id =>
+  document.getElementById(id).addEventListener('input', markDraftDirty));
+document.getElementById('composeFrom').addEventListener('change', markDraftDirty);
 
 document.getElementById('composeCcToggle').addEventListener('click', () => {
   S.ccVisible = !S.ccVisible;
@@ -3493,6 +3613,7 @@ function snapshotDraft() {
     plainText: _composePlainText,
     attachments: [...S.pendingAttachments],
     inReplyTo: _composeThread.inReplyTo, references: _composeThread.references,
+    draft: _cs?.draft || null,
   };
 }
 
@@ -3503,7 +3624,7 @@ function restoreDraft(draft) {
   if (draft.plainText) document.getElementById('tbPlainToggle').click();
 }
 
-document.getElementById('composeSendBtn').addEventListener('click', () => {
+document.getElementById('composeSendBtn').addEventListener('click', async () => {
   const data = collectComposeData();
   const { accountId, to, cc, bcc, subject } = data;
   if (!accountId) { showComposeError('Add an account to send from'); return; }
@@ -3518,10 +3639,14 @@ document.getElementById('composeSendBtn').addEventListener('click', () => {
     showComposeError('The scheduled time is in the past — pick a later time');
     return;
   }
+  const cs = _cs;
+  if (cs) { clearTimeout(cs.timer); cs.dirty = false; }
   const draft = snapshotDraft();
   const emailData = { ...data };
   delete emailData.accountId;
-  closeCompose(true);
+  closeCompose('sent');
+  // A save still in flight decides which server draft the send removes
+  if (cs) { await cs.chain; emailData.draft = cs.draft; draft.draft = cs.draft; }
   if (scheduledAt) {
     ipc('email:send', { accountId, ...emailData, scheduledAt })
       .then(r => {
@@ -4278,7 +4403,7 @@ function renderSettingsComposing() {
             ['8000','8 seconds'],['15000','15 seconds'],['30000','30 seconds'],
           ])
         )}
-        ${makePrefRow('Confirm before discarding', 'Ask before closing a draft that has text',
+        ${makePrefRow('Confirm before discarding', 'Ask before the Discard button throws away a message with text (closing keeps it in Drafts)',
           makeToggle('confirm-discard', 'false')
         )}
       </div>

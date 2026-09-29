@@ -238,3 +238,51 @@ test('send later survives a restart: overdue mail goes out on launch, future mai
   const stored = JSON.parse(require('fs').readFileSync(require('path').join(ctx.tmp, 'config', 'Mailplane', 'scheduled.json'), 'utf8'));
   expect(Object.keys(stored.items)).toEqual([]);
 });
+
+test('drafts save themselves to the server, reopen from Drafts, and disappear once sent', async () => {
+  ctx = await launchApp();
+  const { page, fake } = ctx;
+  const drafts = () => fake(s => s.mailboxes['acc-a'].Drafts.map(m => ({ subject: m.subject, text: m.body.text })));
+  await page.locator('.acc-tab', { hasText: 'Alice Example' }).click();
+  await page.locator('#composeTrigger').click();
+  await fillCompose(page, { to: 'zoe@test.dev', subject: 'Plan for Friday', body: 'First idea' });
+  await expect(page.locator('#composeDraftState')).toHaveText('Saved', { timeout: 10_000 });
+  await expect.poll(drafts).toEqual([{ subject: 'Plan for Friday', text: expect.stringContaining('First idea') }]);
+
+  // Editing replaces the draft instead of piling up copies
+  await page.keyboard.type(' and a second one');
+  await expect.poll(drafts, { timeout: 10_000 }).toEqual([{ subject: 'Plan for Friday', text: expect.stringContaining('second one') }]);
+
+  // Closing keeps it; the Drafts folder opens it back into compose
+  await page.locator('#composeClose').click();
+  await expect(page.locator('#composeFloat')).toBeHidden();
+  await page.locator('.folder-btn[data-folder="drafts"]').click();
+  await emailItem(page, 'Plan for Friday').click();
+  await expect(page.locator('#composeFloat')).toBeVisible();
+  await expect(page.locator('#composeSubject')).toHaveValue('Plan for Friday');
+  await expect(page.locator('#composeTo')).toHaveValue('zoe@test.dev');
+  await expect(page.locator('#composeBody')).toContainText('second one');
+
+  await page.locator('#composeSendBtn').click();
+  await expect.poll(() => fake(s => s.sent.map(m => m.subject))).toEqual(['Plan for Friday']);
+  await expect.poll(drafts).toEqual([]);
+  expect(await fake(s => 'draft' in s.sent[0])).toBe(false);
+});
+
+test('Discard removes the saved draft; an empty message is never saved', async () => {
+  ctx = await launchApp();
+  const { page, fake } = ctx;
+  const count = () => fake(s => s.mailboxes['acc-a'].Drafts.length + s.mailboxes['acc-b'].Drafts.length);
+  await page.locator('#composeTrigger').click();
+  await page.locator('#composeClose').click();
+  await page.waitForTimeout(300);
+  expect(await count()).toBe(0);
+
+  await page.locator('#composeTrigger').click();
+  await fillCompose(page, { subject: 'Never mind' });
+  await expect(page.locator('#composeDraftState')).toHaveText('Saved', { timeout: 10_000 });
+  expect(await count()).toBe(1);
+  await page.locator('#composeCancelBtn').click();
+  await expect(page.locator('#toast')).toContainText('Draft discarded');
+  expect(await count()).toBe(0);
+});

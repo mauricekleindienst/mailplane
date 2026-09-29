@@ -797,12 +797,53 @@ function persistScheduled() {
   scheduledStore().set('items', items);
 }
 
-async function dispatchSend(accountId, emailData) {
+async function dispatchSend(accountId, { draft, ...emailData }) {
   const account = accountStore.getAccounts().find(a => a.id === accountId);
   if (!account) return { success: false, error: 'Account not found' };
-  if (account.protocol === 'jmap') return await jmapManager.sendEmail(account, emailData);
-  return await smtpManager.sendEmail(account, emailData);
+  const result = account.protocol === 'jmap'
+    ? await jmapManager.sendEmail(account, emailData)
+    : await smtpManager.sendEmail(account, emailData);
+  // The message is out — its saved draft has done its job
+  if (result?.success && draft?.uid && mgr(account).deleteDraft) {
+    try {
+      await mgr(account).deleteDraft(account, draft.folder, draft.uid);
+      emailCache.removeMessage(accountId, draft.folder, draft.uid);
+    } catch (err) { console.warn('[Mailplane] could not remove sent draft:', err.message); }
+  }
+  return result;
 }
+
+// ── Drafts (server Drafts folder) ─────────────────────────────────────────────
+ipcMain.handle('draft:save', async (_, { accountId, draft, ...data }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    if (!mgr(account).saveDraft) return { success: false, unsupported: true };
+    // A draft moving to another account is removed from the old one
+    const previous = draft?.accountId === accountId ? draft : null;
+    const saved = await mgr(account).saveDraft(account, data, previous);
+    if (previous?.uid && previous.uid !== saved.uid) emailCache.removeMessage(accountId, previous.folder, previous.uid);
+    if (draft?.uid && draft.accountId && draft.accountId !== accountId) {
+      const old = accountStore.getAccounts().find(a => a.id === draft.accountId);
+      if (old && mgr(old).deleteDraft) await mgr(old).deleteDraft(old, draft.folder, draft.uid).catch(() => {});
+    }
+    return { success: true, accountId, ...saved };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('draft:delete', async (_, { accountId, folder, uid }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account || !mgr(account).deleteDraft) return { success: false };
+    await mgr(account).deleteDraft(account, folder, uid);
+    emailCache.removeMessage(accountId, folder, uid);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
 
 function armScheduled(id, entry, delay) {
   clearTimeout(entry.timer);

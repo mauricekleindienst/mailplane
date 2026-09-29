@@ -198,6 +198,26 @@ function installFakeBackend({ shell, ipcMain, session }, { mailboxes, folders })
     Object.assign(f, { path: to, name: to, key: to });
   };
   imap.deleteFolder = async (acc, p) => { state.folders = state.folders.filter(x => x.path !== p); };
+  // Drafts: the real buildRaw runs (so MIME building is covered), the mailbox keeps a readable copy
+  state.draftUid = 5000;
+  imap.saveDraft = async (acc, data, previous) => {
+    await smtp.buildRaw(acc, data);
+    if (state.failDraft) throw new Error(state.failDraft);
+    const folder = previous?.folder || 'Drafts';
+    const addr = str => String(str || '').split(',').map(x => x.trim()).filter(Boolean)
+      .map(x => ({ name: '', address: (x.match(/<([^>]+)>/) || [0, x])[1] }));
+    const uid = ++state.draftUid;
+    box(acc, folder).push({
+      uid, seq: uid, fromName: acc.name, fromEmail: acc.email, toEmail: data.to || '', subject: data.subject || '',
+      date: new Date().toISOString(), read: true, flagged: false, hasAttachment: !!data.attachments?.length,
+      body: { html: data.html || '', text: data.text || '', subject: data.subject || '',
+        from: { name: acc.name, address: acc.email }, to: addr(data.to), cc: addr(data.cc), bcc: addr(data.bcc),
+        messageId: data.messageId, attachments: [] },
+    });
+    if (previous?.uid) take(acc, folder, previous.uid);
+    return { folder, uid };
+  };
+  imap.deleteDraft = async (acc, folder, uid) => { take(acc, folder, uid); };
   imap.disconnect = async () => {};
   imap.disconnectAll = async () => {};
 

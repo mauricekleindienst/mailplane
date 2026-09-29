@@ -13,7 +13,7 @@ const INVOKE_CHANNELS = new Set([
   'email:body', 'email:send', 'email:delete', 'email:archive',
   'email:move', 'email:flag', 'email:markread', 'email:bulk', 'email:attachment',
   'email:bimi',
-  'email:scheduled:list', 'email:scheduled:cancel',
+  'email:scheduled:list', 'email:scheduled:cancel', 'draft:save', 'draft:delete',
   'folder:create', 'folder:rename', 'folder:delete',
   'shell:open',
   'update:install', 'update:check', 'update:info', 'update:download',

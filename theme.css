@@ -1744,3 +1744,7 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
 .bundle-act:hover { background: var(--tile); color: var(--text-primary); }
 .email-item.in-bundle { margin-left: 18px; }
 .density-compact .bundle-row .sender-avatar { display: none; }
+
+/* Draft autosave state in the compose footer */
+.compose-draft-state { font-size: 11.5px; color: var(--text-tertiary); white-space: nowrap; margin-right: 4px; }
+.compose-draft-state:empty { display: none; }
