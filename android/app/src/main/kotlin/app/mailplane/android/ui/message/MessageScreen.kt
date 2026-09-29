@@ -144,10 +144,10 @@ fun MessageContent(r: ReaderState, snackbar: SnackbarHostState = remember { Snac
                 title = {},
                 navigationIcon = { IconButton(onClick = actions.onBack) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = c.ink) } },
                 actions = {
-                    ActionIcon(Icons.Outlined.Archive, "Archive", actions.onArchive)
-                    ActionIcon(Icons.Outlined.Delete, "Delete", actions.onDelete)
+                    ActionIcon(Icons.Outlined.Archive, "Archive", onClick = actions.onArchive)
+                    ActionIcon(Icons.Outlined.Delete, "Delete", onClick = actions.onDelete)
                     ActionIcon(if (m.flagged) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (m.flagged) "Unstar" else "Star",
-                        actions.onStar, tint = if (m.flagged) c.accentDeep else c.ink)
+                        tint = if (m.flagged) c.accentDeep else c.ink, onClick = actions.onStar)
                     Box {
                         ActionIcon(Icons.Outlined.MoreVert, "More") { menu = true }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
@@ -284,7 +284,7 @@ private fun AttachmentCard(att: AttachmentInfo, onClick: () -> Unit) {
 private val REMOTE_IMG = Regex("<img[^>]+src=[\"']?https?://", RegexOption.IGNORE_CASE)
 
 @Composable
-private fun ActionIcon(icon: ImageVector, label: String, onClick: () -> Unit, tint: androidx.compose.ui.graphics.Color = Frost.colors.ink) {
+private fun ActionIcon(icon: ImageVector, label: String, tint: androidx.compose.ui.graphics.Color = Frost.colors.ink, onClick: () -> Unit) {
     IconButton(onClick = onClick) { Icon(icon, label, tint = tint) }
 }
 
