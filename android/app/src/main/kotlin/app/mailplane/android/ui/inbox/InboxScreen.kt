@@ -37,6 +37,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Menu
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Report
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SearchOff
@@ -365,7 +366,8 @@ private fun MessageList(ui: InboxUi, actions: InboxActions) {
                         st.isStarred || (st.searching && st.searchAllFolders) -> folderNames[m.folder] ?: m.folder
                         else -> null
                     }
-                    MessageRow(m, compact = ui.compact, folderLabel = tag,
+                    val tagIsAccount = st.unified || (st.searching && ui.activeId == ALL_ACCOUNTS)
+                    MessageRow(m, compact = ui.compact, folderLabel = tag, tagIcon = if (tagIsAccount) Icons.Outlined.Person else Icons.Outlined.Folder,
                         onClick = { actions.onOpen(m) }, onStar = { actions.onStar(m) })
                 }
             }
@@ -405,7 +407,7 @@ private fun SwipeRow(onArchive: () -> Unit, onDelete: () -> Unit, content: @Comp
 }
 
 @Composable
-private fun MessageRow(m: MessageSummary, compact: Boolean, folderLabel: String?, onClick: () -> Unit, onStar: () -> Unit) {
+private fun MessageRow(m: MessageSummary, compact: Boolean, folderLabel: String?, tagIcon: ImageVector = Icons.Outlined.Folder, onClick: () -> Unit, onStar: () -> Unit) {
     val c = Frost.colors
     val unread = !m.seen
     Row(
@@ -428,7 +430,7 @@ private fun MessageRow(m: MessageSummary, compact: Boolean, folderLabel: String?
             }
             if (!compact && (m.hasAttachments || folderLabel != null)) {
                 Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (folderLabel != null) Tag(Icons.Outlined.Folder, folderLabel)
+                    if (folderLabel != null) Tag(tagIcon, folderLabel)
                     if (m.hasAttachments) Tag(Icons.Outlined.AttachFile, tr("Attachment"))
                 }
             }
@@ -535,8 +537,9 @@ private fun roleIcon(role: FolderRole?): ImageVector = when (role) {
     null -> Icons.Outlined.Folder
 }
 
-private val timeFmt = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
-private val dayFmt = DateTimeFormatter.ofPattern("d MMM")
+// Follow the interface language (German → 17:31, English → 5:31 PM)
+private val timeFmt get() = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(java.util.Locale(I18n.code))
+private val dayFmt get() = DateTimeFormatter.ofPattern("d MMM", java.util.Locale(I18n.code))
 
 /** Time under a day header: clock time this week, short date before that. */
 internal fun listTime(m: MessageSummary): String {

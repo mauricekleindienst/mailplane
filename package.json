@@ -1,7 +1,7 @@
 {
   "name": "mailplane",
   "productName": "Mailplane",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A calm, fast email client for macOS, Windows, Linux and Android",
   "author": {
     "name": "Mailplane",
