@@ -65,7 +65,11 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
-            all { it.systemProperty("roborazzi.test.record", "true") }
+            all {
+                it.systemProperty("roborazzi.test.record", "true")
+                // The PNGs are the point of these tests: a cached run must restore them too
+                it.outputs.dir(layout.buildDirectory.dir("outputs/roborazzi"))
+            }
         }
     }
 

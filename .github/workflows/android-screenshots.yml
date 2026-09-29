@@ -41,7 +41,8 @@ jobs:
         working-directory: android
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          ./gradlew --no-daemon :app:testDebugUnitTest
+          ./gradlew --no-daemon :app:testDebugUnitTest --rerun
+          ls app/build/outputs/roborazzi/*.png | wc -l
       - name: Publish as a temporary pre-release
         if: inputs.action == 'publish'
         run: |
