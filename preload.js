@@ -9,7 +9,7 @@ const INVOKE_CHANNELS = new Set([
   'accounts:list', 'accounts:add', 'accounts:remove', 'accounts:update',
   'accounts:preset', 'accounts:autodiscover', 'accounts:test', 'accounts:folders', 'accounts:folders:all',
   'apps:list', 'apps:add', 'apps:remove',
-  'emails:fetch', 'emails:search',
+  'emails:fetch', 'emails:search', 'emails:starred', 'accounts:quota',
   'email:body', 'email:send', 'email:delete', 'email:archive',
   'email:move', 'email:flag', 'email:markread', 'email:bulk', 'email:attachment',
   'email:bimi',
@@ -29,6 +29,7 @@ const SEND_CHANNELS = new Set([
   'prefs:notify',
   'titlebar:theme',
   'update:config',
+  'window:translucent',
 ]);
 
 const RECEIVE_CHANNELS = new Set([
@@ -82,4 +83,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /** OS the window chrome is laid out for ('darwin' | 'win32' | 'linux'). */
   platform: process.env.MAILPLANE_PLATFORM || process.platform,
+  /** Whether the window can show the desktop through (macOS vibrancy, Windows acrylic). */
+  canTranslucent: process.platform === 'darwin' || process.platform === 'win32',
 });

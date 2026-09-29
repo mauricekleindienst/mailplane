@@ -172,6 +172,16 @@ function installFakeBackend({ shell, ipcMain, session }, { mailboxes, folders })
     return m ? { ...m.body, date: new Date(m.date) } : null;
   };
   imap.fetchAttachment = async () => Buffer.from('%PDF-1.4 fake');
+  imap.fetchFlagged = async (acc) => {
+    const out = [];
+    for (const [folder, list] of Object.entries(state.mailboxes[acc.id] || {})) {
+      if (folder === 'Trash' || folder === 'Drafts') continue;
+      list.filter(m => m.flagged).forEach(m => out.push(listEntry(acc, folder, m)));
+    }
+    return { messages: out.sort((a, b) => b.date - a.date) };
+  };
+  // Storage: fake(s => { s.quota = { usage, limit } })
+  imap.getQuota = async () => state.quota || null;
   imap.setFlag = async (acc, folder, uid, flagged) => { find(acc, folder, uid).flagged = flagged; };
   imap.setRead = async (acc, folder, uid, read) => { find(acc, folder, uid).read = read; };
   imap.deleteEmail = async (acc, folder, uid) => {

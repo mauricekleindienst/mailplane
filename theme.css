@@ -1565,3 +1565,77 @@ body.pane-resizing iframe, body.pane-resizing webview { pointer-events: none; } 
 .detail-action-btn:focus-visible, .tb-btn:focus-visible, .compose-from-foot select:focus-visible {
   outline: 2px solid var(--lime-deep); outline-offset: 2px;
 }
+
+/* ── F4 · custom folders get a section label ───────────────────────────────── */
+.folder-section { font-size: 11px; color: var(--text-tertiary); padding: 14px 10px 4px; }
+
+/* ── F5 · mailbox storage ──────────────────────────────────────────────────── */
+.sidebar-foot { flex-direction: column; align-items: stretch; gap: 8px; }
+.sidebar-foot .sidebar-toggle { align-self: flex-start; }
+.storage-bar { padding: 0 10px; display: grid; gap: 5px; }
+.storage-bar.hidden { display: none; }
+.storage-text { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.storage-track { height: 4px; border-radius: 2px; background: var(--tile); overflow: hidden; }
+.storage-track i { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--text-tertiary); transition: width 0.3s; }
+.storage-bar.storage-full .storage-track i { background: var(--danger); }
+.storage-bar.storage-full .storage-text { color: var(--danger); }
+
+/* ── C1 · recipient chips (the input is the source of truth) ───────────────── */
+.recip-row { position: relative; }
+.recip-chips { display: none; flex-wrap: wrap; gap: 5px; flex: 1; min-width: 0; padding: 5px 0; pointer-events: none; }
+.recip-row.has-chips:not(:focus-within) .recip-chips { display: flex; }
+.recip-row.has-chips:not(:focus-within) input {
+  position: absolute; inset: 0; opacity: 0; width: 100%; cursor: text;
+}
+.recip-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 4px 0 3px;
+  border-radius: 12px; background: var(--tile); font-size: 12.5px; color: var(--text-primary); max-width: 240px;
+}
+.recip-chip.invalid { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.recip-av {
+  width: 18px; height: 18px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: var(--tile-active); color: var(--text-secondary); font-size: 8.5px; font-weight: 600;
+}
+.recip-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recip-x {
+  pointer-events: auto; position: relative; z-index: 1;
+  width: 18px; height: 18px; border: none; border-radius: 50%; background: transparent;
+  color: var(--text-tertiary); font-size: 13px; line-height: 1; cursor: pointer; display: grid; place-items: center;
+}
+.recip-x:hover { background: var(--tile-active); color: var(--text-primary); }
+
+/* ── R6 · other messages of the conversation, collapsed ────────────────────── */
+.thread-context { margin: 4px 26px 0; }
+.thread-context-toggle {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px;
+  border: none; border-radius: 9px; background: var(--tile); color: var(--text-secondary);
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+.thread-context-toggle:hover { color: var(--text-primary); background: var(--tile-active); }
+.thread-context-list { display: grid; gap: 1px; margin-top: 6px; }
+.thread-context-list.hidden { display: none; }
+.thread-line {
+  display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  height: 34px; padding: 0 10px; border: none; border-radius: 9px; background: transparent;
+  font: inherit; font-size: 12.5px; color: var(--text-secondary); text-align: left; cursor: pointer;
+}
+.thread-line:hover { background: var(--surface-raised); color: var(--text-primary); }
+.thread-line .tl-from { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-primary); }
+.thread-line.unread .tl-from { font-weight: 600; }
+.thread-line .tl-snip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-tertiary); }
+.thread-line .tl-date { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+/* ── M5 · translucent window (macOS vibrancy / Windows acrylic) ───────────── */
+:root.translucent { --canvas-alpha: 62%; }
+:root.translucent.translucent-clear { --canvas-alpha: 30%; }
+:root.translucent body {
+  background:
+    radial-gradient(ellipse 60% 50% at 18% 12%, color-mix(in srgb, var(--lime) 12%, transparent), transparent 70%),
+    color-mix(in srgb, var(--canvas) var(--canvas-alpha), transparent);
+}
+:root.translucent .app { background: transparent; }
+/* Panels stay readable: a touch more opaque than on a solid canvas */
+:root.translucent .email-list-panel,
+:root.translucent .email-detail-panel { background: color-mix(in srgb, var(--surface-solid) 82%, transparent); }
+:root.translucent.translucent-clear .email-list-panel,
+:root.translucent.translucent-clear .email-detail-panel { background: color-mix(in srgb, var(--surface-solid) 72%, transparent); }

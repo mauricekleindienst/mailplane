@@ -141,6 +141,22 @@ function parseMailto(url) {
   };
 }
 
+// ── Mailbox storage (IMAP QUOTA) ─────────────────────────────────────────────
+async function loadStorage() {
+  const bar = document.getElementById('storageBar');
+  const id = S.activeAccountId;
+  if (!id) { bar.classList.add('hidden'); return; }
+  const q = await ipc('accounts:quota', { accountId: id }).catch(() => null);
+  if (S.activeAccountId !== id) return;
+  if (!q || !q.limit) { bar.classList.add('hidden'); return; }
+  // IMAP reports kilobytes
+  const pct = Math.min(100, Math.round((q.usage / q.limit) * 100));
+  document.getElementById('storageText').textContent = `${fmtBytes(q.usage * 1024)} of ${fmtBytes(q.limit * 1024)} used`;
+  document.getElementById('storageFill').style.width = pct + '%';
+  bar.classList.toggle('storage-full', pct >= 90);
+  bar.classList.remove('hidden');
+}
+
 // ── Offline indicator ─────────────────────────────────────────────────────────
 function syncOnline() { document.getElementById('offlinePill').classList.toggle('hidden', navigator.onLine); }
 window.addEventListener('online', syncOnline);
@@ -450,6 +466,17 @@ applyAccent(getAccent());
 // Preview-lines preference drives the list snippet clamp
 document.documentElement.style.setProperty('--preview-lines', getSetting('preview-lines', '2'));
 document.documentElement.classList.toggle('density-compact', getSetting('list-density', 'comfortable') === 'compact');
+
+// Window background: solid, frosted (desktop shows through a little) or clear.
+// macOS uses vibrancy, Windows 11 acrylic; Linux stays solid.
+const CAN_TRANSLUCENT = !!window.electronAPI.canTranslucent;
+function applyWindowBackground(mode) {
+  const on = CAN_TRANSLUCENT && mode !== 'solid';
+  document.documentElement.classList.toggle('translucent', on);
+  document.documentElement.classList.toggle('translucent-clear', on && mode === 'clear');
+  _send('window:translucent', on);
+}
+applyWindowBackground(getSetting('window-background', 'frosted'));
 _darkMQ.addEventListener('change', () => {
   if ((localStorage.getItem('mailplane-theme') || 'system') === 'system') applyTheme('system');
 });
@@ -869,7 +896,7 @@ const ipc = (ch, data) => _invoke(ch, data);
 // ── Per-account folder cache ──────────────────────────────────────────────────
 const folderMaps = new Map();  // accountId → legacy static map (fallback)
 const accountFolders = new Map(); // accountId → Folder[] from server
-const FOLDER_LABELS = { inbox: 'Inbox', sent: 'Sent', drafts: 'Drafts', trash: 'Trash', spam: 'Spam', archive: 'Archive' };
+const FOLDER_LABELS = { starred: 'Starred', inbox: 'Inbox', sent: 'Sent', drafts: 'Drafts', trash: 'Trash', spam: 'Spam', archive: 'Archive' };
 
 function buildStaticFolders(staticMap) {
   return [
@@ -888,6 +915,7 @@ const ROLE_META = {
   trash:   { color: '#ff3b30', icon: '<path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>' },
   spam:    { color: '#8e8e93', icon: '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>' },
   archive: { color: '#8e6a3d', icon: '<path d="M20 6h-2.18c.07-.44.18-.88.18-1 0-1.1-.9-2-2-2h-8c-1.1 0-2 .9-2 2 0 .12.11.56.18 1H4c-1.1 0-2 .9-2 2v11c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-10-1h4v1h-4V5zm10 14H4V8h16v11zm-8-8.5l5 5-1.41 1.41L13 13.33V19h-2v-5.67l-2.59 2.58L7 14.5l5-5 5 5z"/>' },
+  starred: { color: '#c9df55', icon: '<path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/>' },
   custom:  { color: '#5856d6', icon: '<path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>' },
 };
 
@@ -914,7 +942,7 @@ async function getFolderPath(key, accountId) {
 
 // ── Body cache key ────────────────────────────────────────────────────────────
 function bodyCacheKey(email) { return `${email.accountId}:${email.folder || ''}:${email.uid}`; }
-function selKey(email) { return `${email.accountId}:${email.uid}`; }
+function selKey(email) { return `${email.accountId}:${email.folder || ''}:${email.uid}`; }
 
 // ── Account tabs (top) ────────────────────────────────────────────────────────
 // Search says where it looks: "Search Inbox · Alice"
@@ -1008,6 +1036,7 @@ function switchToAll() {
   renderAccountTabs();
   showFolderSidebar(false);
   renderDetail(null);
+  loadStorage();
   loadEmails();
 }
 
@@ -1022,6 +1051,7 @@ async function switchAccount(id) {
   renderAccountTabs();
   showFolderSidebar(true);
   renderFolderNav(); // render immediately with cached or empty nav
+  loadStorage();
 
   if (!accountFolders.has(id)) {
     await loadAndRenderFolders(id);
@@ -1082,6 +1112,7 @@ function makeFolderBtn(folder) {
   });
 
   btn.addEventListener('contextmenu', e => {
+    if (folder.virtual) { e.preventDefault(); return; }
     e.preventDefault();
     e.stopPropagation();
     const accountId = S.activeAccountId;
@@ -1102,6 +1133,7 @@ function makeFolderBtn(folder) {
     if (!draggedEmail) return;
     const email = draggedEmail;
     draggedEmail = null;
+    if (folder.virtual) { if (!email.flagged) toggleFlag(email); return; }
     if (email.accountId !== S.activeAccountId) { toast('Emails can only be moved within the same account', true); return; }
     const srcFolder = await getFolderPath(email.folderKey || email.folder, email.accountId);
     if (folder.path === srcFolder || folder.key === (email.folderKey || email.folder)) return;
@@ -1110,7 +1142,7 @@ function makeFolderBtn(folder) {
       if (!email.read) adjustUnread(email, -1);
       S.selectedUids.delete(selKey(email));
       renderBulkBar();
-      S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+      S.emails = S.emails.filter(e => selKey(e) !== selKey(email));
       S.bodyCache.delete(bodyCacheKey(email));
       if (S.selectedEmail?.uid === email.uid && S.selectedEmail?.accountId === email.accountId) {
         S.selectedUid = null; S.selectedEmail = null; renderDetail(null);
@@ -1132,16 +1164,24 @@ function renderFolderNav() {
   if (folders && folders.length > 0) {
     const accountChanged = _renderedFolderAccount !== S.activeAccountId;
     const existing = nav.querySelectorAll('.folder-btn');
+    // "Starred" is a smart folder: flagged mail from every folder (IMAP accounts)
+    const acc = S.accounts.find(a => a.id === S.activeAccountId);
+    const items = [...folders];
+    if (acc && acc.protocol !== 'jmap') {
+      const at = items.findIndex(f => f.role === 'inbox') + 1;
+      items.splice(at, 0, { role: 'starred', name: 'Starred', key: 'starred', path: null, virtual: true });
+    }
 
-    if (accountChanged || existing.length !== folders.length) {
+    if (accountChanged || existing.length !== items.length) {
       _renderedFolderAccount = S.activeAccountId;
       nav.innerHTML = '';
-      const hasCustom = folders.some(f => !f.role);
+      const hasCustom = items.some(f => !f.role);
       let addedSep = false;
-      folders.forEach(f => {
+      items.forEach(f => {
         if (!f.role && !addedSep && hasCustom) {
           const sep = document.createElement('div');
-          sep.style.cssText = 'height:1px;background:var(--border);margin:4px 8px;';
+          sep.className = 'folder-section';
+          sep.textContent = 'Folders';
           nav.appendChild(sep);
           addedSep = true;
         }
@@ -1314,7 +1354,13 @@ async function loadEmails(append = false, { silent = false } = {}) {
   const offset = append ? S.emails.length : 0;
   let res;
   try {
-    res = await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+    res = S.activeFolder === 'starred'
+      ? await ipc('emails:starred', { accountId: S.activeAccountId })
+      : await ipc('emails:fetch', { accountId: S.activeAccountId, folder, limit: 60, offset });
+    if (S.activeFolder === 'starred' && res.success) {
+      res.total = res.messages.length;
+      res.unseen = res.messages.filter(m => !m.read).length;
+    }
   } catch (err) {
     res = { success: false, error: err.message };
   }
@@ -1563,6 +1609,42 @@ function normalizeSubject(s) {
   return (s || '').replace(/^((re|fwd?|aw|sv|tr|vb)\s*:\s*)+/gi, '').trim().toLowerCase();
 }
 
+// Earlier / later messages with the same subject in the loaded list
+function threadContextEl(email) {
+  const norm = normalizeSubject(email.subject);
+  if (!norm) return null;
+  const others = S.emails.filter(e => e.accountId === email.accountId && selKey(e) !== selKey(email)
+    && normalizeSubject(e.subject) === norm)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  if (!others.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'thread-context';
+  const toggle = document.createElement('button');
+  toggle.className = 'thread-context-toggle';
+  const n = others.length;
+  const setLabel = open => {
+    toggle.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="${open ? '18 15 12 9 6 15' : '6 9 12 15 18 9'}"/></svg>${n} other message${n > 1 ? 's' : ''} in this conversation`;
+  };
+  const list = document.createElement('div');
+  list.className = 'thread-context-list hidden';
+  others.forEach(e => {
+    const row = document.createElement('button');
+    row.className = 'thread-line' + (e.read ? '' : ' unread');
+    row.innerHTML = `<span class="tl-from">${escHtml(e.fromName || e.fromEmail)}</span>
+      <span class="tl-snip">${escHtml(e.snippet || e.subject || '')}</span>
+      <span class="tl-date">${escHtml(fmtDate(e.date))}</span>`;
+    row.addEventListener('click', () => selectEmail(e));
+    list.appendChild(row);
+  });
+  setLabel(false);
+  toggle.addEventListener('click', () => {
+    const open = list.classList.toggle('hidden') === false;
+    setLabel(open);
+  });
+  wrap.append(toggle, list);
+  return wrap;
+}
+
 function groupEmails(emails) {
   const groups = new Map();
   emails.forEach(email => {
@@ -1612,7 +1694,8 @@ let draggedEmail = null;
 
 // ── Render email list ─────────────────────────────────────────────────────────
 function makeEmailItem(email, showAccountBadge) {
-  const selected = email.uid === S.selectedUid && email.accountId === S.selectedEmail?.accountId;
+  const selected = email.uid === S.selectedUid && email.accountId === S.selectedEmail?.accountId
+    && (!S.selectedEmail?.folder || email.folder === S.selectedEmail.folder);
   const acc = S.accounts.find(a => a.id === email.accountId);
   const item = document.createElement('div');
   item.className = 'email-item' + (selected ? ' selected' : '') + (email.read ? '' : ' is-unread');
@@ -1825,6 +1908,7 @@ function renderEmailList(isSearch = false) {
 async function toggleFlag(email) {
   const prev = email.flagged;
   email.flagged = !prev;
+  if (prev && S.activeFolder === 'starred') S.emails = S.emails.filter(e => selKey(e) !== selKey(email));
   renderEmailList();
   const res = await ipc('email:flag', { accountId: email.accountId, folder: email.folder, uid: email.uid, flagged: email.flagged });
   if (!res?.success) {
@@ -1989,7 +2073,7 @@ async function removeEmail(email, channel, doneMsg, failMsg) {
       await collapseRow(key);
       advanceSelectionAfterRemove(email);
       if (!email.read) adjustUnread(email, -1);
-      S.emails = S.emails.filter(e => !(e.uid === email.uid && e.accountId === email.accountId));
+      S.emails = S.emails.filter(e => selKey(e) !== selKey(email));
       S.totalOnServer = Math.max(0, S.totalOnServer - 1);
       S.selectedUids.delete(key);
       renderBulkBar();
@@ -2475,7 +2559,9 @@ function renderDetail(email, body) {
     bodyWrap.appendChild(pre);
   }
 
-  view.append(topbar, header, bodyWrap);
+  // Other messages of this conversation, one collapsed line each
+  const thread = threadContextEl(email);
+  view.append(topbar, ...(thread ? [thread] : []), header, bodyWrap);
 
   // Attachments
   if (body?.attachments?.length > 0) {
@@ -2642,6 +2728,7 @@ function openCompose({
   document.getElementById('composeCcToggle').textContent = S.ccVisible ? '− Cc' : 'Cc';
   document.getElementById('composeBccRow').classList.toggle('hidden', !S.bccVisible);
   document.getElementById('composeBcc').value = bcc;
+  renderRecipientChips();
   document.getElementById('composeBccToggle').textContent = S.bccVisible ? '− Bcc' : 'Bcc';
   document.getElementById('sendLaterPicker').classList.add('hidden');
 
@@ -2946,6 +3033,67 @@ function parseAddresses(str) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// ── Recipient chips ───────────────────────────────────────────────────────────
+// The text input stays the source of truth ("Ann <a@x.io>, b@y.io"): while it
+// has focus you edit plain text; otherwise the addresses show as chips.
+const RECIPIENT_INPUTS = ['composeTo', 'composeCc', 'composeBcc'];
+
+function splitRecipients(str) {
+  // Commas inside quoted display names don't separate addresses
+  return String(str || '').split(/[,;](?=(?:[^"]*"[^"]*")*[^"]*$)/).map(x => x.trim()).filter(Boolean);
+}
+
+function renderRecipientChips(inputId) {
+  (inputId ? [inputId] : RECIPIENT_INPUTS).forEach(id => {
+    const input = document.getElementById(id);
+    const row = input.closest('.compose-field-row');
+    let box = row.querySelector('.recip-chips');
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'recip-chips';
+      input.before(box);
+      row.classList.add('recip-row');
+    }
+    const entries = splitRecipients(input.value);
+    box.innerHTML = '';
+    entries.forEach((entry, i) => {
+      const m = entry.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+      const addr = (m ? m[2] : entry).trim();
+      const name = (m && m[1].trim()) || '';
+      const chip = document.createElement('span');
+      chip.className = 'recip-chip' + (EMAIL_RE.test(addr) ? '' : ' invalid');
+      chip.title = addr;
+      const av = document.createElement('span');
+      av.className = 'recip-av';
+      av.textContent = initials(name || addr.split('@')[0]);
+      const label = document.createElement('span');
+      label.className = 'recip-label';
+      label.textContent = name || addr;
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'recip-x';
+      x.setAttribute('aria-label', `Remove ${addr}`);
+      x.textContent = '×';
+      x.addEventListener('mousedown', e => e.preventDefault());
+      x.addEventListener('click', e => {
+        e.stopPropagation();
+        input.value = splitRecipients(input.value).filter((_, j) => j !== i).join(', ');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        renderRecipientChips(id);
+      });
+      chip.append(av, label, x);
+      box.appendChild(chip);
+    });
+    row.classList.toggle('has-chips', entries.length > 0);
+  });
+}
+
+RECIPIENT_INPUTS.forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener('blur', () => setTimeout(() => renderRecipientChips(id), 120)); // after autocomplete picks
+  input.addEventListener('change', () => renderRecipientChips(id));
+});
 
 function validateRecipients(str, label) {
   if (!str) return `Enter a ${label}`;
@@ -3561,6 +3709,8 @@ function applyPrefChange(key, value) {
     updateDockBadge();
   } else if (key.startsWith('notifications-')) {
     syncNotifyPrefs();
+  } else if (key === 'window-background') {
+    applyWindowBackground(value);
   } else if (key === 'list-density') {
     document.documentElement.classList.toggle('density-compact', value === 'compact');
   } else if (key === 'preview-lines') {
@@ -3860,7 +4010,16 @@ function renderSettingsAppearance() {
         </div>
       </div>
     </div>
+    ${CAN_TRANSLUCENT ? `
+    <div class="settings-section">
+      <div class="settings-section-title">Window</div>
+      <div class="settings-pref-group">
+        ${makePrefRow('Background', 'Let the desktop show through the window. Clear shows more of it; Solid turns it off.',
+          makeSelect('window-background', 'frosted', [['frosted', 'Frosted'], ['clear', 'Clear'], ['solid', 'Solid']]))}
+      </div>
+    </div>` : ''}
   `;
+  bindPrefControls(content);
 
   content.querySelectorAll('.theme-option-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -5130,6 +5289,7 @@ async function init() {
     // Load all folder lists in parallel, then render + fetch emails
     await Promise.all(S.accounts.map(a => loadAndRenderFolders(a.id)));
     renderFolderNav();
+    loadStorage();
     await loadEmails();
   }
 }

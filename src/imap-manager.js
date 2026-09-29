@@ -353,7 +353,7 @@ async function listFolders(account) {
         displayName = mb.path.split('/').pop();
       }
 
-      folders.push({ path: mb.path, name: displayName, role, key: role || mb.path });
+      folders.push({ path: mb.path, name: displayName, role, key: role || mb.path, specialUse: su || null });
     }
 
     folders.sort((a, b) => {
@@ -367,6 +367,57 @@ async function listFolders(account) {
   } finally {
     try { await client.logout(); } catch {}
   }
+}
+
+// Starred / flagged mail from every folder of an account (Trash, Spam and
+// Drafts excluded). Gmail keeps everything in "All Mail", so only that is searched there.
+async function fetchFlagged(account, limit = 200) {
+  const folders = await listFolders(account);
+  const all = folders.find(f => f.specialUse === '\\all');
+  const candidates = all ? [all] : folders.filter(f => !['trash', 'spam', 'drafts'].includes(f.role)).slice(0, 25);
+  const client = await getClient(account);
+  const messages = [];
+  for (const f of candidates) {
+    let lock;
+    try {
+      lock = await client.getMailboxLock(f.path);
+      const uids = await client.search({ flagged: true }, { uid: true });
+      if (!uids || !uids.length) continue;
+      for await (const msg of client.fetch(uids.slice(-limit), {
+        uid: true, envelope: true, flags: true, internalDate: true, bodyStructure: true,
+      }, { uid: true })) {
+        const fromAddr = msg.envelope.from?.[0] || {};
+        messages.push({
+          uid: msg.uid,
+          fromName: fromAddr.name || fromAddr.address || 'Unknown',
+          fromEmail: fromAddr.address || '',
+          toEmail: (msg.envelope.to || []).map(a => a.address).join(', '),
+          subject: msg.envelope.subject || '(no subject)',
+          date: msg.internalDate,
+          read: msg.flags.has('\\Seen'),
+          flagged: true,
+          folder: f.path,
+          accountId: account.id,
+          hasAttachment: hasAttachments(msg.bodyStructure),
+        });
+      }
+    } catch (err) {
+      console.error('[Mailplane] starred search failed in', f.path, err.message);
+    } finally {
+      lock?.release();
+    }
+  }
+  messages.sort((a, b) => new Date(b.date) - new Date(a.date));
+  return { messages: messages.slice(0, limit) };
+}
+
+// Mailbox storage (IMAP QUOTA). null when the server doesn't report it.
+async function getQuota(account) {
+  const client = await getClient(account);
+  const q = await client.getQuota('INBOX').catch(() => false);
+  const st = q && q.storage;
+  if (!st || !st.limit) return null;
+  return { usage: st.usage || 0, limit: st.limit };
 }
 
 async function createFolder(account, name) {
@@ -474,7 +525,7 @@ function stopAllIdle() {
 
 module.exports = {
   testConnection, fetchEmails, searchEmails, fetchEmailBody, fetchAttachment,
-  setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders,
+  setFlag, setRead, deleteEmail, moveEmail, archiveEmail, listFolders, fetchFlagged, getQuota,
   createFolder, renameFolder, deleteFolder,
   disconnect, disconnectAll, startIdle, stopIdle, stopAllIdle,
 };

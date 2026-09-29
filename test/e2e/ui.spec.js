@@ -160,7 +160,7 @@ test('removing the active account switches to the remaining one', async () => {
 
   await expect(page.locator('.acc-tab.active')).toContainText('Bob Work');
   await expect(emailItem(page, 'Standup notes')).toBeVisible();
-  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(6);
+  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(7);   // 6 folders + Starred
 });
 
 test('first run: welcome → email → password → live checks → personalise → inbox', async () => {
@@ -205,7 +205,7 @@ test('first run: welcome → email → password → live checks → personalise 
 
   await expect(page.locator('#setupModal')).toBeHidden();
   await expect(page.locator('.acc-tab.active')).toContainText('Jane Doe');
-  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(6);
+  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(7);   // 6 folders + Starred
   const stored = await app.evaluate(() => global.__mailplaneModules.accountStore.getAccounts()[0]);
   expect(stored).toMatchObject({ email: 'jane.doe@gmail.com', name: 'Jane Doe', color: '#6fa665' });
   expect(stored.imap.host).toBe('imap.gmail.com');

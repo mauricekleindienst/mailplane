@@ -296,6 +296,24 @@ const TITLEBAR_HEIGHT = 52;
 function overlayColors(dark) {
   return dark ? { color: '#121413', symbolColor: '#e7eae8' } : { color: '#e2e6e3', symbolColor: '#262a28' };
 }
+// Translucent window: macOS vibrancy / Windows 11 acrylic. Linux can't switch
+// transparency at runtime, so it stays opaque there.
+const CAN_TRANSLUCENT = process.platform === 'darwin' || process.platform === 'win32';
+function applyTranslucency(win, on) {
+  if (!win || win.isDestroyed() || !CAN_TRANSLUCENT) return;
+  try {
+    if (process.platform === 'darwin') win.setVibrancy(on ? 'under-window' : null);
+    else win.setBackgroundMaterial?.(on ? 'acrylic' : 'none');
+  } catch { /* older OS */ }
+}
+ipcMain.on('window:translucent', (_, on) => {
+  try {
+    const Store = require('electron-store');
+    new Store({ name: 'window' }).set('translucent', !!on);
+  } catch { /* ignore */ }
+  applyTranslucency(mainWindow, !!on);
+});
+
 function titleBarOptions() {
   if (UI_PLATFORM === 'darwin') return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 18, y: 20 } };
   if (process.platform === 'darwin') return { titleBarStyle: 'hidden' };
@@ -310,6 +328,7 @@ function createWindow() {
   const Store = require('electron-store');
   const winStore = new Store({ name: 'window', defaults: { bounds: null } });
   const saved = winStore.get('bounds');
+  const translucent = CAN_TRANSLUCENT && winStore.get('translucent') !== false;
 
   mainWindow = new BrowserWindow({
     width:  saved?.width  || 1280,
@@ -319,8 +338,10 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     ...titleBarOptions(),
-    vibrancy: nativeTheme.shouldUseDarkColors ? 'under-window' : 'sidebar',
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#ffffff',
+    // The page paints its own canvas; with translucency on, the desktop shows through it
+    ...(translucent && process.platform === 'darwin' ? { vibrancy: 'under-window', visualEffectState: 'followWindow' } : {}),
+    ...(translucent && process.platform === 'win32' ? { backgroundMaterial: 'acrylic' } : {}),
+    backgroundColor: CAN_TRANSLUCENT ? '#00000000' : (nativeTheme.shouldUseDarkColors ? '#121413' : '#e2e6e3'),
     title: 'Mailplane',
     webPreferences: {
       nodeIntegration: false,
@@ -574,6 +595,30 @@ ipcMain.handle('emails:search', async (_, { accountId, folder, query }) => {
     return { success: true, ...result, messages: withSnippets(accountId, folder, result.messages) };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+});
+
+// Starred mail from every folder of one account (IMAP)
+ipcMain.handle('emails:starred', async (_, { accountId }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account) return { success: false, error: 'Account not found' };
+    if (typeof mgr(account).fetchFlagged !== 'function') return { success: false, error: 'Starred isn’t available for this account' };
+    const { messages } = await mgr(account).fetchFlagged(account);
+    return { success: true, messages: messages.map(m => withSnippets(accountId, m.folder, [m])[0]) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Mailbox storage for the bar under the folder list
+ipcMain.handle('accounts:quota', async (_, { accountId }) => {
+  try {
+    const account = accountStore.getAccounts().find(a => a.id === accountId);
+    if (!account || typeof mgr(account).getQuota !== 'function') return null;
+    return await mgr(account).getQuota(account);
+  } catch {
+    return null;
   }
 });
 

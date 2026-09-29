@@ -205,7 +205,7 @@ test('switching accounts shows the other account’s folders and mail', async ()
   await page.locator('.acc-tab', { hasText: 'Bob Work' }).click();
   await expect(emailItems(page)).toHaveCount(1);
   await expect(emailItem(page, 'Standup notes')).toBeVisible();
-  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(6);
+  await expect(page.locator('#folderNav .folder-btn')).toHaveCount(7);   // 6 folders + Starred
 });
 
 test('attachment download writes the file without overwriting existing ones', async () => {
