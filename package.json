@@ -22,7 +22,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{js,json,css,html}\" --ignore-path .prettierignore",
-    "test": "node --test test/**/*.test.js",
+    "test": "node --test test/*.test.js",
     "test:e2e": "playwright test",
     "test:e2e:linux": "xvfb-run -a playwright test",
     "release:patch": "npm version patch && git push --follow-tags",
