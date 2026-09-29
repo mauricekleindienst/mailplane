@@ -5,7 +5,8 @@ name: Release
 # Two ways to release:
 #   1. Locally:  npm run release:patch   (or :minor / :major)
 #      bumps package.json, commits, tags vX.Y.Z and pushes → this workflow runs.
-#   2. GitHub:   Actions → Release → Run workflow → pick patch / minor / major.
+#   2. GitHub:   Actions → Release → Run workflow → pick patch / minor / major,
+#                or "current" to release the version already in package.json.
 #
 # Flow: create a draft release → build all platforms in parallel and upload
 # into the draft → publish it with generated release notes once everything
@@ -29,7 +30,7 @@ on:
         required: true
         default: patch
         type: choice
-        options: [patch, minor, major]
+        options: [patch, minor, major, current]
 
 permissions:
   contents: write
@@ -54,7 +55,13 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.bump }}" == "current" ]]; then
+            VERSION=$(node -p "require('./package.json').version")
+            if ! git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+              git tag "v$VERSION"
+              git push origin "v$VERSION"
+            fi
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             RAW=$(npm version ${{ inputs.bump }} --no-git-tag-version)
@@ -126,7 +133,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Android SDK (preinstalled on the runner)
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
       - uses: gradle/actions/setup-gradle@v4
       - name: Decode signing key
         env:

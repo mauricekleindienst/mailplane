@@ -45,7 +45,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Android SDK (preinstalled on the runner)
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
       - uses: gradle/actions/setup-gradle@v4
       - name: Engine tests (GreenMail IMAP/SMTP)
         run: ./gradlew --no-daemon :core:test

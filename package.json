@@ -152,6 +152,9 @@
     },
     "deb": {
       "artifactName": "${productName}-${version}-linux-amd64.${ext}"
+    },
+    "appImage": {
+      "artifactName": "${productName}-${version}-linux-x64.${ext}"
     }
   }
 }

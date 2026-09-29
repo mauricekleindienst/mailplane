@@ -30,6 +30,8 @@ Outlook, iCloud, Yahoo, Fastmail and any IMAP/SMTP server — on the desktop and
 | **Linux** | `Mailplane-<version>-linux-x64.AppImage` or `-linux-amd64.deb` |
 | **Android** 8.0+ | `Mailplane-<version>-android.apk` |
 
+`<version>` is the release number, e.g. `Mailplane-0.1.0-mac-arm64.dmg`.
+
 All files are on the **[latest release](https://github.com/mauricekleindienst/mailplane/releases/latest)** page.
 The desktop apps update themselves.
 
@@ -74,7 +76,8 @@ Rich text or plain text, inline images, attachments, per-account signatures, **U
 
 ### Your layout
 Drag the edges to resize the folder rail and message list, drag them away to hide them,
-or press `⌘\` / `⇧⌘\` — like Obsidian. Mailplane remembers it.
+use the button at the bottom-left of the sidebar, or press `⌘\` / `⇧⌘\` — like Obsidian.
+Mailplane remembers your layout.
 
 <img src="docs/screenshots/focus-mode.png" alt="Sidebar hidden" width="100%" />
 
@@ -153,6 +156,7 @@ npm start            # run the desktop app (⌥⌘I for DevTools)
 npm run lint
 npm test             # unit tests
 npm run test:e2e     # end-to-end + UI tests (Playwright driving the real app)
+npm run screenshots  # regenerate the README screenshots in docs/screenshots
 ```
 
 The E2E suite runs the real Electron app against an in-memory fake mailbox, so no mail account is needed.
