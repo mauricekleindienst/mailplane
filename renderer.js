@@ -458,7 +458,7 @@ const PERSONAL_DOMAINS = new Set([
 function avatarEl(name, email, size = 34) {
   const wrap = document.createElement('div');
   wrap.className = 'sender-avatar';
-  wrap.style.cssText = `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px;background:${colorFor(name || email)};border-radius:50%;flex-shrink:0;`;
+  wrap.style.cssText = `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.36)}px;border-radius:50%;flex-shrink:0;`;
 
   const span = document.createElement('span');
   span.className = 'av-initials';
@@ -696,13 +696,10 @@ function renderAccountTabs() {
   // "All Mail" entry
   const allTab = document.createElement('button');
   allTab.className = 'acc-tab acc-tab-all' + (S.activeAccountId === null ? ' active' : '');
-  const allDot = document.createElement('span');
-  allDot.className = 'acc-tab-dot acc-tab-dot-all';
-  allDot.innerHTML = accountIconSvg('layers', 13, 'white');
   const allLabel = document.createElement('span');
   allLabel.className = 'acc-tab-label';
   allLabel.textContent = 'All Mail';
-  allTab.append(allDot, allLabel, mkBadge());
+  allTab.append(allLabel, mkBadge());
   allTab.addEventListener('click', () => switchToAll());
   wrap.appendChild(allTab);
 
@@ -718,7 +715,6 @@ function renderAccountTabs() {
     const dot = document.createElement('span');
     dot.className = 'acc-tab-dot';
     dot.style.background = color;
-    dot.innerHTML = accountIconSvg(acc.icon || 'mail', 13, 'rgba(255,255,255,0.95)');
     const label = document.createElement('span');
     label.className = 'acc-tab-label';
     label.textContent = acc.name || acc.email.split('@')[0];
@@ -736,7 +732,7 @@ function renderAccountTabs() {
   const addBtn = document.createElement('button');
   addBtn.className = 'acc-add-btn';
   addBtn.title = 'Add Account';
-  addBtn.innerHTML = `<span class="acc-add-icon"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span><span class="acc-tab-label">Add account</span>`;
+  addBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`;
   addBtn.addEventListener('click', () => showSetupModal(true));
   wrap.appendChild(addBtn);
   updateAccountBadges();
@@ -1821,7 +1817,7 @@ function renderDetailShell(email) {
     </div>
     <div class="detail-header">
       <div class="detail-sender-row">
-        <div class="detail-avatar sender-avatar" style="width:46px;height:46px;background:${colorFor(email.fromName)};font-size:17px;">
+        <div class="detail-avatar sender-avatar" style="width:46px;height:46px;font-size:17px;">
           <span class="av-initials">${escHtml(initials(email.fromName))}</span>
         </div>
         <div class="detail-sender-meta">

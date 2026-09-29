@@ -9,28 +9,26 @@ const { launchApp, sendToRenderer, emailItem, emailItems, msg, defaultMailboxes,
 let ctx;
 test.afterEach(async () => { await ctx?.close(); ctx = null; });
 
-test('email list renders as separated, rounded cards with account colour strip', async () => {
+test('email list renders as quiet rows — no colour strips, neutral avatars', async () => {
   ctx = await launchApp();
   const { page } = ctx;
-  const first = await emailItem(page, 'Quarterly report').boundingBox();
-  const second = await emailItem(page, 'Lunch?').boundingBox();
-  expect(first.height).toBeLessThan(110);
-  expect(second.y - (first.y + first.height)).toBeGreaterThanOrEqual(4); // gap between cards
-  const card = emailItem(page, 'Lunch?');
-  expect(parseFloat(await card.evaluate(el => getComputedStyle(el).borderTopLeftRadius))).toBeGreaterThanOrEqual(10);
-  expect(await card.evaluate(el => el.style.getPropertyValue('--acc-color'))).toBe('#3498db');
+  const row = emailItem(page, 'Lunch?');
+  const box = await row.boundingBox();
+  expect(box.height).toBeLessThan(100);
+  expect(await row.evaluate(el => getComputedStyle(el).boxShadow)).toBe('none');
+  // Avatars no longer get a random palette colour inline
+  expect(await row.locator('.sender-avatar').evaluate(el => el.style.background)).toBe('');
   // Checkbox appears on hover, overlaying the avatar
-  await card.hover();
-  await expect(card.locator('.email-checkbox')).toHaveCSS('opacity', '1');
+  await row.hover();
+  await expect(row.locator('.email-checkbox')).toHaveCSS('opacity', '1');
   await page.screenshot({ path: 'test-results/ui-list.png' });
 });
 
-test('accounts live in the sidebar with unread badges', async () => {
+test('accounts are pill tabs in the top bar with unread counts', async () => {
   ctx = await launchApp();
   const { page } = ctx;
-  await expect(page.locator('.folder-sidebar #accountTabs .acc-tab')).toHaveCount(3);
+  await expect(page.locator('.account-bar #accountTabs .acc-tab')).toHaveCount(3);
   await expect(page.locator('.acc-tab[data-account-id="acc-a"] .acc-tab-badge')).toHaveText('2');
-  // All Mail badge sums up all inboxes once they are loaded
   await page.locator('.acc-tab-all').click();
   await expect(page.locator('.acc-tab-all .acc-tab-badge')).toHaveText('3');
   await expect(page.locator('#folderNavLabel')).toBeHidden();
